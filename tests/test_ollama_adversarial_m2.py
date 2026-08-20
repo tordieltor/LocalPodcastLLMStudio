@@ -465,6 +465,7 @@ class TestBinaryResolverAndServiceLauncherStress:
 
     def test_find_binary_in_nested_windows_appdata_fallback(self):
         """Finds ollama.exe in LOCALAPPDATA\\Programs\\Ollama when not in PATH."""
+
         def mock_isfile(p):
             norm = p.replace("\\", "/")
             return "test/AppData/Local/Programs/Ollama/ollama.exe" in norm
