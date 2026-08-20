@@ -47,7 +47,7 @@ def _validate_url(url: str) -> str:
         raise ValueError(
             f"Invalid URL scheme '{parsed.scheme}': only 'http' and 'https' are supported for Ollama service."
         )
-    if not parsed.netloc and not parsed.hostname:
+    if not parsed.netloc or not parsed.hostname:
         raise ValueError(f"Invalid Ollama URL '{url}': missing hostname or network location.")
     return clean_url
 
@@ -123,6 +123,55 @@ class PrerequisiteStatus:
     edge_tts_online: bool
     all_ready: bool
     remediation_hints: list[str]
+
+
+def format_speed_bps(bps: float) -> str:
+    """Formats bytes-per-second into human-readable rate string."""
+    if bps >= 1024 * 1024 * 1024:
+        return f"{bps / (1024**3):.1f} GB/s"
+    if bps >= 1024 * 1024:
+        return f"{bps / (1024**2):.1f} MB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.1f} KB/s"
+    if bps > 0:
+        return f"{bps:.0f} B/s"
+    return "0 B/s" if bps == 0.0 else f"{bps:.0f} B/s"
+
+
+def format_progress_bytes(completed: int, total: int) -> str:
+    """Formats completed / total progress string with percentage."""
+    if total <= 0:
+        if completed > 0:
+            if completed >= 1024 * 1024 * 1024:
+                return f"{completed / (1024**3):.2f} GB downloaded"
+            elif completed >= 1024 * 1024:
+                return f"{completed / (1024**2):.1f} MB downloaded"
+            return f"{completed / 1024:.1f} KB downloaded"
+        return "0 MB"
+
+    pct = (completed / total) * 100.0
+    if total >= 1024 * 1024 * 1024:
+        comp_gb = completed / (1024**3)
+        tot_gb = total / (1024**3)
+        return f"{comp_gb:.2f} GB / {tot_gb:.2f} GB ({pct:.1f}%)"
+    comp_mb = completed / (1024 * 1024)
+    tot_mb = total / (1024 * 1024)
+    return f"{comp_mb:.1f} MB / {tot_mb:.1f} MB ({pct:.1f}%)"
+
+
+def format_eta_seconds(seconds: float) -> str:
+    """Formats estimated remaining seconds into MM:SS or HH:MM:SS."""
+    if seconds < 0 or seconds == float("inf"):
+        return "--:--"
+    sec = int(seconds)
+    if sec >= 3600:
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        s = sec % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    m = sec // 60
+    s = sec % 60
+    return f"{m:02d}:{s:02d}"
 
 
 def find_ollama_binary() -> str | None:
@@ -204,6 +253,9 @@ def start_ollama_service(
     Returns:
         Tuple[bool, str]: (success, status_or_error_message).
     """
+    if cancel_event and cancel_event.is_set():
+        return False, "Ollama service startup cancelled by user."
+
     clean_url = _validate_url(base_url)
     health_client = OllamaClient(base_url=clean_url)
 

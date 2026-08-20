@@ -111,7 +111,8 @@ if "%FOUND_BASE_PY%"=="" (
     echo.
     echo IMPORTANT: Make sure to check "Add python.exe to PATH" during installation.
     echo.
-    call :safe_exit 1
+    set "FINAL_CODE=1"
+    goto safe_exit
 )
 
 echo [OK] Base Python runtime verified:
@@ -128,7 +129,8 @@ if not exist "%VENV_PY%" (
         echo [ERROR] Failed to create virtual environment in .venv.
         echo Please ensure you have write permissions in this directory.
         echo.
-        call :safe_exit 1
+        set "FINAL_CODE=1"
+        goto safe_exit
     )
     echo [OK] Virtual environment created.
 ) else (
@@ -154,7 +156,8 @@ if exist "requirements.txt" (
     "%VENV_PY%" -m pip install -r requirements.txt
     if !ERRORLEVEL! neq 0 (
         echo [ERROR] Failed to install runtime dependencies from requirements.txt.
-        call :safe_exit 1
+        set "FINAL_CODE=1"
+        goto safe_exit
     )
 )
 
@@ -174,6 +177,11 @@ echo.
 echo [4/4] Running environment diagnostics...
 echo -----------------------------------------------------------------------
 "%VENV_PY%" check_env.py
+if !ERRORLEVEL! neq 0 (
+    echo [ERROR] Preflight environment check reported errors.
+    set "FINAL_CODE=1"
+    goto safe_exit
+)
 echo -----------------------------------------------------------------------
 echo.
 echo =======================================================================
@@ -183,13 +191,13 @@ echo   1. Activate virtual environment:  .venv\Scripts\activate
 echo   2. Start application:             python app.py
 echo =======================================================================
 echo.
-call :safe_exit 0
+set "FINAL_CODE=0"
+goto safe_exit
 
 :: ---------------------------------------------------------------------------
 :: Helper Routine: Safe Exit with CI / Interactive Pause Handling
 :: ---------------------------------------------------------------------------
 :safe_exit
-set "FINAL_CODE=%~1"
 if "%FINAL_CODE%"=="" set "FINAL_CODE=0"
 if "%NO_PAUSE%"=="0" (
     echo.

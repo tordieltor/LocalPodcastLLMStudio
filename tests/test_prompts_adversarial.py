@@ -181,7 +181,7 @@ class TestLanguageAndFormatNormalizationAdversarial:
             ("de-DE", "en-US"),
             ("", "en-US"),
             ("   ", "en-US"),
-            (None, "nb-NO"),  # str(None) contains 'no'
+            (None, "en-US"),
             (123, "en-US"),
             (False, "en-US"),
         ],

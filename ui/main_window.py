@@ -22,10 +22,13 @@ import customtkinter as ctk
 from core.extractor import DocumentExtractionError, extract_text
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import (
+    ModelPullProgress,
     OllamaClient,
     OllamaConnectionError,
     OllamaModelNotFoundError,
     generate_podcast_script,
+    pull_model_stream,
+    start_ollama_service,
 )
 from core.parser import (
     DialogueParser,
@@ -34,6 +37,10 @@ from core.parser import (
     dialogue_to_markdown,
 )
 from core.player import WindowsAudioPlayer, export_audio_file
+from core.prompts import (
+    GROUNDING_MODE_PRESETS,
+    normalize_grounding_mode,
+)
 from core.tts import (
     format_rate_str,
     synthesize_dialogue_audio,
@@ -45,10 +52,22 @@ from ui.theme import (
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
     COLOR_BG,
+    COLOR_BUTTON_CLOSE,
+    COLOR_BUTTON_CLOSE_HOVER,
+    COLOR_BUTTON_DANGER,
+    COLOR_BUTTON_DANGER_HOVER,
+    COLOR_BUTTON_SECONDARY,
+    COLOR_BUTTON_SECONDARY_HOVER,
+    COLOR_BUTTON_SUCCESS,
+    COLOR_BUTTON_SUCCESS_HOVER,
     COLOR_ERROR,
     COLOR_INPUT_BG,
     COLOR_INPUT_BORDER,
+    COLOR_PROGRESS_BG,
+    COLOR_PROGRESS_FILL,
+    COLOR_PROGRESS_TRACK,
     COLOR_SUCCESS,
+    COLOR_TEXT_DARK,
     COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
@@ -59,7 +78,9 @@ from ui.theme import (
     get_font_body,
     get_font_body_bold,
     get_font_caption,
+    get_font_caption_bold,
     get_font_code,
+    get_font_code_small,
     get_font_heading,
     get_font_subtitle,
     get_font_title,
@@ -74,6 +95,12 @@ from ui.widgets import (
     StatusBadge,
     TimeSlider,
 )
+
+GROUNDING_UI_OPTIONS: list[str] = [
+    "Strict Source-Only (100% Document Fidelity)",
+    "Creative Analogy & Synthesis",
+    "Open Topic / Scratch (Free Generative Synthesis)",
+]
 
 
 # ==============================================================================
@@ -98,6 +125,7 @@ class GenerationWorker(threading.Thread):
         output_dir: str,
         msg_queue: queue.Queue,
         cancel_event: threading.Event,
+        grounding_mode: str = "strict",
         ollama_url: str = "http://localhost:11434",
     ):
         super().__init__(daemon=True)
@@ -112,6 +140,7 @@ class GenerationWorker(threading.Thread):
         self.output_dir = output_dir
         self.msg_queue = msg_queue
         self.cancel_event = cancel_event
+        self.grounding_mode = grounding_mode
         self.ollama_url = ollama_url
         self.temp_turn_files: list[str] = []
 
@@ -201,6 +230,7 @@ class GenerationWorker(threading.Thread):
                         language=self.language,
                         format_type=self.format_type,
                         tone_style=self.tone,
+                        grounding_mode=self.grounding_mode,
                         model=self.model,
                         ollama_url=self.ollama_url,
                         is_topic=is_topic,
@@ -295,7 +325,6 @@ class GenerationWorker(threading.Thread):
                 return
 
             self.msg_queue.put(("STATUS", "Synthesizing neural voices with Edge-TTS..."))
-            len(dialogue)
 
             def tts_progress_cb(curr: int, tot: int):
                 if not self.cancel_event.is_set():
@@ -419,6 +448,125 @@ class GenerationWorker(threading.Thread):
 
 
 # ==============================================================================
+# Async Background Workers for Ollama Service & Model Pull
+# ==============================================================================
+class OllamaLauncherWorker(threading.Thread):
+    """
+    Dedicated background worker for starting the local Ollama service daemon
+    without blocking the GUI main thread.
+    """
+
+    def __init__(
+        self,
+        msg_queue: queue.Queue,
+        cancel_event: threading.Event,
+        base_url: str = "http://localhost:11434",
+        timeout: float = 10.0,
+    ):
+        super().__init__(daemon=True)
+        self.msg_queue = msg_queue
+        self.cancel_event = cancel_event
+        self.base_url = base_url
+        self.timeout = timeout
+
+    def run(self):
+        self.msg_queue.put(
+            ("SERVICE_LAUNCHING", {"status": "Starting Ollama background service..."})
+        )
+        try:
+            success, msg = start_ollama_service(
+                timeout=self.timeout,
+                base_url=self.base_url,
+                cancel_event=self.cancel_event,
+            )
+            if success:
+                client = OllamaClient(base_url=self.base_url)
+                try:
+                    models = client.list_models(timeout=3.0)
+                except Exception:
+                    models = []
+                self.msg_queue.put(("SERVICE_STARTED", {"status": msg, "models": models}))
+            else:
+                self.msg_queue.put(
+                    (
+                        "SERVICE_ERROR",
+                        {
+                            "error": msg,
+                            "details": (
+                                "Could not launch Ollama daemon. "
+                                "Ensure Ollama is installed from https://ollama.com or start it manually."
+                            ),
+                        },
+                    )
+                )
+        except Exception as e:
+            self.msg_queue.put(
+                (
+                    "SERVICE_ERROR",
+                    {
+                        "error": str(e),
+                        "details": f"Error starting Ollama service: {e}",
+                    },
+                )
+            )
+
+
+class ModelPullWorker(threading.Thread):
+    """
+    Dedicated background worker for streaming Ollama model downloads
+    with real-time progress callbacks and cancellation.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        msg_queue: queue.Queue,
+        cancel_event: threading.Event,
+        base_url: str = "http://localhost:11434",
+        timeout: float = 3600.0,
+    ):
+        super().__init__(daemon=True)
+        self.model_name = model_name
+        self.msg_queue = msg_queue
+        self.cancel_event = cancel_event
+        self.base_url = base_url
+        self.timeout = timeout
+
+    def run(self):
+        def progress_cb(progress: ModelPullProgress):
+            self.msg_queue.put(("PULL_PROGRESS", progress))
+
+        try:
+            success = pull_model_stream(
+                model=self.model_name,
+                base_url=self.base_url,
+                progress_callback=progress_cb,
+                cancel_event=self.cancel_event,
+                timeout=self.timeout,
+            )
+            if success:
+                self.msg_queue.put(
+                    (
+                        "PULL_DONE",
+                        {
+                            "model": self.model_name,
+                            "message": f"Model '{self.model_name}' installed and verified successfully.",
+                        },
+                    )
+                )
+        except Exception as e:
+            if self.cancel_event.is_set():
+                self.msg_queue.put(("PULL_CANCELLED", {"model": self.model_name}))
+            else:
+                self.msg_queue.put(
+                    (
+                        "PULL_ERROR",
+                        {"model": self.model_name, "error": str(e)},
+                    )
+                )
+
+
+# ==============================================================================
 # Main Application Window
 # ==============================================================================
 class MainWindow(ctk.CTk):
@@ -446,6 +594,12 @@ class MainWindow(ctk.CTk):
         self.msg_queue: queue.Queue = queue.Queue()
         self.cancel_event: threading.Event = threading.Event()
         self.current_worker: GenerationWorker | None = None
+
+        # Background Worker State for Launcher and Model Downloader
+        self.current_launcher_worker: OllamaLauncherWorker | None = None
+        self.launcher_cancel_event: threading.Event = threading.Event()
+        self.current_pull_worker: ModelPullWorker | None = None
+        self.pull_cancel_event: threading.Event = threading.Event()
 
         # Data & Playback State
         self.current_dialogue: list[DialogueTurn] = []
@@ -500,7 +654,7 @@ class MainWindow(ctk.CTk):
         )
         subtitle.pack(side="left", padx=(14, 0), pady=(3, 0))
 
-        # Right Header: Ollama Status Badge + Refresh Button
+        # Right Header: Ollama Status Badge + 1-Click Start + Refresh Button
         status_group = ctk.CTkFrame(inner_header, fg_color="transparent")
         status_group.pack(side="right")
 
@@ -509,14 +663,27 @@ class MainWindow(ctk.CTk):
         )
         self.ollama_badge.pack(side="left", padx=(0, 8))
 
+        self.btn_start_ollama_header = ctk.CTkButton(
+            status_group,
+            text="⚡ Start Ollama",
+            width=105,
+            height=30,
+            font=get_font_caption(),
+            fg_color=COLOR_BUTTON_SUCCESS,
+            hover_color=COLOR_BUTTON_SUCCESS_HOVER,
+            text_color=COLOR_TEXT_DARK,
+            command=self.start_ollama_service_async,
+        )
+        self.btn_start_ollama_header.pack(side="left", padx=(0, 8))
+
         self.btn_refresh_models = ctk.CTkButton(
             status_group,
             text="↻ Refresh",
             width=80,
             height=30,
             font=get_font_caption(),
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             command=self.refresh_ollama_models,
         )
         self.btn_refresh_models.pack(side="left")
@@ -527,8 +694,8 @@ class MainWindow(ctk.CTk):
             width=75,
             height=30,
             font=get_font_caption(),
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             command=self.show_about_dialog,
         )
         self.btn_about.pack(side="left", padx=(8, 0))
@@ -595,8 +762,8 @@ class MainWindow(ctk.CTk):
             file_row,
             text="Browse...",
             width=80,
-            fg_color="#33384d",
-            hover_color="#414868",
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
             command=self._browse_input_file,
         )
         self.btn_browse_file.pack(side="right")
@@ -634,36 +801,63 @@ class MainWindow(ctk.CTk):
         cfg_grid.pack(fill="x", pady=(0, 10))
         cfg_grid.grid_columnconfigure(1, weight=1)
 
-        # Language Selector
+        # Row 0: Language Selector
         ctk.CTkLabel(
             cfg_grid, text="Language:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
         ).grid(row=0, column=0, sticky="w", pady=6)
         self.lang_menu = ctk.CTkOptionMenu(
             cfg_grid,
             values=["Norwegian Bokmål (Kari & Ola)", "English (Jenny & Guy)"],
-            fg_color="#2b314a",
+            fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
+            command=self._on_language_changed,
         )
         self.lang_menu.set("Norwegian Bokmål (Kari & Ola)")
         self.lang_menu.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
 
-        # Ollama Model Dropdown
+        # Row 1: Ollama Model + 1-Click Action Buttons
         ctk.CTkLabel(
             cfg_grid, text="Ollama Model:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
         ).grid(row=1, column=0, sticky="w", pady=6)
+
         model_row = ctk.CTkFrame(cfg_grid, fg_color="transparent")
         model_row.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
+        model_row.grid_columnconfigure(0, weight=1)
+
         self.model_menu = ctk.CTkOptionMenu(
             model_row,
             values=["Checking models..."],
-            fg_color="#2b314a",
+            fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
         )
-        self.model_menu.pack(side="left", fill="x", expand=True)
+        self.model_menu.grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
-        # Episode Length Preset
+        self.btn_start_ollama = ctk.CTkButton(
+            model_row,
+            text="⚡ Start",
+            width=65,
+            font=get_font_caption(),
+            fg_color=COLOR_BUTTON_SUCCESS,
+            hover_color=COLOR_BUTTON_SUCCESS_HOVER,
+            text_color=COLOR_TEXT_DARK,
+            command=self.start_ollama_service_async,
+        )
+        self.btn_start_ollama.grid(row=0, column=1, padx=(0, 4))
+
+        self.btn_download_model = ctk.CTkButton(
+            model_row,
+            text="⬇ Pull",
+            width=60,
+            font=get_font_caption(),
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            command=self._on_download_model_clicked,
+        )
+        self.btn_download_model.grid(row=0, column=2)
+
+        # Row 2: Episode Length Preset
         ctk.CTkLabel(
             cfg_grid, text="Episode Length:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
         ).grid(row=2, column=0, sticky="w", pady=6)
@@ -675,26 +869,114 @@ class MainWindow(ctk.CTk):
                 "Deep Dive (20-26 turns, ~10-15 min)",
                 "Extended In-Depth (45-60 turns, ~25-30 min)",
             ],
-            fg_color="#2b314a",
+            fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
         )
         self.length_menu.set("Standard Episode (12-16 turns, ~5-7 min)")
         self.length_menu.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=6)
 
-        # Tone / Style Preset
+        # Row 3: Tone / Style Preset
         ctk.CTkLabel(
             cfg_grid, text="Tone / Style:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
         ).grid(row=3, column=0, sticky="w", pady=6)
         self.tone_menu = ctk.CTkOptionMenu(
             cfg_grid,
             values=["Casual & Lively", "Analytical & Educational", "Lively Debate"],
-            fg_color="#2b314a",
+            fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
         )
         self.tone_menu.set("Casual & Lively")
         self.tone_menu.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=6)
+
+        # Row 4: Grounding Mode UI Selector
+        ctk.CTkLabel(
+            cfg_grid, text="Grounding Mode:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
+        ).grid(row=4, column=0, sticky="w", pady=6)
+
+        self.grounding_menu = ctk.CTkOptionMenu(
+            cfg_grid,
+            values=GROUNDING_UI_OPTIONS,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            button_color=COLOR_ACCENT,
+            button_hover_color=COLOR_ACCENT_HOVER,
+            command=self._on_grounding_mode_changed,
+        )
+        self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
+        self.grounding_menu.grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=6)
+
+        # Dynamic Grounding Helper Caption Label
+        self.grounding_desc_label = ctk.CTkLabel(
+            scroll_container,
+            text="",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
+            wraplength=420,
+            justify="left",
+            anchor="w",
+        )
+        self.grounding_desc_label.pack(fill="x", padx=4, pady=(0, 10))
+        self._update_grounding_description()
+
+        # Dynamic Streaming Model Pull Progress Container (Hidden by default)
+        self.pull_frame = CardFrame(
+            scroll_container, fg_color=COLOR_PROGRESS_BG, corner_radius=8, border_width=1
+        )
+        pull_top_row = ctk.CTkFrame(self.pull_frame, fg_color="transparent")
+        pull_top_row.pack(fill="x", padx=10, pady=(8, 2))
+
+        self.pull_status_label = ctk.CTkLabel(
+            pull_top_row,
+            text="Downloading model...",
+            font=get_font_caption_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        )
+        self.pull_status_label.pack(side="left", fill="x", expand=True)
+
+        self.pull_speed_label = ctk.CTkLabel(
+            pull_top_row,
+            text="",
+            font=get_font_code_small(),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="e",
+        )
+        self.pull_speed_label.pack(side="right")
+
+        self.pull_progress_bar = ctk.CTkProgressBar(
+            self.pull_frame,
+            height=8,
+            progress_color=COLOR_PROGRESS_FILL,
+            fg_color=COLOR_PROGRESS_TRACK,
+        )
+        self.pull_progress_bar.set(0.0)
+        self.pull_progress_bar.pack(fill="x", padx=10, pady=(4, 6))
+
+        pull_bottom_row = ctk.CTkFrame(self.pull_frame, fg_color="transparent")
+        pull_bottom_row.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.pull_details_label = ctk.CTkLabel(
+            pull_bottom_row,
+            text="",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        )
+        self.pull_details_label.pack(side="left", fill="x", expand=True)
+
+        self.btn_cancel_pull = ctk.CTkButton(
+            pull_bottom_row,
+            text="Cancel",
+            width=60,
+            height=24,
+            font=get_font_caption(),
+            fg_color=COLOR_BUTTON_DANGER,
+            hover_color=COLOR_BUTTON_DANGER_HOVER,
+            command=self.cancel_model_pull,
+        )
+        self.btn_cancel_pull.pack(side="right")
+        self.pull_frame.pack_forget()
 
         # Voice Speaking Rate Slider (-10% to +15%)
         self.speed_slider = LabeledSlider(
@@ -730,8 +1012,8 @@ class MainWindow(ctk.CTk):
             out_row,
             text="Browse...",
             width=80,
-            fg_color="#33384d",
-            hover_color="#414868",
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
             command=self._browse_output_dir,
         )
         self.btn_browse_output.pack(side="right")
@@ -759,8 +1041,8 @@ class MainWindow(ctk.CTk):
             text="📝 Generate Script Only",
             height=36,
             font=get_font_body(),
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             command=lambda: self.start_generation(mode="script_only"),
         )
         self.btn_generate_script.pack(fill="x", pady=(0, 8))
@@ -784,8 +1066,8 @@ class MainWindow(ctk.CTk):
             ctrl_row,
             text="🔄 Reset",
             font=get_font_body(),
-            fg_color="#33384d",
-            hover_color="#414868",
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
             command=self.reset_form,
         )
         self.btn_reset.pack(side="right", fill="x", expand=True, padx=(4, 0))
@@ -876,8 +1158,8 @@ class MainWindow(ctk.CTk):
             script_bar,
             text="📋 Copy Script",
             width=100,
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             font=get_font_caption(),
             command=self._copy_script_to_clipboard,
         )
@@ -887,8 +1169,8 @@ class MainWindow(ctk.CTk):
             script_bar,
             text="💾 Save Script As...",
             width=120,
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             font=get_font_caption(),
             command=self._save_script_as,
         )
@@ -934,8 +1216,8 @@ class MainWindow(ctk.CTk):
             text="▶ Play",
             width=70,
             state="disabled",
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             command=self._play_audio,
         )
         self.btn_play.pack(side="left", padx=(0, 4))
@@ -945,8 +1227,8 @@ class MainWindow(ctk.CTk):
             text="⏸ Pause",
             width=70,
             state="disabled",
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             command=self._pause_audio,
         )
         self.btn_pause.pack(side="left", padx=(0, 4))
@@ -956,8 +1238,8 @@ class MainWindow(ctk.CTk):
             text="⏹ Stop",
             width=70,
             state="disabled",
-            fg_color="#2b314a",
-            hover_color="#3d4566",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
             command=self._stop_audio,
         )
         self.btn_stop.pack(side="left", padx=(0, 10))
@@ -983,8 +1265,8 @@ class MainWindow(ctk.CTk):
             text="💾 Save MP3 As...",
             width=110,
             state="disabled",
-            fg_color="#33384d",
-            hover_color="#414868",
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
             font=get_font_caption(),
             command=self._save_mp3_as,
         )
@@ -994,29 +1276,70 @@ class MainWindow(ctk.CTk):
             ctrl_bar,
             text="📁 Open Folder",
             width=100,
-            fg_color="#33384d",
-            hover_color="#414868",
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
             font=get_font_caption(),
             command=self._open_output_folder,
         )
         self.btn_open_folder.pack(side="right")
 
     # ==========================================================================
-    # Modality & Input Handlers
+    # Grounding Mode & Modality Synchronization Handlers
     # ==========================================================================
+    def get_selected_grounding_mode(self) -> str:
+        """Returns normalized canonical grounding mode string: 'strict', 'creative', or 'open_topic'."""
+        raw = self.grounding_menu.get().lower()
+        if "creative" in raw:
+            return "creative"
+        if "open" in raw or "scratch" in raw:
+            return "open_topic"
+        if "strict" in raw or "fidelity" in raw:
+            return "strict"
+        return normalize_grounding_mode(self.grounding_menu.get())
+
+    def _on_grounding_mode_changed(self, choice: str):
+        """Callback when user selects a different grounding mode."""
+        self._update_grounding_description()
+
+    def _on_language_changed(self, choice: str):
+        """Callback when user selects a different language."""
+        self._update_grounding_description()
+
+    def _update_grounding_description(self):
+        """Updates the caption helper text based on selected mode and language."""
+        mode = self.get_selected_grounding_mode()
+        preset = GROUNDING_MODE_PRESETS.get(mode, GROUNDING_MODE_PRESETS["strict"])
+        lang_is_nb = "Norwegian" in self.lang_menu.get()
+
+        desc = preset["description_nb"] if lang_is_nb else preset["description_en"]
+        badge = preset.get("badge", "")
+        prefix = f"[{badge}] " if badge else ""
+        self.grounding_desc_label.configure(text=f"{prefix}{desc}")
+
     def _on_modality_changed(self, value: str):
         if "Document" in value:
             self.input_modality_var.set("file")
             self.text_container.pack_forget()
             self.file_container.pack(fill="x", pady=(0, 12))
+            # Auto-sync: If in open_topic, switch to strict
+            if self.get_selected_grounding_mode() == "open_topic":
+                self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
+                self._update_grounding_description()
         elif "Pasted" in value:
             self.input_modality_var.set("text")
             self.file_container.pack_forget()
             self.text_container.pack(fill="both", expand=True, pady=(0, 12))
+            # Auto-sync: If in open_topic, switch to strict
+            if self.get_selected_grounding_mode() == "open_topic":
+                self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
+                self._update_grounding_description()
         else:  # Topic Prompt (Scratch)
             self.input_modality_var.set("topic")
             self.file_container.pack_forget()
             self.text_container.pack(fill="both", expand=True, pady=(0, 12))
+            # Auto-sync: Switch to open_topic
+            self.grounding_menu.set(GROUNDING_UI_OPTIONS[2])
+            self._update_grounding_description()
 
     def _browse_input_file(self):
         filetypes = [
@@ -1046,7 +1369,7 @@ class MainWindow(ctk.CTk):
             self.output_entry.insert(0, os.path.abspath(chosen))
 
     # ==========================================================================
-    # Ollama Model Discovery (Non-Blocking)
+    # Ollama Model Discovery & 1-Click Async Actions
     # ==========================================================================
     def refresh_ollama_models(self):
         """Asynchronously checks Ollama connection and installed models."""
@@ -1065,8 +1388,63 @@ class MainWindow(ctk.CTk):
 
         threading.Thread(target=_bg_fetch, daemon=True).start()
 
+    def start_ollama_service_async(self):
+        """Launches local Ollama service in background thread."""
+        if self.current_launcher_worker and self.current_launcher_worker.is_alive():
+            return
+        self.launcher_cancel_event.clear()
+        self.ollama_badge.set_status("starting", "Starting Ollama...")
+        self.btn_start_ollama_header.configure(state="disabled")
+        self.btn_start_ollama.configure(state="disabled")
+        self.current_launcher_worker = OllamaLauncherWorker(
+            msg_queue=self.msg_queue,
+            cancel_event=self.launcher_cancel_event,
+        )
+        self.current_launcher_worker.start()
+
+    def _on_download_model_clicked(self):
+        """Triggers download for currently selected model in menu, or defaults to llama3.1:8b."""
+        curr = self.model_menu.get().strip()
+        if not curr or "Offline" in curr or "Checking" in curr or "No models" in curr:
+            target = "llama3.1:8b"
+        else:
+            target = curr
+        self.download_model_async(target)
+
+    def download_model_async(self, model_name: str = "llama3.1:8b"):
+        """Starts streaming download of an Ollama model in background."""
+        if self.current_pull_worker and self.current_pull_worker.is_alive():
+            messagebox.showinfo("Download in Progress", "A model download is already in progress.")
+            return
+
+        self.pull_cancel_event.clear()
+        self.pull_progress_bar.set(0.0)
+        self.pull_status_label.configure(text=f"Pulling '{model_name}'...")
+        self.pull_speed_label.configure(text="")
+        self.pull_details_label.configure(text="Connecting to Ollama...")
+        self.btn_cancel_pull.configure(state="normal")
+        self.pull_frame.pack(fill="x", pady=(0, 10))
+        self.ollama_badge.set_status("downloading", f"Pulling {model_name}...")
+
+        self.current_pull_worker = ModelPullWorker(
+            model_name=model_name,
+            msg_queue=self.msg_queue,
+            cancel_event=self.pull_cancel_event,
+        )
+        self.current_pull_worker.start()
+
+    def cancel_model_pull(self):
+        """Cancels active model pull operation."""
+        if self.current_pull_worker and self.current_pull_worker.is_alive():
+            self.pull_cancel_event.set()
+            self.pull_status_label.configure(text="Cancelling download...")
+            self.btn_cancel_pull.configure(state="disabled")
+
     def _handle_ollama_status(self, data: dict[str, Any]):
         self.btn_refresh_models.configure(state="normal")
+        self.btn_start_ollama_header.configure(state="normal")
+        self.btn_start_ollama.configure(state="normal")
+
         if data.get("connected") and data.get("models"):
             models = data["models"]
             self.model_menu.configure(values=models)
@@ -1089,6 +1467,14 @@ class MainWindow(ctk.CTk):
                     break
             self.model_menu.set(selected)
             self.ollama_badge.set_status("online", f"Ollama Connected ({len(models)} models)")
+            self.btn_start_ollama_header.configure(state="disabled")
+            self.btn_start_ollama.configure(state="disabled")
+        elif data.get("connected"):
+            self.model_menu.configure(values=["No models installed"])
+            self.model_menu.set("No models installed")
+            self.ollama_badge.set_status("warning", "Ollama Online (No models)")
+            self.btn_start_ollama_header.configure(state="disabled")
+            self.btn_start_ollama.configure(state="disabled")
         else:
             self.model_menu.configure(values=["Ollama Offline (No models)"])
             self.model_menu.set("Ollama Offline (No models)")
@@ -1125,15 +1511,45 @@ class MainWindow(ctk.CTk):
             source_data = text_data
 
         selected_model = self.model_menu.get()
-        if "Offline" in selected_model or "Checking" in selected_model or not selected_model:
-            ActionableErrorDialog(
-                self,
-                title="Ollama Service Required",
-                message="Local Ollama is offline or no models were found.\n\nPlease start Ollama and ensure you have pulled a model.",
-                details="Run 'ollama serve' in terminal or launch Ollama from Windows tray.\nRun 'ollama pull llama3.1:8b' to install a model.",
-                action_button_text="Refresh Ollama",
-                action_callback=self.refresh_ollama_models,
-            )
+        if (
+            "Offline" in selected_model
+            or "Checking" in selected_model
+            or "No models" in selected_model
+            or not selected_model
+        ):
+            if "Offline" in selected_model:
+                ActionableErrorDialog(
+                    self,
+                    title="Ollama Service Required",
+                    message="Local Ollama is offline.\n\nPlease start Ollama to generate podcasts with local LLMs.",
+                    details="Run 'ollama serve' in terminal or launch Ollama from Windows tray.\nRun 'ollama pull llama3.1:8b' to install the recommended model.",
+                    actions=[
+                        ("⚡ Start Ollama", self.start_ollama_service_async, "success"),
+                        (
+                            "⬇ Download llama3.1:8b",
+                            lambda: self.download_model_async("llama3.1:8b"),
+                            "accent",
+                        ),
+                        ("↻ Refresh", self.refresh_ollama_models, "secondary"),
+                    ],
+                    dialog_type="prerequisite",
+                )
+            else:
+                ActionableErrorDialog(
+                    self,
+                    title="Model Required",
+                    message="No LLM models are installed in your local Ollama instance.",
+                    details="Click 'Download llama3.1:8b' below or run 'ollama pull llama3.1:8b' in terminal.",
+                    actions=[
+                        (
+                            "⬇ Download llama3.1:8b",
+                            lambda: self.download_model_async("llama3.1:8b"),
+                            "accent",
+                        ),
+                        ("↻ Refresh", self.refresh_ollama_models, "secondary"),
+                    ],
+                    dialog_type="warning",
+                )
             return
 
         # Map Form Inputs
@@ -1159,6 +1575,7 @@ class MainWindow(ctk.CTk):
         speed_val = self.speed_slider.get()
         speed_rate = format_rate_str(speed_val)
         out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
+        grounding_mode = self.get_selected_grounding_mode()
 
         # Prepare Worker
         self.cancel_event.clear()
@@ -1178,6 +1595,7 @@ class MainWindow(ctk.CTk):
             output_dir=out_dir,
             msg_queue=self.msg_queue,
             cancel_event=self.cancel_event,
+            grounding_mode=grounding_mode,
         )
         self.current_worker.start()
 
@@ -1246,6 +1664,7 @@ class MainWindow(ctk.CTk):
             output_dir=out_dir,
             msg_queue=self.msg_queue,
             cancel_event=self.cancel_event,
+            grounding_mode=self.get_selected_grounding_mode(),
         )
         self.current_worker.start()
 
@@ -1280,6 +1699,103 @@ class MainWindow(ctk.CTk):
             self._on_script_only_done(payload)
         elif event_type == "OLLAMA_STATUS":
             self._handle_ollama_status(payload)
+        elif event_type == "SERVICE_LAUNCHING":
+            status_msg = (
+                payload.get("status", "Launching Ollama background service...")
+                if isinstance(payload, dict)
+                else str(payload)
+            )
+            self.ollama_badge.set_status("starting", "Starting Ollama...")
+            self.status_label.configure(text=status_msg)
+            self.btn_start_ollama_header.configure(state="disabled")
+            self.btn_start_ollama.configure(state="disabled")
+        elif event_type == "SERVICE_STARTED":
+            status_msg = (
+                payload.get("status", "Ollama service started.")
+                if isinstance(payload, dict)
+                else str(payload)
+            )
+            models = payload.get("models", []) if isinstance(payload, dict) else []
+            self.status_label.configure(text=status_msg)
+            if models:
+                self._handle_ollama_status({"connected": True, "models": models})
+            else:
+                self.refresh_ollama_models()
+        elif event_type == "SERVICE_ERROR":
+            err_msg = (
+                payload.get("error", "Service launch error")
+                if isinstance(payload, dict)
+                else str(payload)
+            )
+            details = payload.get("details", "") if isinstance(payload, dict) else ""
+            self.ollama_badge.set_status("offline", "Ollama Offline")
+            self.btn_start_ollama_header.configure(state="normal")
+            self.btn_start_ollama.configure(state="normal")
+            self.status_label.configure(text=f"Service launch failed: {err_msg}")
+            ActionableErrorDialog(
+                self,
+                title="Ollama Launch Failed",
+                message=f"Failed to start Ollama background service:\n{err_msg}",
+                details=details or "Please make sure Ollama is installed from https://ollama.com.",
+                actions=[
+                    ("⚡ Retry Start", self.start_ollama_service_async, "accent"),
+                    ("↻ Refresh", self.refresh_ollama_models, "secondary"),
+                ],
+                dialog_type="error",
+            )
+        elif event_type == "PULL_PROGRESS":
+            if isinstance(payload, ModelPullProgress):
+                pct = payload.percentage
+                self.pull_progress_bar.set(pct)
+                status_text = payload.progress_str or payload.status
+                self.pull_status_label.configure(
+                    text=f"Pulling {payload.status} ({int(pct * 100)}%)"
+                )
+                speed_info = []
+                if payload.speed_str:
+                    speed_info.append(payload.speed_str)
+                if payload.eta_str:
+                    speed_info.append(f"ETA: {payload.eta_str}")
+                self.pull_speed_label.configure(text=" | ".join(speed_info))
+                self.pull_details_label.configure(text=status_text)
+                self.ollama_badge.set_status("downloading", f"Pulling ({int(pct * 100)}%)")
+                self.status_label.configure(
+                    text=status_text or f"Downloading model: {int(pct * 100)}%"
+                )
+        elif event_type == "PULL_DONE":
+            model_name = payload.get("model", "") if isinstance(payload, dict) else ""
+            msg = (
+                payload.get("message", f"Model '{model_name}' installed.")
+                if isinstance(payload, dict)
+                else str(payload)
+            )
+            self.pull_frame.pack_forget()
+            self.ollama_badge.set_status(
+                "online", f"Model Ready: {model_name}" if model_name else "Ollama Online"
+            )
+            self.status_label.configure(text=msg)
+            self.refresh_ollama_models()
+        elif event_type == "PULL_ERROR":
+            model_name = payload.get("model", "") if isinstance(payload, dict) else ""
+            err = payload.get("error", "Pull failed") if isinstance(payload, dict) else str(payload)
+            self.pull_frame.pack_forget()
+            self.ollama_badge.set_status("error", "Download Failed")
+            self.status_label.configure(text=f"Download failed: {err}")
+            ActionableErrorDialog(
+                self,
+                title="Model Download Failed",
+                message=f"Could not download model '{model_name}':\n{err}",
+                details="Check internet connection, disk space, and Ollama service status.",
+                actions=[
+                    ("⬇ Retry Download", lambda: self.download_model_async(model_name), "accent"),
+                    ("↻ Refresh", self.refresh_ollama_models, "secondary"),
+                ],
+                dialog_type="error",
+            )
+        elif event_type == "PULL_CANCELLED":
+            self.pull_frame.pack_forget()
+            self.status_label.configure(text="Model download cancelled.")
+            self.refresh_ollama_models()
         elif event_type == "CANCELLED":
             self._set_busy_state(False)
             self.status_label.configure(text=str(payload))
@@ -1294,7 +1810,9 @@ class MainWindow(ctk.CTk):
                     title=payload.get("title", "Error"),
                     message=payload.get("message", "An error occurred."),
                     details=payload.get("details"),
-                    action_button_text="Dismiss",
+                    remedy=payload.get("remedy"),
+                    actions=payload.get("actions"),
+                    dialog_type=payload.get("dialog_type", "error"),
                 )
             else:
                 messagebox.showerror("Error", str(payload))
@@ -1471,6 +1989,8 @@ class MainWindow(ctk.CTk):
         self.progress_bar.set(0.0)
         self.progress_pct_label.configure(text="0%")
         self.status_label.configure(text="Ready to generate your podcast.")
+        self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
+        self._update_grounding_description()
         self._render_transcript([])
 
     def show_about_dialog(self):
@@ -1483,4 +2003,8 @@ class MainWindow(ctk.CTk):
             self.player.close()
         if self.current_worker and self.current_worker.is_alive():
             self.cancel_event.set()
+        if self.current_pull_worker and self.current_pull_worker.is_alive():
+            self.pull_cancel_event.set()
+        if self.current_launcher_worker and self.current_launcher_worker.is_alive():
+            self.launcher_cancel_event.set()
         self.destroy()

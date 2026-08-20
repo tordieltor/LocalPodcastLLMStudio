@@ -174,20 +174,22 @@ def _validate_ollama_url(url: str) -> str:
     """
     if not url or not isinstance(url, str):
         raise ValueError("Ollama host URL must be a non-empty string.")
-    raw_parsed = urlparse(url.strip())
-    if raw_parsed.scheme and raw_parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"Invalid URL scheme '{raw_parsed.scheme}'. Only 'http' and 'https' are supported."
-        )
-    clean = url.strip().rstrip("/")
-    if not clean.startswith(("http://", "https://")):
+    clean = url.strip()
+    if "://" in clean:
+        scheme = clean.split("://", 1)[0].lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(
+                f"Invalid URL scheme '{scheme}'. Only 'http' and 'https' are supported."
+            )
+    elif not clean.startswith(("http://", "https://")):
         clean = f"http://{clean}"
+    clean = clean.rstrip("/")
     parsed = urlparse(clean)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(
             f"Invalid URL scheme '{parsed.scheme}'. Only 'http' and 'https' are supported."
         )
-    if not parsed.netloc and not parsed.hostname:
+    if not parsed.netloc or not parsed.hostname:
         raise ValueError(f"Invalid Ollama URL '{url}': missing host or network location.")
     return clean
 

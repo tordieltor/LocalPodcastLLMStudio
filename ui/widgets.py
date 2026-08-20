@@ -15,6 +15,15 @@ from ui.theme import (
     CARD_RADIUS,
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
+    COLOR_BADGE_BG,
+    COLOR_BUTTON_CLOSE,
+    COLOR_BUTTON_CLOSE_HOVER,
+    COLOR_BUTTON_DANGER,
+    COLOR_BUTTON_DANGER_HOVER,
+    COLOR_BUTTON_SECONDARY,
+    COLOR_BUTTON_SECONDARY_HOVER,
+    COLOR_BUTTON_SUCCESS,
+    COLOR_BUTTON_SUCCESS_HOVER,
     COLOR_CARD,
     COLOR_CARD_BORDER,
     COLOR_ERROR,
@@ -26,6 +35,7 @@ from ui.theme import (
     COLOR_INPUT_BG,
     COLOR_INPUT_BORDER,
     COLOR_SUCCESS,
+    COLOR_TEXT_DARK,
     COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
@@ -114,6 +124,7 @@ class SectionHeader(ctk.CTkFrame):
 class StatusBadge(ctk.CTkFrame):
     """
     Pill-shaped live status badge with a color-coded indicator dot and status text.
+    Supports online, offline, downloading, launching, warning, and custom dot overrides.
     """
 
     def __init__(
@@ -125,7 +136,7 @@ class StatusBadge(ctk.CTkFrame):
     ):
         super().__init__(
             master=master,
-            fg_color="#1f2335",
+            fg_color=COLOR_BADGE_BG,
             corner_radius=BADGE_RADIUS,
             border_color=COLOR_CARD_BORDER,
             border_width=1,
@@ -148,25 +159,50 @@ class StatusBadge(ctk.CTkFrame):
 
         self.set_status(initial_status, initial_text)
 
-    def set_status(self, status: str, text: str):
+    def set_status(
+        self,
+        status: str,
+        text: str,
+        dot_color: str | None = None,
+        dot_glyph: str | None = None,
+    ):
         """
-        Updates the badge state and dot color.
+        Updates the badge state, dot color, and text string.
 
         Args:
-            status: 'online', 'connected', 'offline', 'error', 'checking', 'busy', 'idle'
-            text: Status string to display
+            status: Status category string ('online', 'offline', 'downloading', 'starting', etc.)
+            text: Human-readable text displayed on the badge.
+            dot_color: Optional hex color override for the dot.
+            dot_glyph: Optional unicode symbol override for the dot (default: '●').
         """
         st = status.lower()
-        if st in ["online", "connected", "ready", "success"]:
+        if dot_color:
+            color = dot_color
+        elif st in ["online", "connected", "ready", "success", "done", "complete"]:
             color = COLOR_SUCCESS
-        elif st in ["offline", "error", "cancelled"]:
+        elif st in ["offline", "error", "cancelled", "failed", "stopped", "aborted"]:
             color = COLOR_ERROR
-        elif st in ["checking", "busy", "working", "warning"]:
+        elif st in [
+            "checking",
+            "busy",
+            "working",
+            "warning",
+            "starting",
+            "launching",
+            "booting",
+            "missing_model",
+            "no_models",
+            "degraded",
+            "partial",
+        ]:
             color = COLOR_WARNING
+        elif st in ["downloading", "pulling", "installing", "syncing", "info"]:
+            color = COLOR_INFO
         else:
             color = COLOR_INFO
 
-        self.dot_label.configure(text_color=color)
+        glyph = dot_glyph if dot_glyph is not None else "●"
+        self.dot_label.configure(text=glyph, text_color=color)
         self.text_label.configure(text=text)
 
 
@@ -377,8 +413,9 @@ class DialogueTurnCard(ctk.CTkFrame):
 
 class ActionableErrorDialog(ctk.CTkToplevel):
     """
-    Modal error dialog with user-friendly remediation instructions
-    (e.g., how to start Ollama or pull models).
+    Modal diagnostic and error dialog with user-friendly remediation instructions
+    and multi-action interactive buttons (e.g., Start Ollama, Download Model, Retry).
+    100% backwards-compatible with legacy single-action and remedy parameters.
     """
 
     def __init__(
@@ -390,27 +427,52 @@ class ActionableErrorDialog(ctk.CTkToplevel):
         action_button_text: str | None = None,
         action_callback: Callable[[], None] | None = None,
         remedy: str | None = None,
+        actions: list[dict[str, Any] | tuple[Any, ...]] | None = None,
+        close_text: str = "Close",
+        dialog_type: str = "error",
+        icon: str | None = None,
+        width: int = 560,
+        height: int = 400,
     ):
         super().__init__(parent)
         details = details or remedy
+
         self.title(title)
-        self.geometry("540x360")
-        self.resizable(False, False)
+        self.geometry(f"{width}x{height}")
+        self.minsize(480, 320)
         self.configure(fg_color=COLOR_CARD)
 
-        # Modal focus
-        self.transient(parent)
-        self.grab_set()
+        # Modal focus configuration
+        try:
+            self.transient(parent)
+            self.grab_set()
+        except Exception:
+            pass
+
+        # Center on parent window
+        self._center_on_parent(parent, width, height)
+
+        # Header Icon & Title Colors by Dialog Type
+        header_colors = {
+            "error": (COLOR_ERROR, icon or "⚠️"),
+            "warning": (COLOR_WARNING, icon or "⚠️"),
+            "info": (COLOR_INFO, icon or "ℹ️"),
+            "prerequisite": (COLOR_ACCENT, icon or "⚙️"),
+        }
+        title_color, default_icon = header_colors.get(
+            dialog_type.lower(), (COLOR_ERROR, icon or "⚠️")
+        )
+        display_icon = icon if icon is not None else default_icon
 
         # Icon and Title Header
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
         header_frame.pack(fill="x", padx=20, pady=(20, 10))
 
-        icon_label = ctk.CTkLabel(header_frame, text="⚠️", font=ctk.CTkFont(size=28))
+        icon_label = ctk.CTkLabel(header_frame, text=display_icon, font=ctk.CTkFont(size=28))
         icon_label.pack(side="left", padx=(0, 12))
 
         title_label = ctk.CTkLabel(
-            header_frame, text=title, font=get_font_heading(), text_color=COLOR_ERROR, anchor="w"
+            header_frame, text=title, font=get_font_heading(), text_color=title_color, anchor="w"
         )
         title_label.pack(side="left", fill="x", expand=True)
 
@@ -420,17 +482,17 @@ class ActionableErrorDialog(ctk.CTkToplevel):
             text=message,
             font=get_font_body(),
             text_color=COLOR_TEXT_PRIMARY,
-            wraplength=480,
+            wraplength=width - 60,
             justify="left",
             anchor="w",
         )
         msg_label.pack(fill="x", padx=20, pady=(0, 10))
 
-        # Details Textbox (if available)
+        # Details / Remedy Textbox (if present)
         if details:
             details_box = ctk.CTkTextbox(
                 self,
-                height=100,
+                height=110,
                 font=get_font_code(),
                 fg_color=COLOR_INPUT_BG,
                 border_color=COLOR_INPUT_BORDER,
@@ -445,23 +507,114 @@ class ActionableErrorDialog(ctk.CTkToplevel):
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(fill="x", padx=20, pady=(0, 20))
 
-        if action_button_text and action_callback:
+        # Normalize Action Descriptors
+        normalized_actions: list[dict[str, Any]] = []
+        if actions:
+            for item in actions:
+                if isinstance(item, dict):
+                    normalized_actions.append(item)
+                elif isinstance(item, (tuple, list)):
+                    if len(item) == 2:
+                        normalized_actions.append(
+                            {
+                                "text": item[0],
+                                "callback": item[1],
+                                "style": "accent",
+                                "dismiss": True,
+                            }
+                        )
+                    elif len(item) >= 3:
+                        normalized_actions.append(
+                            {
+                                "text": item[0],
+                                "callback": item[1],
+                                "style": item[2],
+                                "dismiss": item[3] if len(item) > 3 else True,
+                            }
+                        )
+        elif action_button_text:
+            normalized_actions.append(
+                {
+                    "text": action_button_text,
+                    "callback": action_callback,
+                    "style": "accent",
+                    "dismiss": True,
+                }
+            )
+
+        # Render Action Buttons
+        for act in normalized_actions:
+            btn_text = act.get("text", "Action")
+            btn_cb = act.get("callback")
+            btn_style = str(act.get("style", "accent")).lower()
+            should_dismiss = act.get("dismiss", True)
+
+            # Style mapping
+            if btn_style in ["primary", "accent"]:
+                fg = COLOR_ACCENT
+                hover = COLOR_ACCENT_HOVER
+                txt_col = COLOR_TEXT_DARK
+            elif btn_style in ["success", "ready"]:
+                fg = COLOR_BUTTON_SUCCESS
+                hover = COLOR_BUTTON_SUCCESS_HOVER
+                txt_col = COLOR_TEXT_DARK
+            elif btn_style in ["warning"]:
+                fg = COLOR_WARNING
+                hover = "#e08a50"
+                txt_col = COLOR_TEXT_DARK
+            elif btn_style in ["danger", "error"]:
+                fg = COLOR_BUTTON_DANGER
+                hover = COLOR_BUTTON_DANGER_HOVER
+                txt_col = COLOR_TEXT_PRIMARY
+            else:  # secondary / ghost
+                fg = COLOR_BUTTON_SECONDARY
+                hover = COLOR_BUTTON_SECONDARY_HOVER
+                txt_col = COLOR_TEXT_PRIMARY
+
+            def _make_handler(cb=btn_cb, dismiss=should_dismiss):
+                def _handler():
+                    if dismiss:
+                        self.destroy()
+                    if cb:
+                        cb()
+
+                return _handler
+
             action_btn = ctk.CTkButton(
                 btn_row,
-                text=action_button_text,
-                fg_color=COLOR_ACCENT,
-                hover_color=COLOR_ACCENT_HOVER,
+                text=btn_text,
+                fg_color=fg,
+                hover_color=hover,
+                text_color=txt_col,
                 font=get_font_body_bold(),
-                command=lambda: [self.destroy(), action_callback()],
+                command=_make_handler(),
             )
-            action_btn.pack(side="left", padx=(0, 10))
+            action_btn.pack(side="left", padx=(0, 8))
 
+        # Close / Dismiss Button
         close_btn = ctk.CTkButton(
             btn_row,
-            text="Close",
-            fg_color="#33384d",
-            hover_color="#414868",
+            text=close_text,
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
             font=get_font_body(),
             command=self.destroy,
         )
         close_btn.pack(side="right")
+
+    def _center_on_parent(self, parent: Any, width: int, height: int):
+        """Centers dialog relative to parent window coordinates."""
+        try:
+            parent.update_idletasks()
+            pw = parent.winfo_width()
+            ph = parent.winfo_height()
+            px = parent.winfo_rootx()
+            py = parent.winfo_rooty()
+            x = max(50, px + (pw - width) // 2)
+            y = max(50, py + (ph - height) // 2)
+            self.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            try:
+                self.geometry(f"{width}x{height}")
+            except Exception:
+                pass

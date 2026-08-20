@@ -8,75 +8,34 @@ PyPDF Document Parser, Zero-FFmpeg MP3 Stitcher, and Native MCI Audio Player.
 
 import os
 import sys
-import importlib.util
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
-
-# Increase recursion limit to handle deep AST graphs during CustomTkinter/aiohttp analysis
-sys.setrecursionlimit(5000)
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
 
 block_cipher = None
 
-# Determine base directory reliably regardless of invocation method
-spec_dir = os.path.abspath(
-    SPECPATH if "SPECPATH" in globals()
-    else os.path.dirname(__file__) if "__file__" in globals()
-    else os.getcwd()
-)
-
-def safe_collect_data_files(package_name: str):
-    """Safely collect data files if package is installed."""
-    try:
-        if importlib.util.find_spec(package_name) is not None:
-            return collect_data_files(package_name)
-    except Exception:
-        pass
-    return []
-
-def safe_collect_submodules(package_name: str):
-    """Safely collect submodules if package is installed."""
-    try:
-        if importlib.util.find_spec(package_name) is not None:
-            return collect_submodules(package_name)
-    except Exception:
-        pass
-    return []
+# Ensure build working directories exist
+os.makedirs('build/LocalPodcastLLMStudio', exist_ok=True)
+os.makedirs('dist', exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # 1. Collect Data Assets & Resources
 # ---------------------------------------------------------------------------
 datas = []
-
-# Collect themes, fonts, and icon assets for CustomTkinter
-datas += safe_collect_data_files('customtkinter')
-
-# Collect bundled resources for Edge-TTS
-datas += safe_collect_data_files('edge_tts')
-
-# Collect SSL CA certificates bundle from Certifi for secure Edge-TTS WebSockets
-datas += safe_collect_data_files('certifi')
-
-# Collect encoding tables and data files for PyPDF
-datas += safe_collect_data_files('pypdf')
-
-# Include local application assets folder if present
-assets_path = os.path.join(spec_dir, 'assets')
-if os.path.exists(assets_path):
-    datas.append((assets_path, 'assets'))
-
-# ---------------------------------------------------------------------------
-# 2. Collect Hidden Imports & Dynamic Submodules
-# ---------------------------------------------------------------------------
+binaries = []
 hiddenimports = []
 
-# Package submodules
-hiddenimports += safe_collect_submodules('customtkinter')
-hiddenimports += safe_collect_submodules('edge_tts')
-hiddenimports += safe_collect_submodules('pypdf')
-hiddenimports += safe_collect_submodules('requests')
+for pkg in ['customtkinter', 'edge_tts', 'pypdf', 'certifi', 'requests']:
+    try:
+        t_datas, t_binaries, t_hidden = collect_all(pkg)
+        datas += t_datas
+        binaries += t_binaries
+        hiddenimports += t_hidden
+    except Exception:
+        datas += collect_data_files(pkg)
+        hiddenimports += collect_submodules(pkg)
 
-# Conditionally collect optional websockets submodule if present
-if importlib.util.find_spec('websockets') is not None:
-    hiddenimports += safe_collect_submodules('websockets')
+# Include local application assets folder if present
+if os.path.exists('assets'):
+    datas.append(('assets', 'assets'))
 
 # Core application modules
 hiddenimports += [
@@ -91,50 +50,22 @@ hiddenimports += [
     'ui',
     'ui.theme',
     'ui.widgets',
-    'ui.about_dialog',
     'ui.main_window',
-]
-
-# Networking, AsyncIO, and SSL dependencies
-hiddenimports += [
     'aiohttp',
     'asyncio',
     'certifi',
     'requests',
-    'urllib.request',
-    'urllib.error',
-    'urllib.parse',
-    'http.client',
-    'ssl',
-    'socket',
-]
-
-# Windows system, threading, and runtime utilities
-hiddenimports += [
     'ctypes',
     'ctypes.wintypes',
-    'threading',
-    'queue',
-    'subprocess',
-    'shutil',
-    'tempfile',
-    'uuid',
-    'json',
-    're',
-    'struct',
-    'math',
-    'traceback',
-    'time',
-    'platform',
 ]
 
 # ---------------------------------------------------------------------------
-# 3. Analysis Configuration
+# 2. Analysis Configuration
 # ---------------------------------------------------------------------------
 a = Analysis(
-    [os.path.join(spec_dir, 'app.py')],
-    pathex=[spec_dir],
-    binaries=[],
+    ['app.py'],
+    pathex=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -160,7 +91,7 @@ a = Analysis(
 )
 
 # ---------------------------------------------------------------------------
-# 4. Pure Python Archive (PYZ)
+# 3. Pure Python Archive (PYZ)
 # ---------------------------------------------------------------------------
 pyz = PYZ(
     a.pure,
@@ -169,10 +100,8 @@ pyz = PYZ(
 )
 
 # ---------------------------------------------------------------------------
-# 5. Executable Target (Single-File Standalone Binary)
+# 4. Executable Target (Single-File Standalone Binary)
 # ---------------------------------------------------------------------------
-icon_file = os.path.join(spec_dir, 'assets', 'icon.ico')
-
 exe = EXE(
     pyz,
     a.scripts,
@@ -187,10 +116,10 @@ exe = EXE(
     upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # False enables native Windows windowed mode (--noconsole)
+    console=False,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=icon_file if os.path.exists(icon_file) else None,
+    icon='assets/icon.ico' if os.path.exists('assets/icon.ico') else None,
 )

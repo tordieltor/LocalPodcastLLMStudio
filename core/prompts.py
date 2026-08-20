@@ -262,10 +262,23 @@ TONE_ALIASES: dict[str, str] = {
 }
 
 
-def normalize_language_code(language: str) -> str:
-    """Normalizes language string to 'nb-NO' or 'en-US'."""
-    lang_lower = str(language).lower()
-    if any(k in lang_lower for k in ["nb", "no", "nor", "bokmål", "norsk"]):
+def normalize_language_code(language: Any) -> str:
+    """Normalizes language string or code to 'nb-NO' or 'en-US'.
+    Falls back to 'en-US' on unrecognized languages, empty values, non-strings, or None.
+    """
+    if language is None or not isinstance(language, (str, bytes)):
+        return "en-US"
+    clean = str(language).strip().lower().replace("_", "-")
+    if not clean:
+        return "en-US"
+
+    tokens = set(clean.replace(" ", "-").split("-"))
+    if tokens & {"nb", "no", "nor", "norsk", "bokmål", "bokmal", "norwegian"}:
+        return "nb-NO"
+    if any(
+        clean.startswith(prefix)
+        for prefix in ("norsk", "bokmål", "bokmal", "norwegian", "nb-", "no-")
+    ):
         return "nb-NO"
     return "en-US"
 

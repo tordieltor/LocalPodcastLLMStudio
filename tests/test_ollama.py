@@ -34,6 +34,7 @@ from core.ollama import (
     OllamaConnectionError,
     OllamaModelNotFoundError,
     PrerequisiteStatus,
+    _validate_url,
     check_edge_tts_reachability,
     check_prerequisites,
     find_ollama_binary,
@@ -76,6 +77,12 @@ class TestOllamaClientUnit:
             OllamaClient("")
         with pytest.raises(ValueError):
             OllamaClient("http://")
+        with pytest.raises(ValueError):
+            OllamaClient("http://:80")
+        with pytest.raises(ValueError):
+            _validate_url("http://:80")
+        with pytest.raises(ValueError):
+            _validate_url("http://")
 
     def test_check_connection_success(self):
         mock_resp = MagicMock()
@@ -624,6 +631,22 @@ class TestOllamaServiceLauncher:
             success, msg = start_ollama_service(timeout=2.0)
             assert success is False
             assert "failed to become responsive" in msg or "seconds" in msg
+
+    def test_start_service_preflight_cancellation(self):
+        """Pre-set cancel_event must immediately abort without checking connection or spawning."""
+        cancel_ev = threading.Event()
+        cancel_ev.set()
+        with (
+            patch("core.ollama.OllamaClient.check_connection") as mock_check,
+            patch("core.ollama.find_ollama_binary") as mock_find,
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            success, msg = start_ollama_service(cancel_event=cancel_ev)
+            assert success is False
+            assert "cancelled by user" in msg.lower()
+            mock_check.assert_not_called()
+            mock_find.assert_not_called()
+            mock_popen.assert_not_called()
 
     def test_start_service_user_cancellation(self):
         mock_proc = MagicMock()

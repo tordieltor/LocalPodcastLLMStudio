@@ -26,11 +26,27 @@ COLOR_ACCENT = "#7aa2f7"  # Primary vibrant accent (Tokyo Cyan / Blue)
 COLOR_ACCENT_HOVER = "#565f89"  # Accent hover state
 COLOR_ACCENT_ACTIVE = "#3d59a1"  # Accent pressed state
 
+# Standardized Button Colors
+COLOR_BUTTON_SECONDARY = "#2b314a"  # Secondary action button (Refresh, About, Secondary)
+COLOR_BUTTON_SECONDARY_HOVER = "#3d4566"  # Secondary hover state
+COLOR_BUTTON_CLOSE = "#33384d"  # Neutral / Close / Browse button
+COLOR_BUTTON_CLOSE_HOVER = "#414868"  # Neutral / Close hover state
+COLOR_BUTTON_SUCCESS = "#9ece6a"  # Success action button (Start, Complete)
+COLOR_BUTTON_SUCCESS_HOVER = "#7fb84e"  # Success hover state
+COLOR_BUTTON_DANGER = "#f7768e"  # Cancel / Abort button
+COLOR_BUTTON_DANGER_HOVER = "#db4b4b"  # Cancel hover state
+
 # State Indicators
 COLOR_SUCCESS = "#9ece6a"  # Vibrant emerald green (Connected / Ready)
 COLOR_WARNING = "#ff9e64"  # Warm amber orange (Checking / Busy / Warning)
 COLOR_ERROR = "#f7768e"  # Soft crimson red (Offline / Error / Cancelled)
 COLOR_INFO = "#7dcfff"  # Cyan blue (Informational notifications)
+
+# Progress Bar & Badges
+COLOR_PROGRESS_BG = "#1a1c29"  # Progress container card background
+COLOR_PROGRESS_TRACK = "#24283b"  # Unfilled progress bar track
+COLOR_PROGRESS_FILL = "#7aa2f7"  # Active progress fill
+COLOR_BADGE_BG = "#1f2335"  # Status badge pill container background
 
 # Text & Typography Colors
 COLOR_TEXT_PRIMARY = "#c0caf5"  # High-contrast readable text
@@ -81,6 +97,11 @@ def get_font_heading() -> ctk.CTkFont:
     return ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
 
 
+def get_font_subheading() -> ctk.CTkFont:
+    """Returns bold sub-section heading font (size 12)."""
+    return ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+
+
 def get_font_body() -> ctk.CTkFont:
     """Returns standard body font."""
     return ctk.CTkFont(family="Segoe UI", size=13)
@@ -96,6 +117,11 @@ def get_font_caption() -> ctk.CTkFont:
     return ctk.CTkFont(family="Segoe UI", size=11)
 
 
+def get_font_caption_bold() -> ctk.CTkFont:
+    """Returns bold caption font (size 11)."""
+    return ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+
+
 def get_font_badge() -> ctk.CTkFont:
     """Returns status badge font."""
     return ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
@@ -104,6 +130,11 @@ def get_font_badge() -> ctk.CTkFont:
 def get_font_code() -> ctk.CTkFont:
     """Returns monospaced script / JSON code font."""
     return ctk.CTkFont(family="Consolas", size=12)
+
+
+def get_font_code_small() -> ctk.CTkFont:
+    """Returns compact code font (size 10) for download throughput/ETA."""
+    return ctk.CTkFont(family="Consolas", size=10)
 
 
 # ==============================================================================

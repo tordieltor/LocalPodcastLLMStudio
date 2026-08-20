@@ -64,8 +64,8 @@ LocalPodcastLLMStudio is a 100% local, two-host AI podcast generator desktop app
 |---|----------------|----------------------|--------------|--------|
 | **M1** | Core Grounding Engine & Prompt Engineering | `core/prompts.py`, `core/ollama.py` grounding parameter propagation, negative anti-hallucination constraints in `nb-NO` and `en-US`, 72-permutation combinatorial matrix | none | DONE |
 | **M2** | Prerequisite Manager, Windows Launcher & Streaming Model Downloader | `core/ollama.py` Windows binary resolver, detached `ollama serve` launcher, streaming `/api/pull` NDJSON parser with speed/ETA math, `check_edge_tts_reachability` socket probe | none | DONE |
-| **M3** | UI Integration, Controls & Responsive Feedback | `ui/widgets.py` (upgraded `ActionableErrorDialog`, `StatusBadge`), `ui/main_window.py` (Grounding Mode dropdown, Model Status 1-click actions, streaming progress bar, event queue handler) | M1, M2 | IN_PROGRESS |
-| **M4** | Comprehensive E2E Testing, Adversarial Verification & Quality Assurance | Opaque-box E2E test suite (Tiers 1-4), adversarial test hardening (Tier 5), fix extractor mock test gap, 100% pytest pass rate, zero ruff errors | M1, M2, M3 | PLANNED |
+| **M3** | UI Integration, Controls & Responsive Feedback | `ui/widgets.py` (upgraded `ActionableErrorDialog`, `StatusBadge`), `ui/main_window.py` (Grounding Mode dropdown, Model Status 1-click actions, streaming progress bar, event queue handler) | M1, M2 | DONE |
+| **M4** | Comprehensive E2E Testing, Adversarial Verification & Quality Assurance | Opaque-box E2E test suite (Tiers 1-4), adversarial test hardening (Tier 5), fix extractor mock test gap, 100% pytest pass rate, zero ruff errors | M1, M2, M3 | DONE |
 
 ---
 

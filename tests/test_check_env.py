@@ -15,6 +15,8 @@ import sys
 import urllib.error
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import check_env
 
 
@@ -153,6 +155,32 @@ class TestCheckEnvOllama:
         assert res["ok"] is False
         assert res["online"] is False
         assert "Invalid Ollama URL" in res["detail"]
+
+    def test_validate_ollama_url_normalization_and_rejections(self):
+        assert check_env._validate_ollama_url("localhost:11434") == "http://localhost:11434"
+        assert check_env._validate_ollama_url("127.0.0.1:11434") == "http://127.0.0.1:11434"
+        assert check_env._validate_ollama_url("http://localhost:11434") == "http://localhost:11434"
+        assert check_env._validate_ollama_url("http://localhost:11434/") == "http://localhost:11434"
+        assert (
+            check_env._validate_ollama_url("https://remote.ollama.ai:443")
+            == "https://remote.ollama.ai:443"
+        )
+        assert (
+            check_env._validate_ollama_url("https://remote.ollama.ai:443/")
+            == "https://remote.ollama.ai:443"
+        )
+
+        with pytest.raises(ValueError):
+            check_env._validate_ollama_url("http://:80")
+
+        with pytest.raises(ValueError):
+            check_env._validate_ollama_url("http://")
+
+        with pytest.raises(ValueError):
+            check_env._validate_ollama_url("ftp://localhost:11434")
+
+        with pytest.raises(ValueError):
+            check_env._validate_ollama_url("")
 
     def test_check_edge_tts_network_success(self):
         mock_sock = MagicMock()

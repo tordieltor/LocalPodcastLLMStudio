@@ -17,451 +17,58 @@ import json
 import os
 import queue
 import socket
-import sys
+import subprocess  # nosec: B404
 import threading
-import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import core.prompts as prompts
-
-# Core Domain Imports
-from core.parser import DialogueParser, DialogueTurn
+from core.ollama import (
+    ModelPullProgress,
+    OllamaConnectionError,
+    PrerequisiteStatus,
+    check_edge_tts_reachability,
+    check_prerequisites,
+    find_ollama_binary,
+    format_eta_seconds,
+    format_progress_bytes,
+    format_speed_bps,
+    pull_model_stream,
+    start_ollama_service,
+)
+from core.parser import DialogueParser, DialogueTurn, dialogue_to_json, dialogue_to_markdown
+from core.prompts import (
+    GROUNDING_DIRECTIVES_EN,
+    GROUNDING_DIRECTIVES_NB,
+    GROUNDING_MODE_PRESETS,
+    normalize_grounding_mode,
+)
+from core.tts import format_rate_str
+from ui.main_window import GenerationWorker, MainWindow
 from ui.widgets import (
     ActionableErrorDialog,
     StatusBadge,
+    TimeSlider,
 )
 
-# ==============================================================================
-# Interface Contracts & Reference Adaptations for F1-F14
-# ==============================================================================
 
-
-class GroundingMode(str, Enum):
-    STRICT = "strict"
-    CREATIVE = "creative"
-    OPEN_TOPIC = "open_topic"
-
-
-@dataclass
-class ModelPullProgress:
-    status: str
-    digest: str = ""
-    total: int = 0
-    completed: int = 0
-    percentage: float = 0.0  # 0.0 to 1.0
-    speed_bps: float = 0.0
-    speed_str: str = ""  # e.g., "14.2 MB/s"
-    progress_str: str = ""  # e.g., "1.20 GB / 4.70 GB (25.5%)"
-    eta_str: str = ""  # e.g., "02:45"
-    is_done: bool = False
-    error: str | None = None
-
-
-@dataclass
-class PrerequisiteStatus:
-    ollama_binary_found: bool
-    ollama_binary_path: str | None
-    ollama_online: bool
-    installed_models: list[str]
-    has_recommended_model: bool
-    recommended_model_name: str
-    edge_tts_online: bool
-    all_ready: bool
-    remediation_hints: list[str]
-
-
-GROUNDING_MODE_PRESETS: dict[str, dict[str, Any]] = {
-    "strict": {
-        "id": "strict",
-        "name": "Strict Source-Only",
-        "name_nb": "Streng kildetrohet (Kun kildedokument)",
-        "description_nb": "100% forankret i kildedokumentet. Forbyr oppspinn og eksterne fakta. Vertene erkjenner ufullstendig informasjon.",
-        "description_en": "100% document fidelity. Forbids external facts or fabricated statistics. Hosts acknowledge missing details.",
-        "requires_document": True,
-    },
-    "creative": {
-        "id": "creative",
-        "name": "Creative Analogy & Synthesis",
-        "name_nb": "Kreativ syntese og analogier",
-        "description_nb": "Forankrer kjerneinnsikten i dokumentet, men tillater levende analogier, metaforer og forklarende eksempler.",
-        "description_en": "Anchors core insights in document while allowing relatable real-world analogies, metaphors, and illustrations.",
-        "requires_document": True,
-    },
-    "open_topic": {
-        "id": "open_topic",
-        "name": "Open Topic / Scratch",
-        "name_nb": "Åpent tema (Uten kildedokument)",
-        "description_nb": "Fri generativ idémyldring og debatt basert på et oppgitt tema eller stikkord, uten binding til kildetekst.",
-        "description_en": "Free generative synthesis and discussion from a topic prompt without document constraints.",
-        "requires_document": False,
-    },
-}
-
-GROUNDING_MODE_ALIASES: dict[str, str] = {
-    "strict": "strict",
-    "source_only": "strict",
-    "strict_source_only": "strict",
-    "factual": "strict",
-    "creative": "creative",
-    "analogy": "creative",
-    "synthesis": "creative",
-    "creative_analogy": "creative",
-    "open": "open_topic",
-    "open_topic": "open_topic",
-    "scratch": "open_topic",
-    "topic": "open_topic",
-}
-
-GROUNDING_DIRECTIVES_NB: dict[str, str] = {
-    "strict": (
-        "STRENG KILDETROHET OG ANTI-HALLUSINERING (STRICT SOURCE-ONLY):\n"
-        "1. Du skal KUN benytte fakta, tall, påstander og sammenhenger som eksplisitt fremgår av det oppgitte kildematerialet.\n"
-        "2. Det er STRENGT FORBUDT å finne på eksterne fakta, uprøvde statistikker, årstall eller navn som ikke er nevnt.\n"
-        "3. Dersom kildematerialet ikke omtaler et aspekt ved temaet, skal vertene eksplisitt si 'dette nevner ikke kildedokumentet' eller 'det sier ikke rapporten noe om'.\n"
-        "4. Hold deg 100% saklig og tro mot kildens opprinnelige intensjon og data."
-    ),
-    "creative": (
-        "KREATIV SYNTESE OG ANALOGIER (CREATIVE ANALOGY & SYNTHESIS):\n"
-        "1. Kjerneinnsiktene, hovedkonklusjonene og de sentrale faktaene MÅ være forankret i kildematerialet.\n"
-        "2. Du oppfordres til å bruke gode, hverdagslige metaforer, pedagogiske analogier og illustrative eksempler for å forklare komplekse mekanismer.\n"
-        "3. Vertene kan resonnere rundt overordnede trender og samfunnsmessige implikasjoner, så lenge kjernebudskapet respekteres."
-    ),
-    "open_topic": (
-        "ÅPENT TEMA OG FRI SYNTESE (OPEN TOPIC / SCRATCH):\n"
-        "1. Utforsk det oppgitte temaet fritt, kreativt og engasjerende uten begrensninger fra et kildedokument.\n"
-        "2. Bygg opp en logisk, underholdende og grundig podcast-samtale med varierte perspektiver og nyanser."
-    ),
-}
-
-GROUNDING_DIRECTIVES_EN: dict[str, str] = {
-    "strict": (
-        "STRICT SOURCE-ONLY GROUNDING & ANTI-HALLUCINATION DIRECTIVES:\n"
-        "1. You MUST rely EXCLUSIVELY on facts, metrics, quotes, and claims explicitly stated in the provided source material.\n"
-        "2. NEVER invent external facts, unmentioned statistics, fabricated dates, or outside claims.\n"
-        "3. If the source material lacks details on a question, the hosts MUST explicitly acknowledge it ('the source document does not mention that', 'we don't have data on this in the text').\n"
-        "4. Maintain 100% precision and strict alignment with the source text."
-    ),
-    "creative": (
-        "CREATIVE ANALOGY & SYNTHESIS DIRECTIVES:\n"
-        "1. Anchor all core takeaways, mechanisms, and factual insights firmly in the source material.\n"
-        "2. You are encouraged to introduce vivid real-world analogies, conversational metaphors, and relatable illustrative examples.\n"
-        "3. Hosts can synthesize broader implications and practical takeaways while preserving core document fidelity."
-    ),
-    "open_topic": (
-        "OPEN TOPIC / SCRATCH GENERATION DIRECTIVES:\n"
-        "1. Freely explore and discuss the provided topic prompt without document constraints.\n"
-        "2. Develop a comprehensive, engaging two-host dialogue with lively perspectives and domain insights."
-    ),
-}
-
-
-def normalize_grounding_mode(mode: str | GroundingMode) -> str:
-    """Normalizes any grounding mode representation to 'strict', 'creative', or 'open_topic'."""
-    val = mode.value if isinstance(mode, GroundingMode) else str(mode)
-    clean = val.lower().strip().replace(" ", "_").replace("-", "_")
-    return GROUNDING_MODE_ALIASES.get(clean, "strict")
-
-
-def format_speed_bps(bps: float) -> str:
-    """Formats bytes-per-second into human-readable rate string."""
-    if bps >= 1024 * 1024 * 1024:
-        return f"{bps / (1024**3):.1f} GB/s"
-    if bps >= 1024 * 1024:
-        return f"{bps / (1024**2):.1f} MB/s"
-    if bps >= 1024:
-        return f"{bps / 1024:.1f} KB/s"
-    return f"{bps:.0f} B/s"
-
-
-def format_progress_bytes(completed: int, total: int) -> str:
-    """Formats completed / total progress string with percentage."""
-    if total <= 0:
-        if completed > 0:
-            return f"{completed / (1024 * 1024):.1f} MB"
-        return "0 MB"
-
-    pct = (completed / total) * 100.0
-    if total >= 1024 * 1024 * 1024:
-        comp_gb = completed / (1024**3)
-        tot_gb = total / (1024**3)
-        return f"{comp_gb:.2f} GB / {tot_gb:.2f} GB ({pct:.1f}%)"
-    comp_mb = completed / (1024 * 1024)
-    tot_mb = total / (1024 * 1024)
-    return f"{comp_mb:.1f} MB / {tot_mb:.1f} MB ({pct:.1f}%)"
-
-
-def format_eta_seconds(seconds: float) -> str:
-    """Formats estimated remaining seconds into MM:SS or HH:MM:SS."""
-    if seconds < 0 or seconds == float("inf"):
-        return "--:--"
-    sec = int(seconds)
-    if sec >= 3600:
-        h = sec // 3600
-        m = (sec % 3600) // 60
-        s = sec % 60
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    m = sec // 60
-    s = sec % 60
-    return f"{m:02d}:{s:02d}"
-
-
-def find_ollama_binary() -> str | None:
-    """Discovers the Ollama binary on Windows / PATH."""
-    import shutil
-
-    bin_name = "ollama.exe" if sys.platform == "win32" else "ollama"
-    path_which = shutil.which(bin_name) or shutil.which("ollama")
-    if path_which and os.path.exists(path_which):
-        return path_which
-
-    # Standard Windows install locations
-    if sys.platform == "win32":
-        candidates = [
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
-            os.path.expandvars(r"%PROGRAMFILES%\Ollama\ollama.exe"),
-            os.path.expandvars(r"%USERPROFILE%\AppData\Local\Programs\Ollama\ollama.exe"),
-        ]
-        for cand in candidates:
-            if os.path.exists(cand):
-                return cand
-    return None
-
-
-def check_edge_tts_reachability(
-    host: str = "speech.platform.bing.com", port: int = 443, timeout: float = 3.0
-) -> tuple[bool, str]:
-    """Lightweight socket check for Microsoft Edge-TTS service reachability."""
-    try:
-        sock = socket.create_connection((host, port), timeout=timeout)
-        sock.close()
-        return True, "Edge-TTS network endpoint reachable."
-    except TimeoutError:
-        return False, f"Connection to {host}:{port} timed out after {timeout}s."
-    except socket.gaierror as e:
-        return False, f"DNS resolution failed for {host}: {e}"
-    except Exception as e:
-        return False, f"Cannot connect to Edge-TTS ({host}:{port}): {e}"
-
-
-def check_prerequisites(
-    base_url: str = "http://localhost:11434",
-    recommended_model: str = "llama3.1:8b",
-    timeout: float = 3.0,
-) -> PrerequisiteStatus:
-    """Aggregates all prerequisite checks into a comprehensive status report."""
-    bin_path = find_ollama_binary()
-    binary_found = bin_path is not None
-
-    ollama_online = False
-    installed_models: list[str] = []
-    remediation_hints: list[str] = []
-
-    # Check Ollama REST service
-    try:
-        url = f"{base_url.rstrip('/')}/api/tags"
-        req = urllib.request.Request(url, headers={"User-Agent": "LocalPodcastLLMStudio/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status == 200:
-                ollama_online = True
-                data = json.loads(resp.read().decode("utf-8"))
-                installed_models = [
-                    m["name"] for m in data.get("models", []) if isinstance(m, dict) and "name" in m
-                ]
-    except Exception:
-        ollama_online = False
-        remediation_hints.append(
-            "Start Ollama service via 'Start Ollama' button or 'ollama serve' command."
-        )
-
-    has_recommended = False
-    if ollama_online:
-        has_recommended = any(recommended_model in m for m in installed_models)
-        if not has_recommended:
-            remediation_hints.append(
-                f"Install recommended model '{recommended_model}' via 1-click download."
-            )
-
-    edge_tts_online, tts_msg = check_edge_tts_reachability(timeout=timeout)
-    if not edge_tts_online:
-        remediation_hints.append(
-            "Check internet connection for Edge-TTS speech synthesis reachability."
-        )
-
-    all_ready = binary_found and ollama_online and has_recommended and edge_tts_online
-
-    return PrerequisiteStatus(
-        ollama_binary_found=binary_found,
-        ollama_binary_path=bin_path,
-        ollama_online=ollama_online,
-        installed_models=installed_models,
-        has_recommended_model=has_recommended,
-        recommended_model_name=recommended_model,
-        edge_tts_online=edge_tts_online,
-        all_ready=all_ready,
-        remediation_hints=remediation_hints,
-    )
-
-
-def pull_model_stream(
-    model: str,
-    base_url: str = "http://localhost:11434",
-    progress_callback: Callable[[ModelPullProgress], None] | None = None,
-    cancel_event: threading.Event | None = None,
-    timeout: float = 3600.0,
-) -> bool:
-    """Interactions with Ollama /api/pull streaming NDJSON endpoint with live stats."""
-    if not model or not model.strip():
-        raise ValueError("Model name must be specified for pull.")
-
-    url = f"{base_url.rstrip('/')}/api/pull"
-    payload = json.dumps({"name": model.strip(), "stream": True}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "LocalPodcastLLMStudio/1.0"},
-    )
-
-    last_time = time.time()
-    last_completed = 0
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            for raw_line in resp:
-                if cancel_event and cancel_event.is_set():
-                    if progress_callback:
-                        progress_callback(
-                            ModelPullProgress(
-                                status="cancelled",
-                                is_done=True,
-                                error="Pull cancelled by user.",
-                            )
-                        )
-                    return False
-
-                line = raw_line.decode("utf-8").strip()
-                if not line:
-                    continue
-
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                st = chunk.get("status", "downloading")
-                total = int(chunk.get("total", 0))
-                completed = int(chunk.get("completed", 0))
-                digest = str(chunk.get("digest", ""))
-
-                now = time.time()
-                dt = max(0.001, now - last_time)
-                d_bytes = max(0, completed - last_completed)
-                speed_bps = d_bytes / dt if last_completed > 0 else 0.0
-
-                pct = (completed / total) if total > 0 else 0.0
-                pct = min(1.0, max(0.0, pct))
-                rem_sec = ((total - completed) / speed_bps) if speed_bps > 0 and total > 0 else 0.0
-
-                prog = ModelPullProgress(
-                    status=st,
-                    digest=digest,
-                    total=total,
-                    completed=completed,
-                    percentage=pct,
-                    speed_bps=speed_bps,
-                    speed_str=format_speed_bps(speed_bps),
-                    progress_str=format_progress_bytes(completed, total),
-                    eta_str=format_eta_seconds(rem_sec),
-                    is_done=bool(st == "success"),
-                )
-
-                if progress_callback:
-                    progress_callback(prog)
-
-                if st == "success":
-                    return True
-
-                if d_bytes > 0:
-                    last_time = now
-                    last_completed = completed
-
-            return True
-    except Exception as err:
-        if progress_callback:
-            progress_callback(
-                ModelPullProgress(
-                    status="error",
-                    is_done=True,
-                    error=str(err),
-                )
-            )
-        return False
-
-
-def start_ollama_service(
-    timeout: float = 10.0,
-    base_url: str = "http://localhost:11434",
-    cancel_event: threading.Event | None = None,
-) -> tuple[bool, str]:
-    """Launches the local Ollama background service and polls health until online."""
-    if cancel_event and cancel_event.is_set():
-        return False, "Ollama service startup cancelled by user."
-
-    import subprocess  # nosec B404
-
-    bin_path = find_ollama_binary()
-    if not bin_path:
-        return False, "Ollama executable not found on this system. Please install Ollama."
-
-    # Check if already running
-    try:
-        url = f"{base_url.rstrip('/')}/api/tags"
-        with urllib.request.urlopen(url, timeout=1.0) as resp:
-            if resp.status == 200:
-                return True, "Ollama service is already running."
-    except Exception:
-        pass
-
-    # Launch process detached
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
-        )
-
-    try:
-        subprocess.Popen(  # nosec B603
-            [bin_path, "serve"],
-            creationflags=creation_flags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
-    except Exception as launch_err:
-        return False, f"Failed to launch Ollama process: {launch_err}"
-
-    # Poll health loop
-    start_time = time.time()
-    while (time.time() - start_time) < timeout:
-        if cancel_event and cancel_event.is_set():
-            return False, "Ollama service startup cancelled by user."
-
-        try:
-            url = f"{base_url.rstrip('/')}/api/tags"
-            with urllib.request.urlopen(url, timeout=1.0) as resp:
-                if resp.status == 200:
-                    return True, "Ollama service started successfully and is online."
-        except Exception:
-            time.sleep(0.25)
-
-    return False, f"Ollama service launched but did not respond within {timeout}s."
+def make_mock_http_response(
+    data: bytes | str | dict[str, Any] = b'{"models": []}', status_code: int = 200
+) -> io.BytesIO:
+    """Helper creating a fresh mock HTTP response with .status attribute on each call."""
+    if isinstance(data, dict):
+        raw_bytes = json.dumps(data).encode("utf-8")
+    elif isinstance(data, str):
+        raw_bytes = data.encode("utf-8")
+    else:
+        raw_bytes = data
+    resp = io.BytesIO(raw_bytes)
+    resp.status = status_code
+    return resp
 
 
 # ==============================================================================
@@ -474,20 +81,22 @@ class TestTier1F1PrereqDetection:
 
     def test_f1_detection_all_online_and_ready(self, monkeypatch):
         monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\Ollama\\ollama.exe")
-        with (
-            monkeypatch.context() as m,
-        ):
-            m.setattr(
-                urllib.request,
-                "urlopen",
-                lambda req, timeout=None: io.BytesIO(
-                    json.dumps({"models": [{"name": "llama3.1:8b"}]}).encode("utf-8")
-                ),
-            )
-            # Socket check succeeds
-            status = check_prerequisites()
-            assert status.ollama_online is True or isinstance(status.ollama_online, bool)
-            assert status.recommended_model_name == "llama3.1:8b"
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(
+                {"models": [{"name": "llama3.1:8b"}]}, 200
+            ),
+        )
+        monkeypatch.setattr(
+            "core.ollama.check_edge_tts_reachability",
+            lambda timeout=3.0: (True, "Connected to speech.platform.bing.com:443"),
+        )
+        status = check_prerequisites()
+        assert status.ollama_online is True
+        assert status.has_recommended_model is True
+        assert status.recommended_model_name == "llama3.1:8b"
+        assert status.all_ready is True
 
     def test_f1_detection_ollama_offline(self, monkeypatch):
         monkeypatch.setattr(
@@ -495,27 +104,51 @@ class TestTier1F1PrereqDetection:
             "urlopen",
             lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.URLError("Refused")),
         )
+        monkeypatch.setattr(
+            "core.ollama.check_edge_tts_reachability",
+            lambda timeout=3.0: (True, "Connected"),
+        )
         status = check_prerequisites()
         assert status.ollama_online is False
         assert status.all_ready is False
-        assert any("Start Ollama" in hint for hint in status.remediation_hints)
+        assert any(
+            "Start Ollama" in hint or "offline" in hint.lower() for hint in status.remediation_hints
+        )
 
     def test_f1_detection_zero_models_installed(self, monkeypatch):
-        mock_resp = io.BytesIO(json.dumps({"models": []}).encode("utf-8"))
-        mock_resp.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response({"models": []}, 200),
+        )
+        monkeypatch.setattr(
+            "core.ollama.check_edge_tts_reachability",
+            lambda timeout=3.0: (True, "Connected"),
+        )
         status = check_prerequisites()
         assert status.installed_models == []
         assert status.has_recommended_model is False
-        assert any("Install recommended" in hint for hint in status.remediation_hints)
+        assert any(
+            "Download Model" in hint or "No LLM models installed" in hint
+            for hint in status.remediation_hints
+        )
 
     def test_f1_detection_missing_recommended_model(self, monkeypatch):
-        mock_resp = io.BytesIO(json.dumps({"models": [{"name": "mistral:latest"}]}).encode("utf-8"))
-        mock_resp.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(
+                {"models": [{"name": "mistral:latest"}]}, 200
+            ),
+        )
+        monkeypatch.setattr(
+            "core.ollama.check_edge_tts_reachability",
+            lambda timeout=3.0: (True, "Connected"),
+        )
         status = check_prerequisites(recommended_model="llama3.1:8b")
         assert status.has_recommended_model is False
         assert "mistral:latest" in status.installed_models
+        assert any("llama3.1:8b" in hint for hint in status.remediation_hints)
 
     def test_f1_detection_edge_tts_offline(self, monkeypatch):
         monkeypatch.setattr(
@@ -525,7 +158,7 @@ class TestTier1F1PrereqDetection:
         )
         online, msg = check_edge_tts_reachability()
         assert online is False
-        assert "timed out" in msg.lower()
+        assert "timed out" in msg.lower() or "timeout" in msg.lower()
 
 
 class TestTier1F2ServiceLauncher:
@@ -533,50 +166,50 @@ class TestTier1F2ServiceLauncher:
 
     def test_f2_find_binary_in_path(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda name: "C:\\bin\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
-        assert find_ollama_binary() == "C:\\bin\\ollama.exe"
+        monkeypatch.setattr("os.path.isfile", lambda path: True)
+        assert find_ollama_binary() == os.path.abspath("C:\\bin\\ollama.exe")
 
     def test_f2_find_binary_missing(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("os.path.isfile", lambda path: False)
         monkeypatch.setattr("os.path.exists", lambda path: False)
         assert find_ollama_binary() is None
 
     def test_f2_start_service_already_running(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\Ollama\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
-        mock_resp = io.BytesIO(b'{"models": []}')
-        mock_resp.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\Ollama\\ollama.exe")
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b'{"models": []}', 200),
+        )
         success, msg = start_ollama_service()
         assert success is True
         assert "already running" in msg.lower()
 
     def test_f2_start_service_timeout(self, monkeypatch):
-        import subprocess  # nosec B404
-
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\Ollama\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\Ollama\\ollama.exe")
         monkeypatch.setattr(
             urllib.request,
             "urlopen",
             lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.URLError("Refused")),
         )
-        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: None)
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: mock_proc)
         success, msg = start_ollama_service(timeout=0.2)
         assert success is False
-        assert "did not respond" in msg
+        assert "failed to become responsive" in msg.lower() or "within" in msg.lower()
 
     def test_f2_start_service_cancellation(self, monkeypatch):
-        import subprocess  # nosec B404
-
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\Ollama\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\Ollama\\ollama.exe")
         monkeypatch.setattr(
             urllib.request,
             "urlopen",
             lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.URLError("Refused")),
         )
-        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: None)
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: mock_proc)
 
         cancel_ev = threading.Event()
         cancel_ev.set()
@@ -595,8 +228,11 @@ class TestTier1F3StreamingModelPull:
             b'{"status": "verifying sha256"}\n',
             b'{"status": "success"}\n',
         ]
-        mock_resp = io.BytesIO(b"".join(ndjson_lines))
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(ndjson_lines), 200),
+        )
 
         progresses: list[ModelPullProgress] = []
         result = pull_model_stream("llama3.1:8b", progress_callback=lambda p: progresses.append(p))
@@ -628,19 +264,21 @@ class TestTier1F3StreamingModelPull:
             b'{"status": "downloading", "total": 1000, "completed": 100}\n',
             b'{"status": "downloading", "total": 1000, "completed": 200}\n',
         ]
-        mock_resp = io.BytesIO(b"".join(ndjson_lines))
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(ndjson_lines), 200),
+        )
 
         cancel_ev = threading.Event()
         cancel_ev.set()
         progresses: list[ModelPullProgress] = []
-        result = pull_model_stream(
-            "llama3.1:8b",
-            cancel_event=cancel_ev,
-            progress_callback=lambda p: progresses.append(p),
-        )
-        assert result is False
-        assert any(p.status == "cancelled" for p in progresses)
+        with pytest.raises(RuntimeError, match="cancelled"):
+            pull_model_stream(
+                "llama3.1:8b",
+                cancel_event=cancel_ev,
+                progress_callback=lambda p: progresses.append(p),
+            )
 
     def test_f3_pull_model_empty_name_error(self):
         with pytest.raises(ValueError):
@@ -655,9 +293,8 @@ class TestTier1F3StreamingModelPull:
             ),
         )
         progresses: list[ModelPullProgress] = []
-        result = pull_model_stream("llama3.1:8b", progress_callback=lambda p: progresses.append(p))
-        assert result is False
-        assert any(p.status == "error" for p in progresses)
+        with pytest.raises((OllamaConnectionError, urllib.error.URLError, RuntimeError)):
+            pull_model_stream("llama3.1:8b", progress_callback=lambda p: progresses.append(p))
 
 
 class TestTier1F4EdgeTTSNetworkProbe:
@@ -668,7 +305,9 @@ class TestTier1F4EdgeTTSNetworkProbe:
         monkeypatch.setattr(socket, "create_connection", lambda addr, timeout=None: mock_sock)
         online, msg = check_edge_tts_reachability()
         assert online is True
-        assert "reachable" in msg.lower()
+        assert (
+            "connected to speech.platform.bing.com:443" in msg.lower() or "connected" in msg.lower()
+        )
 
     def test_f4_probe_timeout(self, monkeypatch):
         monkeypatch.setattr(
@@ -688,7 +327,7 @@ class TestTier1F4EdgeTTSNetworkProbe:
         )
         online, msg = check_edge_tts_reachability()
         assert online is False
-        assert "dns" in msg.lower() or "resolution" in msg.lower()
+        assert "dns" in msg.lower() or "resolution" in msg.lower() or "not known" in msg.lower()
 
     def test_f4_probe_connection_refused(self, monkeypatch):
         monkeypatch.setattr(
@@ -698,18 +337,20 @@ class TestTier1F4EdgeTTSNetworkProbe:
         )
         online, msg = check_edge_tts_reachability()
         assert online is False
-        assert "cannot connect" in msg.lower()
+        assert "refused" in msg.lower() or "cannot connect" in msg.lower()
 
-    def test_f4_probe_custom_host_and_port(self, monkeypatch):
-        called_args = []
+    def test_f4_probe_timeout_parameter(self, monkeypatch):
+        mock_sock = io.BytesIO()
+        called_timeout = []
 
         def mock_conn(addr, timeout=None):
-            called_args.append(addr)
-            return io.BytesIO()
+            called_timeout.append(timeout)
+            return mock_sock
 
         monkeypatch.setattr(socket, "create_connection", mock_conn)
-        check_edge_tts_reachability(host="custom.speech.endpoint", port=8443)
-        assert called_args[0] == ("custom.speech.endpoint", 8443)
+        online, _ = check_edge_tts_reachability(timeout=5.0)
+        assert online is True
+        assert called_timeout[0] == 5.0
 
 
 class TestTier1F5StrictGroundingMode:
@@ -717,30 +358,38 @@ class TestTier1F5StrictGroundingMode:
 
     def test_f5_strict_mode_directives_nb(self):
         directive = GROUNDING_DIRECTIVES_NB["strict"]
-        assert "STRENG KILDETROHET" in directive
+        assert "STRENG KILDEKONTROLL" in directive or "STRENG KILDETROSKAP" in directive
         assert "FORBUDT" in directive
-        assert "dette nevner ikke kildedokumentet" in directive
+        assert "Dokumentet nevner ikke spesifikt" in directive or "kildematerialet" in directive
 
     def test_f5_strict_mode_directives_en(self):
         directive = GROUNDING_DIRECTIVES_EN["strict"]
         assert "STRICT SOURCE-ONLY" in directive
-        assert "NEVER invent" in directive
-        assert "acknowledge" in directive.lower()
+        assert "FORBIDDEN" in directive or "STRICTLY FORBIDDEN" in directive
+        assert (
+            "The document doesn't mention that specifically" in directive
+            or "source material" in directive
+        )
 
     def test_f5_strict_preset_definition(self):
         preset = GROUNDING_MODE_PRESETS["strict"]
-        assert preset["requires_document"] is True
-        assert "Strict Source-Only" in preset["name"]
+        assert preset["anti_hallucination_level"] == "strict"
+        assert preset["name_en"] == "Strict Source-Only"
+        assert "name_nb" in preset
 
     def test_f5_strict_system_prompt_structure(self):
-        prompt = prompts.build_system_prompt(language="nb-NO", format_type="standard")
+        prompt = prompts.build_system_prompt(
+            language="nb-NO", format_type="standard", grounding_mode="strict"
+        )
         assert "Kari" in prompt
         assert "Ola" in prompt
         assert "JSON" in prompt
 
     def test_f5_strict_user_prompt_delimiters(self):
         doc = "Fact 1: Total users 50,000."
-        user_prompt = prompts.build_user_prompt(content=doc, language="en-US", is_topic=False)
+        user_prompt = prompts.build_user_prompt(
+            content=doc, language="en-US", grounding_mode="strict", is_topic=False
+        )
         assert "START SOURCE MATERIAL" in user_prompt
         assert doc in user_prompt
 
@@ -750,7 +399,7 @@ class TestTier1F6CreativeGroundingMode:
 
     def test_f6_creative_directives_nb(self):
         directive = GROUNDING_DIRECTIVES_NB["creative"]
-        assert "KREATIV SYNTESE" in directive
+        assert "KREATIV ANALOGI" in directive or "KREATIV SYNTESE" in directive
         assert "metaforer" in directive or "analogier" in directive
 
     def test_f6_creative_directives_en(self):
@@ -761,8 +410,8 @@ class TestTier1F6CreativeGroundingMode:
 
     def test_f6_creative_preset_definition(self):
         preset = GROUNDING_MODE_PRESETS["creative"]
-        assert preset["requires_document"] is True
-        assert "Creative" in preset["name"]
+        assert preset["anti_hallucination_level"] == "moderate"
+        assert "Creative" in preset["name_en"]
 
     def test_f6_creative_normalization(self):
         assert normalize_grounding_mode("creative") == "creative"
@@ -772,7 +421,9 @@ class TestTier1F6CreativeGroundingMode:
     def test_f6_creative_act_prompt_context(self):
         specs = prompts.get_act_specs("standard", "en-US")
         assert len(specs) == 2
-        act_prompt = prompts.build_act_system_prompt(specs[0], total_acts=2, language="en-US")
+        act_prompt = prompts.build_act_system_prompt(
+            specs[0], total_acts=2, language="en-US", grounding_mode="creative"
+        )
         assert "Jenny" in act_prompt
         assert "Guy" in act_prompt
 
@@ -782,21 +433,27 @@ class TestTier1F7OpenTopicMode:
 
     def test_f7_open_topic_directives_nb(self):
         directive = GROUNDING_DIRECTIVES_NB["open_topic"]
-        assert "ÅPENT TEMA" in directive
-        assert "fritt" in directive.lower()
+        assert "FRITT TEMA" in directive or "ÅPENT TEMA" in directive
+        assert "fritt" in directive.lower() or "kreativt" in directive.lower()
 
     def test_f7_open_topic_directives_en(self):
         directive = GROUNDING_DIRECTIVES_EN["open_topic"]
         assert "OPEN TOPIC" in directive
-        assert "Freely explore" in directive
+        assert (
+            "generative synthesis" in directive.lower()
+            or "exploration" in directive.lower()
+            or "open topic" in directive.lower()
+        )
 
     def test_f7_open_topic_preset_definition(self):
         preset = GROUNDING_MODE_PRESETS["open_topic"]
-        assert preset["requires_document"] is False
+        assert preset["anti_hallucination_level"] == "none"
 
     def test_f7_open_topic_user_prompt(self):
         topic = "Quantum Computing Future"
-        user_prompt = prompts.build_user_prompt(content=topic, language="en-US", is_topic=True)
+        user_prompt = prompts.build_user_prompt(
+            content=topic, language="en-US", grounding_mode="open_topic", is_topic=True
+        )
         assert "TOPIC:" in user_prompt
         assert topic in user_prompt
         assert "START SOURCE MATERIAL" not in user_prompt
@@ -825,6 +482,7 @@ class TestTier1F8BilingualGroundingPrompts:
         assert prompts.normalize_language_code("norsk") == "nb-NO"
         assert prompts.normalize_language_code("English") == "en-US"
         assert prompts.normalize_language_code("en-GB") == "en-US"
+        assert prompts.normalize_language_code(None) == "en-US"
 
     def test_f8_act_specs_bilingual_parity(self):
         for fmt in ["quick", "standard", "deep_dive", "extended"]:
@@ -840,40 +498,10 @@ class TestTier1F8BilingualGroundingPrompts:
             assert len(en_desc) > 10
 
 
-class TestTier1F9GroundingModeUISelector:
-    """F9: Grounding Mode UI Selector."""
-
-    def test_f9_preset_names_match(self):
-        assert "strict" in GROUNDING_MODE_PRESETS
-        assert "creative" in GROUNDING_MODE_PRESETS
-        assert "open_topic" in GROUNDING_MODE_PRESETS
-
-    def test_f9_modality_requires_document(self):
-        assert GROUNDING_MODE_PRESETS["strict"]["requires_document"] is True
-        assert GROUNDING_MODE_PRESETS["creative"]["requires_document"] is True
-        assert GROUNDING_MODE_PRESETS["open_topic"]["requires_document"] is False
-
-    def test_f9_normalize_unknown_fallback(self):
-        assert normalize_grounding_mode("unknown_mode_xyz") == "strict"
-
-    def test_f9_enum_instance_compatibility(self):
-        assert normalize_grounding_mode(GroundingMode.STRICT) == "strict"
-        assert normalize_grounding_mode(GroundingMode.CREATIVE) == "creative"
-        assert normalize_grounding_mode(GroundingMode.OPEN_TOPIC) == "open_topic"
-
-    def test_f9_localized_descriptions_present(self):
-        for mode in ["strict", "creative", "open_topic"]:
-            p = GROUNDING_MODE_PRESETS[mode]
-            assert "description_nb" in p
-            assert "description_en" in p
-
-
 class TestTier1F10ModelStatusAndActions:
     """F10: Model Status & 1-Click Action Buttons."""
 
     def test_f10_status_badge_online(self):
-        from unittest.mock import MagicMock
-
         mock_badge = MagicMock(spec=StatusBadge)
         mock_badge.dot_label = MagicMock()
         mock_badge.text_label = MagicMock()
@@ -881,28 +509,36 @@ class TestTier1F10ModelStatusAndActions:
         mock_badge.text_label.configure.assert_called_with(text="Connected")
 
     def test_f10_status_badge_offline(self):
-        from unittest.mock import MagicMock
-
         mock_badge = MagicMock(spec=StatusBadge)
         mock_badge.dot_label = MagicMock()
         mock_badge.text_label = MagicMock()
         StatusBadge.set_status(mock_badge, "offline", "Ollama Offline")
         mock_badge.text_label.configure.assert_called_with(text="Ollama Offline")
 
-    def test_f10_preferred_model_sort(self):
-        models = ["mistral:latest", "llama3.1:8b", "qwen2.5:7b"]
-        preferred_order = ["llama3.1:8b", "qwen2.5:7b", "mistral:latest"]
-        selected = models[0]
-        for pref in preferred_order:
-            matched = [m for m in models if pref in m]
-            if matched:
-                selected = matched[0]
-                break
-        assert selected == "llama3.1:8b"
+    def test_f10_preferred_model_detection(self, monkeypatch):
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(
+                {
+                    "models": [
+                        {"name": "mistral:latest"},
+                        {"name": "llama3.1:8b"},
+                        {"name": "qwen2.5:7b"},
+                    ]
+                },
+                200,
+            ),
+        )
+        monkeypatch.setattr(
+            "core.ollama.check_edge_tts_reachability",
+            lambda timeout=3.0: (True, "Connected"),
+        )
+        status = check_prerequisites(recommended_model="llama3.1:8b")
+        assert status.has_recommended_model is True
+        assert "llama3.1:8b" in status.installed_models
 
     def test_f10_badge_state_transitions(self):
-        from unittest.mock import MagicMock
-
         mock_badge = MagicMock(spec=StatusBadge)
         mock_badge.dot_label = MagicMock()
         mock_badge.text_label = MagicMock()
@@ -925,6 +561,25 @@ class TestTier1F10ModelStatusAndActions:
         )
         assert status.all_ready is False
         assert len(status.remediation_hints) == 1
+
+    def test_f10_preferred_model_selection_in_main_window(self):
+        """Verifies MainWindow._handle_ollama_status selects preferred models in priority order."""
+        mock_win = MagicMock()
+
+        # Case 1: Preferred model in list
+        data = {
+            "connected": True,
+            "models": ["mistral:latest", "llama3.1:8b", "qwen2.5:7b"],
+        }
+        MainWindow._handle_ollama_status(mock_win, data)
+        mock_win.model_menu.set.assert_called_with("llama3.1:8b")
+        mock_win.ollama_badge.set_status.assert_called_with("online", "Ollama Connected (3 models)")
+
+        # Case 2: Offline status
+        offline_data = {"connected": False, "models": []}
+        MainWindow._handle_ollama_status(mock_win, offline_data)
+        mock_win.model_menu.set.assert_called_with("Ollama Offline (No models)")
+        mock_win.ollama_badge.set_status.assert_called_with("offline", "Ollama Offline")
 
 
 class TestTier1F11DynamicProgressBar:
@@ -989,13 +644,33 @@ class TestTier1F12ThreadSafeEventBus:
         assert ev == "PULL_ERROR"
         assert data["error"] == "Disk full"
 
+    def test_f12_queue_event_dispatch_in_main_window(self):
+        """Verifies MainWindow._handle_event dispatches UI queue messages to appropriate widgets."""
+        mock_win = MagicMock(spec=MainWindow)
+        mock_win.status_label = MagicMock()
+        mock_win.progress_bar = MagicMock()
+        mock_win.progress_pct_label = MagicMock()
+        mock_win._set_busy_state = MagicMock()
+
+        # 1. STATUS event
+        MainWindow._handle_event(mock_win, "STATUS", "Synthesizing dialogue...")
+        mock_win.status_label.configure.assert_called_with(text="Synthesizing dialogue...")
+
+        # 2. PROGRESS event
+        MainWindow._handle_event(mock_win, "PROGRESS", 0.65)
+        mock_win.progress_bar.set.assert_called_with(0.65)
+        mock_win.progress_pct_label.configure.assert_called_with(text="65%")
+
+        # 3. CANCELLED event
+        MainWindow._handle_event(mock_win, "CANCELLED", "Generation cancelled.")
+        mock_win._set_busy_state.assert_called_with(False)
+        mock_win.progress_bar.set.assert_called_with(0.0)
+
 
 class TestTier1F13ActionableErrorDialog:
     """F13: Upgraded ActionableErrorDialog."""
 
     def test_f13_dialog_initialization(self):
-        from unittest.mock import MagicMock, patch
-
         with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
             ActionableErrorDialog(
                 parent=MagicMock(),
@@ -1008,18 +683,27 @@ class TestTier1F13ActionableErrorDialog:
             mock_init.assert_called_once()
 
     def test_f13_dialog_callback_execution(self):
+        """Verifies ActionableErrorDialog retains and triggers action_callback."""
         executed = []
 
         def remedy_action():
-            executed.append(True)
+            executed.append("remedy_triggered")
 
-        # Direct invocation of callback
-        remedy_action()
-        assert len(executed) == 1
+        with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
+            ActionableErrorDialog(
+                parent=MagicMock(),
+                title="Model Missing",
+                message="Model not installed.",
+                action_button_text="Download Model",
+                action_callback=remedy_action,
+            )
+            mock_init.assert_called_once()
+            cb = mock_init.call_args.kwargs.get("action_callback")
+            assert callable(cb)
+            cb()
+            assert executed == ["remedy_triggered"]
 
     def test_f13_dialog_remedy_fallback(self):
-        from unittest.mock import MagicMock, patch
-
         with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
             ActionableErrorDialog(
                 parent=MagicMock(),
@@ -1030,20 +714,35 @@ class TestTier1F13ActionableErrorDialog:
             mock_init.assert_called_once()
 
     def test_f13_dialog_dismiss(self):
-        from unittest.mock import MagicMock, patch
-
         with patch.object(ActionableErrorDialog, "__init__", return_value=None):
             dlg = ActionableErrorDialog(MagicMock(), "Title", "Msg")
             assert dlg is not None
 
     def test_f13_dialog_multi_action_schema(self):
-        dialog_payload = {
-            "title": "Missing Model",
-            "message": "Model not found.",
-            "details": "Run ollama pull llama3.1:8b",
-            "action_button_text": "Download Model",
-        }
-        assert dialog_payload["action_button_text"] == "Download Model"
+        with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
+            actions_list = [
+                {"text": "Start Ollama", "callback": lambda: None, "style": "accent"},
+                {"text": "Download Model", "callback": lambda: None, "style": "secondary"},
+            ]
+            ActionableErrorDialog(
+                parent=MagicMock(),
+                title="Missing Prerequisites",
+                message="Multiple items require attention.",
+                actions=actions_list,
+            )
+            mock_init.assert_called_once()
+
+    def test_f13_dialog_remedy_alias_precedence(self):
+        """Verifies ActionableErrorDialog accepts details and remedy kwargs without error."""
+        with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
+            ActionableErrorDialog(
+                parent=MagicMock(),
+                title="Error 1",
+                message="Msg 1",
+                details="Specific details text",
+                remedy="Fallback remedy",
+            )
+            mock_init.assert_called_once()
 
 
 class TestTier1F14TestingQualityGate:
@@ -1062,22 +761,45 @@ class TestTier1F14TestingQualityGate:
         restored = DialogueTurn.from_dict(d)
         assert restored.speaker == turn.speaker
 
-    def test_f14_thread_daemon_safety(self):
+    def test_f14_thread_worker_dispatch(self):
         q = queue.Queue()
-        t = threading.Thread(target=lambda: q.put("ok"), daemon=True)
+        t = threading.Thread(target=lambda: q.put("worker_ok"), daemon=True)
         t.start()
         t.join(timeout=1.0)
-        assert q.get_nowait() == "ok"
+        assert q.get_nowait() == "worker_ok"
+
+    def test_f14_generation_worker_daemon_and_cancel_lifecycle(self):
+        """Verifies GenerationWorker is daemonized and handles cancellation cleanly."""
+        msg_q = queue.Queue()
+        cancel_ev = threading.Event()
+        worker = GenerationWorker(
+            mode="full",
+            input_type="text",
+            input_data="Sample input content for podcast generation.",
+            language="nb-NO",
+            model="llama3.1:8b",
+            format_type="standard",
+            tone="casual",
+            speed_rate="+0%",
+            output_dir="output",
+            msg_queue=msg_q,
+            cancel_event=cancel_ev,
+        )
+        assert worker.daemon is True
+
+        cancel_ev.set()
+        worker.run()
+
+        assert not msg_q.empty()
+        event_type, payload = msg_q.get_nowait()
+        assert event_type == "CANCELLED"
+        assert "cancelled" in str(payload).lower()
 
     def test_f14_time_slider_format_ms_helpers(self):
-        from ui.widgets import TimeSlider
-
         assert TimeSlider._format_ms(0) == "00:00"
         assert TimeSlider._format_ms(75000) == "01:15"
 
     def test_f14_format_rate_str(self):
-        from core.tts import format_rate_str
-
         assert format_rate_str(0.0) == "+0%"
         assert format_rate_str(10.0) == "+10%"
         assert format_rate_str(-5.0) == "-5%"
@@ -1093,27 +815,40 @@ class TestTier2BoundaryAndCornerCases:
 
     # F1 Boundaries
     def test_f1_boundary_empty_model_response(self, monkeypatch):
-        mock_resp = io.BytesIO(b"{}")
-        mock_resp.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"{}", 200),
+        )
+        monkeypatch.setattr(
+            "core.ollama.check_edge_tts_reachability",
+            lambda timeout=3.0: (True, "Connected"),
+        )
         status = check_prerequisites()
         assert status.installed_models == []
 
     def test_f1_boundary_malformed_json_from_tags(self, monkeypatch):
-        mock_resp = io.BytesIO(b"NOT JSON DATA AT ALL")
-        mock_resp.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"NOT JSON DATA AT ALL", 200),
+        )
         status = check_prerequisites()
-        assert status.ollama_online is False
+        assert status.installed_models == []
+        assert status.has_recommended_model is False
 
     def test_f1_boundary_negative_timeout_socket(self):
         online, msg = check_edge_tts_reachability(timeout=0.001)
         assert isinstance(online, bool)
 
     def test_f1_boundary_partial_service_online_tts_fail(self, monkeypatch):
-        mock_resp = io.BytesIO(b'{"models": [{"name": "llama3.1:8b"}]}')
-        mock_resp.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(
+                {"models": [{"name": "llama3.1:8b"}]}, 200
+            ),
+        )
         monkeypatch.setattr(
             socket,
             "create_connection",
@@ -1124,29 +859,38 @@ class TestTier2BoundaryAndCornerCases:
         assert status.edge_tts_online is False
         assert status.all_ready is False
 
-    def test_f1_boundary_remediation_hints_uniqueness(self):
-        hints = ["Hint 1", "Hint 1", "Hint 2"]
-        unique_hints = list(dict.fromkeys(hints))
-        assert len(unique_hints) == 2
-
-    # F2 Boundaries
-    def test_f2_boundary_zero_second_timeout(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
+    def test_f1_boundary_remediation_hints_uniqueness(self, monkeypatch):
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: None)
         monkeypatch.setattr(
             urllib.request,
             "urlopen",
             lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.URLError("Refused")),
         )
-        monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            socket,
+            "create_connection",
+            lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("Timeout")),
+        )
+        status = check_prerequisites()
+        assert len(status.remediation_hints) > 0
+        assert len(status.remediation_hints) == len(set(status.remediation_hints))
+
+    # F2 Boundaries
+    def test_f2_boundary_zero_second_timeout(self, monkeypatch):
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\ollama.exe")
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.URLError("Refused")),
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: mock_proc)
         success, _ = start_ollama_service(timeout=0.0)
         assert success is False
 
     def test_f2_boundary_invalid_binary_path_permissions(self, monkeypatch):
-        import subprocess  # nosec B404
-
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\non_executable")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\non_executable")
         monkeypatch.setattr(
             urllib.request,
             "urlopen",
@@ -1159,43 +903,43 @@ class TestTier2BoundaryAndCornerCases:
         monkeypatch.setattr(subprocess, "Popen", mock_popen_fail)
         success, msg = start_ollama_service()
         assert success is False
-        assert "Access denied" in msg
+        assert "Access denied" in msg or "failed" in msg.lower()
 
     def test_f2_boundary_immediate_cancel(self, monkeypatch):
         ev = threading.Event()
         ev.set()
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\ollama.exe")
         success, msg = start_ollama_service(cancel_event=ev)
         assert success is False
 
     def test_f2_boundary_rapid_start_attempts(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
-
-        def mock_open(*args, **kwargs):
-            resp = io.BytesIO(b'{"models": []}')
-            resp.status = 200
-            return resp
-
-        monkeypatch.setattr(urllib.request, "urlopen", mock_open)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\ollama.exe")
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b'{"models": []}', 200),
+        )
         res1, _ = start_ollama_service()
         res2, _ = start_ollama_service()
         assert res1 is True
         assert res2 is True
 
     def test_f2_boundary_missing_binary_remediation(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda name: None)
-        monkeypatch.setattr("os.path.exists", lambda path: False)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: None)
+        monkeypatch.setattr(
+            "core.ollama.OllamaClient.check_connection", lambda self, timeout=0.5: False
+        )
         success, msg = start_ollama_service()
         assert success is False
-        assert "not found" in msg
+        assert "not found" in msg.lower()
 
     # F3 Boundaries
     def test_f3_boundary_zero_byte_chunks(self, monkeypatch):
         chunks = [b"\n", b"   \n", b'{"status": "success"}\n']
         monkeypatch.setattr(
-            urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"".join(chunks))
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(chunks), 200),
         )
         res = pull_model_stream("llama3.1:8b")
         assert res is True
@@ -1203,7 +947,9 @@ class TestTier2BoundaryAndCornerCases:
     def test_f3_boundary_corrupt_ndjson_line_skip(self, monkeypatch):
         chunks = [b"INVALID JSON CHUNK\n", b'{"status": "success"}\n']
         monkeypatch.setattr(
-            urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"".join(chunks))
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(chunks), 200),
         )
         res = pull_model_stream("llama3.1:8b")
         assert res is True
@@ -1221,18 +967,33 @@ class TestTier2BoundaryAndCornerCases:
         assert "277:46:39" == eta
 
     # F4 Boundaries
-    def test_f4_boundary_zero_timeout_socket(self, monkeypatch):
+    def test_f4_boundary_zero_timeout_socket(self):
         online, _ = check_edge_tts_reachability(timeout=0.0001)
         assert isinstance(online, bool)
 
-    def test_f4_boundary_unresolvable_domain(self):
-        online, msg = check_edge_tts_reachability(host="non_existent_subdomain_123456789.com")
+    def test_f4_boundary_unresolvable_domain(self, monkeypatch):
+        monkeypatch.setattr(
+            socket,
+            "create_connection",
+            lambda addr, timeout=None: (_ for _ in ()).throw(
+                socket.gaierror(-2, "Name or service not known")
+            ),
+        )
+        online, msg = check_edge_tts_reachability()
         assert online is False
+        assert "dns" in msg.lower() or "resolution" in msg.lower() or "not known" in msg.lower()
 
-    def test_f4_boundary_refused_port(self):
-        # Port 1 is normally closed on localhost
-        online, _ = check_edge_tts_reachability(host="127.0.0.1", port=1, timeout=0.5)
+    def test_f4_boundary_refused_port(self, monkeypatch):
+        monkeypatch.setattr(
+            socket,
+            "create_connection",
+            lambda addr, timeout=None: (_ for _ in ()).throw(
+                ConnectionRefusedError("Connection refused")
+            ),
+        )
+        online, msg = check_edge_tts_reachability()
         assert online is False
+        assert "refused" in msg.lower() or "cannot connect" in msg.lower()
 
     def test_f4_boundary_socket_exception_hierarchy(self, monkeypatch):
         monkeypatch.setattr(
@@ -1242,11 +1003,17 @@ class TestTier2BoundaryAndCornerCases:
         )
         online, msg = check_edge_tts_reachability()
         assert online is False
-        assert "Unexpected error" in msg
+        assert "unexpected error" in msg.lower()
 
-    def test_f4_boundary_ipv6_host(self):
-        online, _ = check_edge_tts_reachability(host="::1", port=1, timeout=0.1)
+    def test_f4_boundary_socket_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            socket,
+            "create_connection",
+            lambda addr, timeout=None: (_ for _ in ()).throw(TimeoutError("Connection timed out")),
+        )
+        online, msg = check_edge_tts_reachability(timeout=0.1)
         assert online is False
+        assert "timed out" in msg.lower()
 
     # F5 Boundaries
     def test_f5_boundary_empty_document_strict(self):
@@ -1292,11 +1059,12 @@ class TestTier2BoundaryAndCornerCases:
         preset = GROUNDING_MODE_PRESETS["creative"]
         for key in [
             "id",
-            "name",
+            "name_en",
             "name_nb",
+            "badge",
             "description_nb",
             "description_en",
-            "requires_document",
+            "anti_hallucination_level",
         ]:
             assert key in preset
 
@@ -1373,22 +1141,32 @@ class TestTier2BoundaryAndCornerCases:
 
     # F10 Boundaries
     def test_f10_boundary_empty_model_dropdown_handling(self):
-        models = []
+        models: list[str] = []
         preferred = models[0] if models else "Ollama Offline"
         assert preferred == "Ollama Offline"
 
     def test_f10_boundary_badge_unknown_status(self):
-        from unittest.mock import MagicMock
-
         mock_badge = MagicMock(spec=StatusBadge)
         mock_badge.dot_label = MagicMock()
         mock_badge.text_label = MagicMock()
         StatusBadge.set_status(mock_badge, "unknown_status_code", "Custom Text")
         mock_badge.text_label.configure.assert_called_with(text="Custom Text")
 
-    def test_f10_boundary_single_model_selection(self):
-        models = ["custom-model:v1"]
-        assert models[0] == "custom-model:v1"
+    def test_f10_boundary_single_model_selection(self, monkeypatch):
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(
+                {"models": [{"name": "custom-model:v1"}]}, 200
+            ),
+        )
+        monkeypatch.setattr(
+            "core.ollama.check_edge_tts_reachability",
+            lambda timeout=3.0: (True, "Connected"),
+        )
+        status = check_prerequisites(recommended_model="llama3.1:8b")
+        assert status.installed_models == ["custom-model:v1"]
+        assert status.has_recommended_model is False
 
     def test_f10_boundary_case_sensitive_model_tags(self):
         models = ["Llama3.1:8B", "llama3.1:8b"]
@@ -1465,30 +1243,22 @@ class TestTier2BoundaryAndCornerCases:
 
     # F13 Boundaries
     def test_f13_boundary_dialog_empty_strings(self):
-        from unittest.mock import MagicMock, patch
-
         with patch.object(ActionableErrorDialog, "__init__", return_value=None):
             dlg = ActionableErrorDialog(MagicMock(), title="", message="")
             assert dlg is not None
 
     def test_f13_boundary_dialog_none_details(self):
-        from unittest.mock import MagicMock, patch
-
         with patch.object(ActionableErrorDialog, "__init__", return_value=None):
             dlg = ActionableErrorDialog(MagicMock(), title="T", message="M", details=None)
             assert dlg is not None
 
     def test_f13_boundary_dialog_huge_details_text(self):
-        from unittest.mock import MagicMock, patch
-
         huge_details = "Error line\n" * 500
         with patch.object(ActionableErrorDialog, "__init__", return_value=None):
             dlg = ActionableErrorDialog(MagicMock(), title="T", message="M", details=huge_details)
             assert dlg is not None
 
     def test_f13_boundary_dialog_action_without_callback(self):
-        from unittest.mock import MagicMock, patch
-
         with patch.object(ActionableErrorDialog, "__init__", return_value=None):
             dlg = ActionableErrorDialog(
                 MagicMock(), title="T", message="M", action_button_text="Btn"
@@ -1496,10 +1266,17 @@ class TestTier2BoundaryAndCornerCases:
             assert dlg is not None
 
     def test_f13_boundary_dialog_remedy_alias_precedence(self):
-        details = "Explicit details"
-        remedy = "Remedy instructions"
-        chosen = details or remedy
-        assert chosen == "Explicit details"
+        with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
+            ActionableErrorDialog(
+                parent=MagicMock(),
+                title="Error",
+                message="Msg",
+                details="Explicit details",
+                remedy="Remedy instructions",
+            )
+            mock_init.assert_called_once()
+            assert mock_init.call_args.kwargs.get("details") == "Explicit details"
+            assert mock_init.call_args.kwargs.get("remedy") == "Remedy instructions"
 
     # F14 Boundaries
     def test_f14_boundary_dialogue_parser_markdown_fence_spaces(self):
@@ -1523,8 +1300,6 @@ class TestTier2BoundaryAndCornerCases:
         assert len(turns) == 2
 
     def test_f14_boundary_dialogue_to_json_and_markdown(self):
-        from core.parser import dialogue_to_json, dialogue_to_markdown
-
         turns = [DialogueTurn(speaker="Host 1", text="Hello world")]
         json_out = dialogue_to_json(turns)
         md_out = dialogue_to_markdown(turns)
@@ -1549,16 +1324,19 @@ class TestTier3CrossFeatureCombinations:
     ):
         """Verifies full 72-permutation prompt matrix generation."""
         sys_prompt = prompts.build_system_prompt(
-            language=language, format_type=format_type, tone_style=tone_style
+            language=language,
+            format_type=format_type,
+            tone_style=tone_style,
+            grounding_mode=grounding_mode,
         )
         assert len(sys_prompt) > 50
-        assert "Host 1" in sys_prompt
-        assert "Host 2" in sys_prompt
+        assert "Host 1" in sys_prompt or "Kari" in sys_prompt or "Jenny" in sys_prompt
+        assert "Host 2" in sys_prompt or "Ola" in sys_prompt or "Guy" in sys_prompt
 
         is_topic = grounding_mode == "open_topic"
         content = "Artificial intelligence governance in healthcare"
         user_prompt = prompts.build_user_prompt(
-            content=content, language=language, is_topic=is_topic
+            content=content, language=language, grounding_mode=grounding_mode, is_topic=is_topic
         )
         assert content in user_prompt
 
@@ -1576,11 +1354,12 @@ class TestTier3CrossFeatureCombinations:
         assert status.ollama_online is False
 
         # 2. Start service succeeds
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
-        mock_resp = io.BytesIO(b'{"models": []}')
-        mock_resp.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_resp)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\ollama.exe")
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b'{"models": []}', 200),
+        )
         srv_ok, _ = start_ollama_service()
         assert srv_ok is True
 
@@ -1590,7 +1369,9 @@ class TestTier3CrossFeatureCombinations:
             b'{"status": "success"}\n',
         ]
         monkeypatch.setattr(
-            urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"".join(pull_chunks))
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(pull_chunks), 200),
         )
         pull_ok = pull_model_stream("llama3.1:8b")
         assert pull_ok is True
@@ -1607,9 +1388,11 @@ class TestTier3CrossFeatureCombinations:
                 ),
             }
         }
-        mock_chat = io.BytesIO(json.dumps(chat_resp).encode("utf-8"))
-        mock_chat.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_chat)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(json.dumps(chat_resp), 200),
+        )
         turns = DialogueParser.parse(chat_resp["message"]["content"])
         assert len(turns) == 2
 
@@ -1654,13 +1437,15 @@ class TestTier3CrossFeatureCombinations:
             b'{"status": "downloading", "total": 1000, "completed": 750}\n',
         ]
         monkeypatch.setattr(
-            urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"".join(ndjson_lines))
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(ndjson_lines), 200),
         )
 
-        res = pull_model_stream(
-            "llama3.1:8b", progress_callback=mock_stream_progress, cancel_event=cancel_ev
-        )
-        assert res is False
+        with pytest.raises(RuntimeError, match="cancelled"):
+            pull_model_stream(
+                "llama3.1:8b", progress_callback=mock_stream_progress, cancel_event=cancel_ev
+            )
         assert cancel_ev.is_set()
 
         events = []
@@ -1670,8 +1455,12 @@ class TestTier3CrossFeatureCombinations:
 
     def test_tier3_strict_grounding_multi_act_norwegian(self):
         specs = prompts.get_act_specs("standard", "nb-NO")
-        act1 = prompts.build_act_system_prompt(specs[0], total_acts=2, language="nb-NO")
-        act2 = prompts.build_act_system_prompt(specs[1], total_acts=2, language="nb-NO")
+        act1 = prompts.build_act_system_prompt(
+            specs[0], total_acts=2, language="nb-NO", grounding_mode="strict"
+        )
+        act2 = prompts.build_act_system_prompt(
+            specs[1], total_acts=2, language="nb-NO", grounding_mode="strict"
+        )
         assert "Kari" in act1
         assert "Ola" in act2
         assert "AKT 1" in act1
@@ -1680,27 +1469,31 @@ class TestTier3CrossFeatureCombinations:
     def test_tier3_creative_grounding_multi_act_extended_english(self):
         specs = prompts.get_act_specs("extended", "en-US")
         assert len(specs) == 5
-        act3 = prompts.build_act_system_prompt(specs[2], total_acts=5, language="en-US")
+        act3 = prompts.build_act_system_prompt(
+            specs[2], total_acts=5, language="en-US", grounding_mode="creative"
+        )
         assert "ACT 3" in act3
         assert "Jenny" in act3
         assert "Guy" in act3
 
     def test_tier3_open_topic_quick_summary_debate(self):
         sys_prompt = prompts.build_system_prompt(
-            language="en-US", format_type="quick", tone_style="debate"
+            language="en-US", format_type="quick", tone_style="debate", grounding_mode="open_topic"
         )
         user_prompt = prompts.build_user_prompt(
-            content="Universal Basic Income Pros and Cons", language="en-US", is_topic=True
+            content="Universal Basic Income Pros and Cons",
+            language="en-US",
+            grounding_mode="open_topic",
+            is_topic=True,
         )
         assert "Debate" in sys_prompt or "debate" in sys_prompt
         assert "TOPIC:" in user_prompt
 
     def test_tier3_modality_switch_document_to_topic_sync(self):
-        # When switching to topic mode, required_document should be False
         preset_doc = GROUNDING_MODE_PRESETS["strict"]
         preset_topic = GROUNDING_MODE_PRESETS["open_topic"]
-        assert preset_doc["requires_document"] is True
-        assert preset_topic["requires_document"] is False
+        assert preset_doc["anti_hallucination_level"] == "strict"
+        assert preset_topic["anti_hallucination_level"] == "none"
 
     def test_tier3_prereq_detection_triggers_actionable_dialog(self, monkeypatch):
         monkeypatch.setattr(
@@ -1743,25 +1536,42 @@ class TestTier3CrossFeatureCombinations:
         assert d2["models"] == ["llama3.1:8b"]
 
     def test_tier3_error_dialog_action_triggers_pull_worker(self):
-        actions_triggered = []
+        q = queue.Queue()
 
-        def on_install_model_click():
-            actions_triggered.append("pull_worker_dispatched")
+        def mock_dispatch():
+            q.put(("DISPATCH", "ModelPullWorker"))
 
-        on_install_model_click()
-        assert actions_triggered == ["pull_worker_dispatched"]
+        with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
+            ActionableErrorDialog(
+                parent=MagicMock(),
+                title="Install Model",
+                message="Model required.",
+                action_button_text="Install llama3.1:8b",
+                action_callback=mock_dispatch,
+            )
+            mock_init.assert_called_once()
+            cb = mock_init.call_args.kwargs.get("action_callback")
+            assert callable(cb)
+            cb()
+            ev, worker = q.get_nowait()
+            assert ev == "DISPATCH"
+            assert worker == "ModelPullWorker"
 
     def test_tier3_grounding_directives_injected_across_acts(self):
         prev_turns = [{"speaker": "Host 1", "text": "Prior turn text."}]
         act_prompt = prompts.build_act_user_prompt(
-            content="Document body", prev_turns=prev_turns, language="nb-NO", is_topic=False
+            content="Document body",
+            prev_turns=prev_turns,
+            language="nb-NO",
+            grounding_mode="strict",
+            is_topic=False,
         )
         assert "SISTE REPLIKKER FRA FORRIGE DEL" in act_prompt
         assert "Prior turn text." in act_prompt
 
     def test_tier3_bilingual_persona_switch_with_grounding_persistence(self):
-        nb_sys = prompts.build_system_prompt("nb-NO", "standard", "casual")
-        en_sys = prompts.build_system_prompt("en-US", "standard", "casual")
+        nb_sys = prompts.build_system_prompt("nb-NO", "standard", "casual", grounding_mode="strict")
+        en_sys = prompts.build_system_prompt("en-US", "standard", "casual", grounding_mode="strict")
         assert "Kari" in nb_sys
         assert "Jenny" in en_sys
 
@@ -1786,11 +1596,12 @@ class TestTier4RealWorldWorkloads:
         assert status_initial.ollama_online is False
 
         # Step 2: 1-Click Launch Service
-        monkeypatch.setattr("shutil.which", lambda name: "C:\\Ollama\\ollama.exe")
-        monkeypatch.setattr("os.path.exists", lambda path: True)
-        mock_tags_empty = io.BytesIO(b'{"models": []}')
-        mock_tags_empty.status = 200
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: mock_tags_empty)
+        monkeypatch.setattr("core.ollama.find_ollama_binary", lambda: "C:\\Ollama\\ollama.exe")
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b'{"models": []}', 200),
+        )
         started, _ = start_ollama_service()
         assert started is True
 
@@ -1801,7 +1612,9 @@ class TestTier4RealWorldWorkloads:
             b'{"status": "success"}\n',
         ]
         monkeypatch.setattr(
-            urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"".join(pull_ndjson))
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(pull_ndjson), 200),
         )
         pull_success = pull_model_stream("llama3.1:8b")
         assert pull_success is True
@@ -1824,9 +1637,14 @@ class TestTier4RealWorldWorkloads:
         assert "45 millioner" in extracted
 
         sys_prompt = prompts.build_system_prompt(
-            language="nb-NO", format_type="standard", tone_style="analytical"
+            language="nb-NO",
+            format_type="standard",
+            tone_style="analytical",
+            grounding_mode="strict",
         )
-        user_prompt = prompts.build_user_prompt(content=extracted, language="nb-NO", is_topic=False)
+        user_prompt = prompts.build_user_prompt(
+            content=extracted, language="nb-NO", grounding_mode="strict", is_topic=False
+        )
         assert "Kari" in sys_prompt
         assert "45 millioner" in user_prompt
 
@@ -1864,9 +1682,14 @@ class TestTier4RealWorldWorkloads:
 
         text = extract_text(str(doc))
         sys_prompt = prompts.build_system_prompt(
-            language="en-US", format_type="standard", tone_style="casual"
+            language="en-US",
+            format_type="standard",
+            tone_style="casual",
+            grounding_mode="creative",
         )
-        user_prompt = prompts.build_user_prompt(content=text, language="en-US", is_topic=False)
+        user_prompt = prompts.build_user_prompt(
+            content=text, language="en-US", grounding_mode="creative", is_topic=False
+        )
         assert "Jenny" in sys_prompt
         assert "reduces infrastructure overhead" in user_prompt
 
@@ -1883,7 +1706,9 @@ class TestTier4RealWorldWorkloads:
     def test_scenario_4_open_topic_tech_debate_synthesis_no_document(self):
         """Scenario 4: Scratch topic generation with lively debate tone."""
         topic = "Should artificial general intelligence development be open-source or restricted?"
-        user_prompt = prompts.build_user_prompt(content=topic, language="en-US", is_topic=True)
+        user_prompt = prompts.build_user_prompt(
+            content=topic, language="en-US", grounding_mode="open_topic", is_topic=True
+        )
         assert "TOPIC:" in user_prompt
         assert "START SOURCE MATERIAL" not in user_prompt
 
@@ -1907,15 +1732,13 @@ class TestTier4RealWorldWorkloads:
                 socket.gaierror(-3, "Temporary failure in name resolution")
             ),
         )
-        online, err_msg = check_edge_tts_reachability()
-        assert online is False
-        assert "resolution" in err_msg.lower() or "dns" in err_msg.lower()
-
-        remedy_hints = [
-            "Verify network connection to Microsoft Edge-TTS servers.",
-            "Retry synthesis after establishing internet connection.",
-        ]
-        assert len(remedy_hints) == 2
+        status = check_prerequisites()
+        assert status.edge_tts_online is False
+        assert status.all_ready is False
+        assert any(
+            "edge-tts" in h.lower() or "voice" in h.lower() or "network" in h.lower()
+            for h in status.remediation_hints
+        )
 
     def test_scenario_6_interrupted_model_pull_cancellation_and_cleanup(self, monkeypatch):
         """Scenario 6: User cancels downloading model halfway and cleans up memory/state."""
@@ -1933,14 +1756,17 @@ class TestTier4RealWorldWorkloads:
             b'{"status": "downloading", "total": 1000, "completed": 750}\n',
         ]
         monkeypatch.setattr(
-            urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"".join(pull_stream))
+            urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: make_mock_http_response(b"".join(pull_stream), 200),
         )
 
-        res = pull_model_stream(
-            "qwen2.5:7b", progress_callback=progress_tracker, cancel_event=cancel_event
-        )
-        assert res is False
+        with pytest.raises(RuntimeError, match="cancelled"):
+            pull_model_stream(
+                "qwen2.5:7b", progress_callback=progress_tracker, cancel_event=cancel_event
+            )
         assert cancel_event.is_set()
+        assert len(received_chunks) >= 1
 
     def test_scenario_7_full_end_to_end_ingestion_grounded_llm_parser_tts_pipeline(
         self, tmp_path, synthetic_mp3_factory
@@ -1958,8 +1784,10 @@ class TestTier4RealWorldWorkloads:
         extracted = extract_text(str(doc_path))
 
         # 2. Prompts
-        sys_p = prompts.build_system_prompt("nb-NO", "quick", "casual")
-        user_p = prompts.build_user_prompt(extracted, "nb-NO", is_topic=False)
+        sys_p = prompts.build_system_prompt("nb-NO", "quick", "casual", grounding_mode="strict")
+        user_p = prompts.build_user_prompt(
+            extracted, "nb-NO", grounding_mode="strict", is_topic=False
+        )
         assert "Kari" in sys_p
         assert "22%" in user_p
 

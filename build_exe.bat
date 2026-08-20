@@ -84,7 +84,8 @@ if "!PY_BIN!"=="" (
     echo   https://www.python.org/downloads/
     echo Ensure 'Add python.exe to PATH' is checked during installation.
     echo.
-    call :safe_exit 1
+    set "FINAL_CODE=1"
+    goto safe_exit
 )
 
 :: ---------------------------------------------------------------------------
@@ -96,7 +97,8 @@ if !ERRORLEVEL! neq 0 (
     echo Detected Python version:
     "%PY_BIN%" %PY_ARGS% --version
     echo.
-    call :safe_exit 1
+    set "FINAL_CODE=1"
+    goto safe_exit
 )
 echo [OK] Python runtime verified.
 echo.
@@ -115,7 +117,8 @@ if !ERRORLEVEL! neq 0 (
         echo Please check your internet connection or install manually with:
         echo   pip install pyinstaller
         echo.
-        call :safe_exit 1
+        set "FINAL_CODE=1"
+        goto safe_exit
     )
     echo [OK] PyInstaller installed successfully.
 ) else (
@@ -129,22 +132,28 @@ echo.
 echo [3/5] Cleaning previous build artifacts (build, dist)...
 
 if exist "dist\LocalPodcastLLMStudio.exe" (
+    taskkill /f /im LocalPodcastLLMStudio.exe >nul 2>nul
     del /f /q "dist\LocalPodcastLLMStudio.exe" >nul 2>nul
+    if exist "dist\LocalPodcastLLMStudio.exe" (
+        timeout /t 1 /nobreak >nul 2>nul
+        del /f /q "dist\LocalPodcastLLMStudio.exe" >nul 2>nul
+    )
     if exist "dist\LocalPodcastLLMStudio.exe" (
         echo [ERROR] dist\LocalPodcastLLMStudio.exe is currently locked by a running process!
         echo Please close all running instances of LocalPodcastLLMStudio and retry.
         echo.
-        call :safe_exit 1
+        set "FINAL_CODE=1"
+        goto safe_exit
     )
 )
 
 if exist "build" (
-    rmdir /s /q "build" 2>nul
-    echo   Removed build directory.
+    rmdir /s /q "build" >nul 2>nul
+    if not exist "build" echo   Removed build directory.
 )
 if exist "dist" (
-    rmdir /s /q "dist" 2>nul
-    echo   Removed dist directory.
+    rmdir /s /q "dist" >nul 2>nul
+    if not exist "dist" echo   Removed dist directory.
 )
 echo [OK] Build workspace cleaned.
 echo.
@@ -158,20 +167,29 @@ echo -----------------------------------------------------------------------
 
 if exist "LocalPodcastLLMStudio.spec" (
     "%PY_BIN%" %PY_ARGS% -m PyInstaller --clean LocalPodcastLLMStudio.spec
+    if errorlevel 1 (
+        echo.
+        echo -----------------------------------------------------------------------
+        echo [ERROR] PyInstaller build failed with exit code %ERRORLEVEL%.
+        echo Please review the build errors printed above.
+        echo -----------------------------------------------------------------------
+        echo.
+        set "FINAL_CODE=1"
+        goto safe_exit
+    )
 ) else (
     echo [WARN] LocalPodcastLLMStudio.spec not found, falling back to CLI flags...
     "%PY_BIN%" %PY_ARGS% -m PyInstaller --noconsole --onefile --name "LocalPodcastLLMStudio" --clean --collect-all customtkinter --collect-all edge_tts --collect-all pypdf --collect-all certifi app.py
-)
-
-set "BUILD_EXIT=!ERRORLEVEL!"
-if !BUILD_EXIT! neq 0 (
-    echo.
-    echo -----------------------------------------------------------------------
-    echo [ERROR] PyInstaller build failed with exit code !BUILD_EXIT!.
-    echo Please review the build errors printed above.
-    echo -----------------------------------------------------------------------
-    echo.
-    call :safe_exit !BUILD_EXIT!
+    if errorlevel 1 (
+        echo.
+        echo -----------------------------------------------------------------------
+        echo [ERROR] PyInstaller build failed with exit code %ERRORLEVEL%.
+        echo Please review the build errors printed above.
+        echo -----------------------------------------------------------------------
+        echo.
+        set "FINAL_CODE=1"
+        goto safe_exit
+    )
 )
 
 echo -----------------------------------------------------------------------
@@ -188,35 +206,33 @@ if not exist "dist\LocalPodcastLLMStudio.exe" (
     echo [ERROR] dist\LocalPodcastLLMStudio.exe was not found after compilation!
     echo Build may have failed silently or generated in an unexpected location.
     echo.
-    call :safe_exit 1
+    set "FINAL_CODE=1"
+    goto safe_exit
 )
 
 for %%I in ("dist\LocalPodcastLLMStudio.exe") do set "EXE_BYTES=%%~zI"
-set /a "EXE_MB=!EXE_BYTES! / 1048576"
-set /a "EXE_REM=(!EXE_BYTES! %% 1048576) * 100 / 1048576"
+set /a "EXE_MB=EXE_BYTES / 1048576"
 
 echo.
 echo =======================================================================
-echo                     BUILD SUCCESSFUL!
+echo                     BUILD SUCCESSFUL
 echo =======================================================================
 echo   Output Binary : dist\LocalPodcastLLMStudio.exe
-echo   File Size     : !EXE_MB!.!EXE_REM! MB (!EXE_BYTES! bytes)
+echo   File Size     : !EXE_MB! MB (!EXE_BYTES! bytes)
 echo   Mode          : Single-File Executable (--noconsole, Standalone)
 echo =======================================================================
 echo.
-echo LocalPodcastLLMStudio.exe is ready for distribution and local execution!
+echo LocalPodcastLLMStudio.exe is ready for distribution and local execution
 echo To launch the application, run:
 echo   dist\LocalPodcastLLMStudio.exe
 echo.
-call :safe_exit 0
-echo.
-call :safe_exit 0
+set "FINAL_CODE=0"
+goto safe_exit
 
 :: ---------------------------------------------------------------------------
 :: Helper Routine: Safe Exit with CI / Interactive Pause Handling
 :: ---------------------------------------------------------------------------
 :safe_exit
-set "FINAL_CODE=%~1"
 if "%FINAL_CODE%"=="" set "FINAL_CODE=0"
 if "%NO_PAUSE%"=="0" (
     echo.
