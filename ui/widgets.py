@@ -1,46 +1,53 @@
 """
-PodcastStudio - Reusable CustomTkinter UI Components
+LocalPodcastLLMStudio - Reusable CustomTkinter UI Components
 Contains modern card frames, status badges, labeled sliders, audio timeline scrubber,
 dialogue turn bubbles, and actionable error dialogs.
 """
 
-import sys
-import tkinter as tk
-from typing import Optional, Callable, Any
+from collections.abc import Callable
+from typing import Any
+
 import customtkinter as ctk
 
+from ui.about_dialog import AboutDialog
 from ui.theme import (
-    COLOR_CARD,
-    COLOR_CARD_BORDER,
-    COLOR_INPUT_BG,
-    COLOR_INPUT_BORDER,
+    BADGE_RADIUS,
+    CARD_RADIUS,
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
-    COLOR_SUCCESS,
-    COLOR_WARNING,
+    COLOR_CARD,
+    COLOR_CARD_BORDER,
     COLOR_ERROR,
-    COLOR_INFO,
-    COLOR_TEXT_PRIMARY,
-    COLOR_TEXT_SECONDARY,
-    COLOR_TEXT_MUTED,
     COLOR_HOST1,
     COLOR_HOST1_BG,
     COLOR_HOST2,
     COLOR_HOST2_BG,
-    CARD_RADIUS,
-    BUTTON_RADIUS,
-    INPUT_RADIUS,
-    BADGE_RADIUS,
-    PADDING_SM,
-    PADDING_MD,
-    get_font_heading,
+    COLOR_INFO,
+    COLOR_INPUT_BG,
+    COLOR_INPUT_BORDER,
+    COLOR_SUCCESS,
+    COLOR_TEXT_MUTED,
+    COLOR_TEXT_PRIMARY,
+    COLOR_TEXT_SECONDARY,
+    COLOR_WARNING,
+    get_font_badge,
     get_font_body,
     get_font_body_bold,
     get_font_caption,
-    get_font_badge,
-    get_font_title,
     get_font_code,
+    get_font_heading,
 )
+
+__all__ = [
+    "AboutDialog",
+    "ActionableErrorDialog",
+    "CardFrame",
+    "DialogueTurnCard",
+    "LabeledSlider",
+    "SectionHeader",
+    "StatusBadge",
+    "TimeSlider",
+]
 
 
 class CardFrame(ctk.CTkFrame):
@@ -55,7 +62,7 @@ class CardFrame(ctk.CTkFrame):
         fg_color: str = COLOR_CARD,
         border_color: str = COLOR_CARD_BORDER,
         border_width: int = 1,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             master=master,
@@ -63,7 +70,7 @@ class CardFrame(ctk.CTkFrame):
             fg_color=fg_color,
             border_color=border_color,
             border_width=border_width,
-            **kwargs
+            **kwargs,
         )
 
 
@@ -76,9 +83,9 @@ class SectionHeader(ctk.CTkFrame):
         self,
         master: Any,
         title: str,
-        subtitle: Optional[str] = None,
-        icon: Optional[str] = None,
-        **kwargs
+        subtitle: str | None = None,
+        icon: str | None = None,
+        **kwargs,
     ):
         super().__init__(master=master, fg_color="transparent", **kwargs)
         self.grid_columnconfigure(0, weight=1)
@@ -89,7 +96,7 @@ class SectionHeader(ctk.CTkFrame):
             text=header_text,
             font=get_font_heading(),
             text_color=COLOR_TEXT_PRIMARY,
-            anchor="w"
+            anchor="w",
         )
         self.title_label.pack(anchor="w", fill="x")
 
@@ -99,7 +106,7 @@ class SectionHeader(ctk.CTkFrame):
                 text=subtitle,
                 font=get_font_caption(),
                 text_color=COLOR_TEXT_SECONDARY,
-                anchor="w"
+                anchor="w",
             )
             self.subtitle_label.pack(anchor="w", fill="x", pady=(2, 0))
 
@@ -114,7 +121,7 @@ class StatusBadge(ctk.CTkFrame):
         master: Any,
         initial_status: str = "checking",
         initial_text: str = "Checking Ollama...",
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             master=master,
@@ -122,7 +129,7 @@ class StatusBadge(ctk.CTkFrame):
             corner_radius=BADGE_RADIUS,
             border_color=COLOR_CARD_BORDER,
             border_width=1,
-            **kwargs
+            **kwargs,
         )
 
         self.dot_label = ctk.CTkLabel(
@@ -130,15 +137,12 @@ class StatusBadge(ctk.CTkFrame):
             text="●",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=COLOR_WARNING,
-            width=16
+            width=16,
         )
         self.dot_label.pack(side="left", padx=(8, 4), pady=4)
 
         self.text_label = ctk.CTkLabel(
-            self,
-            text=initial_text,
-            font=get_font_badge(),
-            text_color=COLOR_TEXT_PRIMARY
+            self, text=initial_text, font=get_font_badge(), text_color=COLOR_TEXT_PRIMARY
         )
         self.text_label.pack(side="left", padx=(0, 10), pady=4)
 
@@ -147,7 +151,7 @@ class StatusBadge(ctk.CTkFrame):
     def set_status(self, status: str, text: str):
         """
         Updates the badge state and dot color.
-        
+
         Args:
             status: 'online', 'connected', 'offline', 'error', 'checking', 'busy', 'idle'
             text: Status string to display
@@ -179,9 +183,9 @@ class LabeledSlider(ctk.CTkFrame):
         to: float = 15.0,
         number_of_steps: int = 5,
         default_value: float = 0.0,
-        format_fn: Optional[Callable[[float], str]] = None,
-        command: Optional[Callable[[float], None]] = None,
-        **kwargs
+        format_fn: Callable[[float], str] | None = None,
+        command: Callable[[float], None] | None = None,
+        **kwargs,
     ):
         super().__init__(master=master, fg_color="transparent", **kwargs)
 
@@ -196,7 +200,7 @@ class LabeledSlider(ctk.CTkFrame):
             font=get_font_body(),
             text_color=COLOR_TEXT_PRIMARY,
             width=90,
-            anchor="w"
+            anchor="w",
         )
         self.label.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
@@ -208,7 +212,7 @@ class LabeledSlider(ctk.CTkFrame):
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
             progress_color=COLOR_ACCENT,
-            command=self._on_slider_moved
+            command=self._on_slider_moved,
         )
         self.slider.set(default_value)
         self.slider.grid(row=0, column=1, sticky="ew", padx=(0, 8))
@@ -219,7 +223,7 @@ class LabeledSlider(ctk.CTkFrame):
             font=get_font_body_bold(),
             text_color=COLOR_ACCENT,
             width=50,
-            anchor="e"
+            anchor="e",
         )
         self.val_label.grid(row=0, column=2, sticky="e")
 
@@ -229,7 +233,7 @@ class LabeledSlider(ctk.CTkFrame):
             self.user_command(value)
 
     def get(self) -> float:
-        return self.slider.get()
+        return float(self.slider.get())
 
     def set(self, value: float):
         self.slider.set(value)
@@ -241,12 +245,7 @@ class TimeSlider(ctk.CTkFrame):
     Timeline audio progress slider showing '00:00 / 03:45' with user scrubbing support.
     """
 
-    def __init__(
-        self,
-        master: Any,
-        on_seek: Optional[Callable[[int], None]] = None,
-        **kwargs
-    ):
+    def __init__(self, master: Any, on_seek: Callable[[int], None] | None = None, **kwargs):
         super().__init__(master=master, fg_color="transparent", **kwargs)
 
         self.on_seek = on_seek
@@ -263,15 +262,12 @@ class TimeSlider(ctk.CTkFrame):
             self.info_row,
             text="00:00 / 00:00",
             font=get_font_caption(),
-            text_color=COLOR_TEXT_SECONDARY
+            text_color=COLOR_TEXT_SECONDARY,
         )
         self.time_label.pack(side="right")
 
         self.status_mini = ctk.CTkLabel(
-            self.info_row,
-            text="Stopped",
-            font=get_font_caption(),
-            text_color=COLOR_TEXT_MUTED
+            self.info_row, text="Stopped", font=get_font_caption(), text_color=COLOR_TEXT_MUTED
         )
         self.status_mini.pack(side="left")
 
@@ -284,7 +280,7 @@ class TimeSlider(ctk.CTkFrame):
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
             progress_color=COLOR_ACCENT,
-            command=self._on_seek_drag
+            command=self._on_seek_drag,
         )
         self.slider.set(0)
         self.slider.pack(fill="x")
@@ -334,14 +330,7 @@ class DialogueTurnCard(ctk.CTkFrame):
     Visual rich dialogue turn card highlighting Host 1 (Cyan/Blue) vs Host 2 (Green).
     """
 
-    def __init__(
-        self,
-        master: Any,
-        turn_number: int,
-        speaker: str,
-        text: str,
-        **kwargs
-    ):
+    def __init__(self, master: Any, turn_number: int, speaker: str, text: str, **kwargs):
         is_host1 = "1" in speaker or "Kari" in speaker or "Jenny" in speaker
         bg_color = COLOR_HOST1_BG if is_host1 else COLOR_HOST2_BG
         accent_color = COLOR_HOST1 if is_host1 else COLOR_HOST2
@@ -353,7 +342,7 @@ class DialogueTurnCard(ctk.CTkFrame):
             corner_radius=8,
             border_color=accent_color,
             border_width=1,
-            **kwargs
+            **kwargs,
         )
 
         # Header Row
@@ -361,10 +350,7 @@ class DialogueTurnCard(ctk.CTkFrame):
         top_row.pack(fill="x", padx=10, pady=(8, 4))
 
         speaker_badge = ctk.CTkLabel(
-            top_row,
-            text=f"🎙️ {display_speaker}",
-            font=get_font_body_bold(),
-            text_color=accent_color
+            top_row, text=f"🎙️ {display_speaker}", font=get_font_body_bold(), text_color=accent_color
         )
         speaker_badge.pack(side="left")
 
@@ -372,7 +358,7 @@ class DialogueTurnCard(ctk.CTkFrame):
             top_row,
             text=f"Turn #{turn_number}",
             font=get_font_caption(),
-            text_color=COLOR_TEXT_SECONDARY
+            text_color=COLOR_TEXT_SECONDARY,
         )
         turn_badge.pack(side="right")
 
@@ -384,7 +370,7 @@ class DialogueTurnCard(ctk.CTkFrame):
             text_color=COLOR_TEXT_PRIMARY,
             wraplength=480,
             justify="left",
-            anchor="w"
+            anchor="w",
         )
         body_label.pack(fill="x", padx=10, pady=(0, 10))
 
@@ -400,11 +386,13 @@ class ActionableErrorDialog(ctk.CTkToplevel):
         parent: Any,
         title: str,
         message: str,
-        details: Optional[str] = None,
-        action_button_text: Optional[str] = None,
-        action_callback: Optional[Callable[[], None]] = None
+        details: str | None = None,
+        action_button_text: str | None = None,
+        action_callback: Callable[[], None] | None = None,
+        remedy: str | None = None,
     ):
         super().__init__(parent)
+        details = details or remedy
         self.title(title)
         self.geometry("540x360")
         self.resizable(False, False)
@@ -418,19 +406,11 @@ class ActionableErrorDialog(ctk.CTkToplevel):
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
         header_frame.pack(fill="x", padx=20, pady=(20, 10))
 
-        icon_label = ctk.CTkLabel(
-            header_frame,
-            text="⚠️",
-            font=ctk.CTkFont(size=28)
-        )
+        icon_label = ctk.CTkLabel(header_frame, text="⚠️", font=ctk.CTkFont(size=28))
         icon_label.pack(side="left", padx=(0, 12))
 
         title_label = ctk.CTkLabel(
-            header_frame,
-            text=title,
-            font=get_font_heading(),
-            text_color=COLOR_ERROR,
-            anchor="w"
+            header_frame, text=title, font=get_font_heading(), text_color=COLOR_ERROR, anchor="w"
         )
         title_label.pack(side="left", fill="x", expand=True)
 
@@ -442,7 +422,7 @@ class ActionableErrorDialog(ctk.CTkToplevel):
             text_color=COLOR_TEXT_PRIMARY,
             wraplength=480,
             justify="left",
-            anchor="w"
+            anchor="w",
         )
         msg_label.pack(fill="x", padx=20, pady=(0, 10))
 
@@ -455,7 +435,7 @@ class ActionableErrorDialog(ctk.CTkToplevel):
                 fg_color=COLOR_INPUT_BG,
                 border_color=COLOR_INPUT_BORDER,
                 border_width=1,
-                text_color=COLOR_TEXT_SECONDARY
+                text_color=COLOR_TEXT_SECONDARY,
             )
             details_box.pack(fill="both", expand=True, padx=20, pady=(0, 15))
             details_box.insert("1.0", details)
@@ -472,7 +452,7 @@ class ActionableErrorDialog(ctk.CTkToplevel):
                 fg_color=COLOR_ACCENT,
                 hover_color=COLOR_ACCENT_HOVER,
                 font=get_font_body_bold(),
-                command=lambda: [self.destroy(), action_callback()]
+                command=lambda: [self.destroy(), action_callback()],
             )
             action_btn.pack(side="left", padx=(0, 10))
 
@@ -482,6 +462,6 @@ class ActionableErrorDialog(ctk.CTkToplevel):
             fg_color="#33384d",
             hover_color="#414868",
             font=get_font_body(),
-            command=self.destroy
+            command=self.destroy,
         )
         close_btn.pack(side="right")

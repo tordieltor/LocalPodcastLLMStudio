@@ -1,34 +1,585 @@
 """
-PodcastStudio - Local Ollama LLM Dialogue Engine
-REST client and dialogue script generation pipeline interfacing with local Ollama.
+LocalPodcastLLMStudio - Local Ollama LLM Dialogue Engine
+REST client, background service launcher, streaming model downloader,
+and dialogue script generation pipeline interfacing with local Ollama.
 """
 
+import inspect
 import json
+import os
+import shutil
 import socket
+import subprocess
+import sys
 import threading
-import urllib.request
+import time
 import urllib.error
-from typing import List, Dict, Any, Optional, Callable
+import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlparse
 
-from core.parser import DialogueTurn, DialogueParser
+from core.parser import DialogueParser, DialogueTurn
 from core.prompts import (
-    build_system_prompt,
-    build_user_prompt,
-    normalize_language_code,
-    get_act_specs,
     build_act_system_prompt,
     build_act_user_prompt,
+    build_system_prompt,
+    build_user_prompt,
+    get_act_specs,
+    normalize_language_code,
 )
+
+
+def _validate_url(url: str) -> str:
+    """
+    Validates that the provided URL uses an allowed scheme ('http' or 'https')
+    and contains a valid network location/hostname.
+
+    Raises:
+        ValueError: If scheme is not 'http' or 'https' or URL is invalid.
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError("Ollama URL must be a non-empty string.")
+    clean_url = url.strip().rstrip("/")
+    parsed = urlparse(clean_url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"Invalid URL scheme '{parsed.scheme}': only 'http' and 'https' are supported for Ollama service."
+        )
+    if not parsed.netloc and not parsed.hostname:
+        raise ValueError(f"Invalid Ollama URL '{url}': missing hostname or network location.")
+    return clean_url
 
 
 class OllamaConnectionError(Exception):
     """Raised when the Ollama service cannot be reached."""
+
     pass
 
 
 class OllamaModelNotFoundError(Exception):
     """Raised when the requested model is not installed in Ollama."""
+
     pass
+
+
+@dataclass
+class ModelPullProgress:
+    """
+    Real-time progress state for Ollama model pull streaming operations.
+
+    Attributes:
+        status: Current phase description (e.g., 'pulling manifest', 'downloading sha256:...',
+            'verifying sha256 digest', 'writing manifest', 'success', 'error').
+        digest: Active layer SHA256 digest identifier.
+        total: Total expected bytes for current layer/model (0 if unknown).
+        completed: Downloaded bytes for current layer/model (0 if unknown).
+        percentage: Normalized download completion ratio in range [0.0, 1.0].
+        speed_bps: Current transfer speed in bytes per second (float).
+        speed_str: Human-readable transfer speed (e.g., '14.2 MB/s', '512 KB/s', '120 B/s').
+        progress_str: Human-readable downloaded/total progress (e.g., '1.20 GB / 4.70 GB (25.5%)').
+        eta_str: Estimated time remaining (e.g., '02:45' or '01:15:30').
+        is_done: True if the pull operation completed successfully.
+        error: Error message string if an error occurred, otherwise None.
+    """
+
+    status: str
+    digest: str = ""
+    total: int = 0
+    completed: int = 0
+    percentage: float = 0.0
+    speed_bps: float = 0.0
+    speed_str: str = ""
+    progress_str: str = ""
+    eta_str: str = ""
+    is_done: bool = False
+    error: str | None = None
+
+
+@dataclass
+class PrerequisiteStatus:
+    """
+    Diagnostic status of system prerequisites for LocalPodcastLLMStudio.
+
+    Attributes:
+        ollama_binary_found: True if ollama executable was located on filesystem/PATH.
+        ollama_binary_path: Absolute normalized path to ollama binary, or None.
+        ollama_online: True if Ollama HTTP daemon is reachable at base_url.
+        installed_models: List of installed model tags in Ollama.
+        has_recommended_model: True if recommended model is present.
+        recommended_model_name: Target recommended model name.
+        edge_tts_online: True if Edge-TTS synthesis endpoint is reachable.
+        all_ready: True if all core requirements (online, >=1 model, TTS) are met.
+        remediation_hints: Actionable suggestions for missing prerequisites.
+    """
+
+    ollama_binary_found: bool
+    ollama_binary_path: str | None
+    ollama_online: bool
+    installed_models: list[str]
+    has_recommended_model: bool
+    recommended_model_name: str
+    edge_tts_online: bool
+    all_ready: bool
+    remediation_hints: list[str]
+
+
+def find_ollama_binary() -> str | None:
+    """
+    Locates the Ollama executable binary on the local system.
+    Searches system PATH, standard Windows installation directories
+    (%LOCALAPPDATA%, %ProgramFiles%, %ProgramFiles(x86)%, %ProgramW6432%),
+    and standard POSIX paths.
+
+    Returns:
+        Absolute normalized path to ollama executable, or None if not found.
+    """
+    # 1. Check system PATH
+    which_binary = shutil.which("ollama") or shutil.which("ollama.exe")
+    if which_binary and os.path.isfile(which_binary):
+        return os.path.abspath(which_binary)
+
+    # 2. Windows standard paths
+    if sys.platform == "win32" or os.name == "nt":
+        candidate_dirs: list[str] = []
+
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidate_dirs.append(os.path.join(local_app_data, "Programs", "Ollama"))
+
+        prog_files = os.environ.get("ProgramFiles")
+        if prog_files:
+            candidate_dirs.append(os.path.join(prog_files, "Ollama"))
+
+        prog_files_x86 = os.environ.get("ProgramFiles(x86)")
+        if prog_files_x86:
+            candidate_dirs.append(os.path.join(prog_files_x86, "Ollama"))
+
+        prog_w6432 = os.environ.get("ProgramW6432")
+        if prog_w6432:
+            candidate_dirs.append(os.path.join(prog_w6432, "Ollama"))
+
+        # User profile fallback
+        candidate_dirs.append(os.path.expanduser(r"~\AppData\Local\Programs\Ollama"))
+
+        for base_dir in candidate_dirs:
+            if not base_dir:
+                continue
+            for exe_name in ("ollama.exe", "ollama app.exe", "ollama"):
+                candidate_path = os.path.join(base_dir, exe_name)
+                if os.path.isfile(candidate_path):
+                    return os.path.abspath(candidate_path)
+
+    # 3. Cross-platform POSIX fallback paths
+    posix_candidates = [
+        "/usr/local/bin/ollama",
+        "/usr/bin/ollama",
+        "/opt/homebrew/bin/ollama",
+        os.path.expanduser("~/.local/bin/ollama"),
+        os.path.expanduser("~/.ollama/bin/ollama"),
+    ]
+    for posix_path in posix_candidates:
+        if os.path.isfile(posix_path):
+            return os.path.abspath(posix_path)
+
+    return None
+
+
+def start_ollama_service(
+    timeout: float = 10.0,
+    base_url: str = "http://localhost:11434",
+    cancel_event: threading.Event | None = None,
+) -> tuple[bool, str]:
+    """
+    Starts the local Ollama background service via detached subprocess.
+    Verifies service health by polling {base_url}/api/tags until responsive,
+    an early crash is detected, cancellation is requested, or the timeout expires.
+
+    Args:
+        timeout: Maximum seconds to wait for service readiness.
+        base_url: Ollama HTTP endpoint to health-check.
+        cancel_event: Optional threading.Event to abort startup polling.
+
+    Returns:
+        Tuple[bool, str]: (success, status_or_error_message).
+    """
+    clean_url = _validate_url(base_url)
+    health_client = OllamaClient(base_url=clean_url)
+
+    # 1. Preflight check: If already online, return immediately
+    if health_client.check_connection(timeout=0.5):
+        return True, f"Ollama service is already running at {clean_url}."
+
+    # 2. Locate Ollama executable
+    binary_path = find_ollama_binary()
+    if not binary_path:
+        return (
+            False,
+            "Ollama executable not found on this system. "
+            "Please download and install Ollama from https://ollama.com.",
+        )
+
+    # 3. Configure platform-specific detached subprocess kwargs
+    popen_kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+
+    if sys.platform == "win32":
+        # 0x08000000 (CREATE_NO_WINDOW) | 0x00000008 (DETACHED_PROCESS)
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        detached_process = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        popen_kwargs["creationflags"] = create_no_window | detached_process
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    try:
+        proc = subprocess.Popen([binary_path, "serve"], **popen_kwargs)
+    except OSError as e:
+        return False, f"Failed to start Ollama process ({binary_path}): {e}"
+
+    # 4. Polling loop with crash detection & cancellation support
+    poll_interval = 0.25
+    deadline = time.time() + max(1.0, timeout)
+
+    while time.time() < deadline:
+        if cancel_event and cancel_event.is_set():
+            return False, "Ollama service startup cancelled by user."
+
+        # Detect early process crash
+        exit_code = proc.poll()
+        if exit_code is not None:
+            # Process terminated: check if another instance was activated or exited on error
+            if health_client.check_connection(timeout=0.5):
+                return True, f"Ollama service is active at {clean_url}."
+            return (
+                False,
+                f"Ollama process terminated immediately with exit code {exit_code}.",
+            )
+
+        # Health probe
+        remaining = deadline - time.time()
+        if health_client.check_connection(timeout=min(0.5, max(0.1, remaining))):
+            return True, f"Ollama service started successfully at {clean_url}."
+
+        sleep_time = min(poll_interval, max(0.01, deadline - time.time()))
+        time.sleep(sleep_time)
+
+    # 5. Final check after timeout loop
+    if health_client.check_connection(timeout=0.5):
+        return True, f"Ollama service started successfully at {clean_url}."
+
+    return (
+        False,
+        f"Ollama service failed to become responsive at {clean_url} within {timeout} seconds.",
+    )
+
+
+def pull_model_stream(
+    model: str,
+    base_url: str = "http://localhost:11434",
+    progress_callback: Callable[[ModelPullProgress], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    timeout: float = 3600.0,
+) -> bool:
+    """
+    Pulls a model from Ollama library with real-time streaming progress callbacks.
+
+    Reads NDJSON stream from POST /api/pull, parses progress, and computes download speed and ETA.
+    Returns True on success.
+
+    Raises:
+        ValueError: If model name is empty or base_url scheme is invalid.
+        RuntimeError: If pull fails due to server error or user cancellation.
+        OllamaConnectionError: If connection to Ollama fails.
+        TimeoutError: If request times out.
+    """
+    if not model or not isinstance(model, str) or not model.strip():
+        raise ValueError("Model name must be a non-empty string.")
+
+    clean_model = model.strip()
+    clean_url = _validate_url(base_url)
+
+    if cancel_event and cancel_event.is_set():
+        raise RuntimeError("Model pull cancelled by user before request dispatch.")
+
+    url = f"{clean_url}/api/pull"
+    payload = {"name": clean_model, "stream": True, "insecure": False}
+    req_data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=req_data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "LocalPodcastLLMStudio/1.0",
+            "Accept": "application/x-ndjson, application/json",
+        },
+    )
+
+    last_time: float | None = None
+    last_bytes: int = 0
+    last_digest: str = ""
+    speed_bps: float = 0.0
+    completed_successfully = False
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
+            for line in response:
+                if cancel_event and cancel_event.is_set():
+                    raise RuntimeError("Model pull cancelled by user.")
+
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if not line_str:
+                    continue
+
+                try:
+                    data = json.loads(line_str)
+                except json.JSONDecodeError:
+                    # Skip malformed NDJSON stream chunks
+                    continue
+
+                # 1. Check for server error chunk
+                if "error" in data and data["error"]:
+                    err_msg = str(data["error"])
+                    if progress_callback:
+                        progress_callback(
+                            ModelPullProgress(
+                                status="error",
+                                error=err_msg,
+                                is_done=False,
+                            )
+                        )
+                    raise RuntimeError(f"Ollama pull failed: {err_msg}")
+
+                status = data.get("status", "")
+                digest = data.get("digest", "")
+                total = int(data.get("total", 0))
+                completed = int(data.get("completed", 0))
+
+                # Check if this is the final success chunk
+                is_done = (status.lower() == "success") or bool(data.get("done", False))
+                if is_done:
+                    completed_successfully = True
+
+                # Percentage calculation
+                if is_done:
+                    percentage = 1.0
+                elif total > 0:
+                    percentage = min(1.0, max(0.0, completed / total))
+                else:
+                    percentage = 0.0
+
+                # Speed calculation
+                now = time.monotonic()
+                if digest and digest != last_digest:
+                    # New layer/digest started, reset speed tracking
+                    last_digest = digest
+                    last_time = now
+                    last_bytes = completed
+                    speed_bps = 0.0
+                elif last_time is not None:
+                    dt = now - last_time
+                    db = completed - last_bytes
+                    if dt > 0 and db >= 0:
+                        inst_speed = db / dt
+                        if speed_bps == 0.0:
+                            speed_bps = inst_speed
+                        else:
+                            speed_bps = 0.7 * speed_bps + 0.3 * inst_speed
+                        last_time = now
+                        last_bytes = completed
+                else:
+                    if digest:
+                        last_digest = digest
+                    last_time = now
+                    last_bytes = completed
+
+                # Format speed_str
+                if speed_bps >= 1024 * 1024:
+                    speed_str = f"{speed_bps / (1024 * 1024):.1f} MB/s"
+                elif speed_bps >= 1024:
+                    speed_str = f"{speed_bps / 1024:.0f} KB/s"
+                elif speed_bps > 0:
+                    speed_str = f"{speed_bps:.0f} B/s"
+                else:
+                    speed_str = ""
+
+                # Format progress_str
+                if total >= 1024 * 1024 * 1024:
+                    progress_str = (
+                        f"{completed / (1024**3):.2f} GB / {total / (1024**3):.2f} GB "
+                        f"({percentage * 100:.1f}%)"
+                    )
+                elif total > 0:
+                    progress_str = (
+                        f"{completed / (1024**2):.1f} MB / {total / (1024**2):.1f} MB "
+                        f"({percentage * 100:.1f}%)"
+                    )
+                elif completed > 0:
+                    if completed >= 1024 * 1024 * 1024:
+                        progress_str = f"{completed / (1024**3):.2f} GB downloaded"
+                    elif completed >= 1024 * 1024:
+                        progress_str = f"{completed / (1024**2):.1f} MB downloaded"
+                    else:
+                        progress_str = f"{completed / 1024:.1f} KB downloaded"
+                else:
+                    progress_str = status if status else ""
+
+                # Format eta_str
+                if is_done:
+                    eta_str = "00:00"
+                elif speed_bps > 0 and total > completed:
+                    eta_sec = int((total - completed) / speed_bps)
+                    if eta_sec < 3600:
+                        eta_str = f"{eta_sec // 60:02d}:{eta_sec % 60:02d}"
+                    else:
+                        eta_str = (
+                            f"{eta_sec // 3600:02d}:{(eta_sec % 3600) // 60:02d}:{eta_sec % 60:02d}"
+                        )
+                else:
+                    eta_str = ""
+
+                progress_obj = ModelPullProgress(
+                    status=status,
+                    digest=digest,
+                    total=total,
+                    completed=completed,
+                    percentage=percentage,
+                    speed_bps=speed_bps,
+                    speed_str=speed_str,
+                    progress_str=progress_str,
+                    eta_str=eta_str,
+                    is_done=is_done,
+                    error=None,
+                )
+
+                if progress_callback:
+                    progress_callback(progress_obj)
+
+        return completed_successfully or True
+
+    except RuntimeError:
+        raise
+    except TimeoutError as to_err:
+        raise TimeoutError(
+            f"Ollama model pull timed out after {timeout} seconds: {to_err}"
+        ) from to_err
+    except urllib.error.HTTPError as http_err:
+        err_body = http_err.read().decode("utf-8", errors="ignore")
+        try:
+            err_json = json.loads(err_body)
+            msg = err_json.get("error", str(http_err))
+        except Exception:
+            msg = f"HTTP {http_err.code}: {http_err.reason}"
+        raise RuntimeError(f"Ollama pull failed ({http_err.code}): {msg}") from http_err
+    except urllib.error.URLError as url_err:
+        if isinstance(url_err.reason, socket.timeout):
+            raise TimeoutError(f"Ollama model pull timed out after {timeout} seconds.") from url_err
+        raise OllamaConnectionError(
+            f"Cannot connect to Ollama at {clean_url}: {url_err.reason}"
+        ) from url_err
+
+
+def check_edge_tts_reachability(timeout: float = 3.0) -> tuple[bool, str]:
+    """
+    Checks reachability to Microsoft Edge-TTS neural voice synthesis endpoint
+    (speech.platform.bing.com:443) via a lightweight socket connection probe.
+
+    Returns:
+        Tuple[bool, str]: (is_reachable, detail_message)
+    """
+    host = "speech.platform.bing.com"
+    port = 443
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, f"Connected to {host}:{port}"
+    except TimeoutError:
+        return False, f"Connection to {host}:{port} timed out after {timeout}s"
+    except socket.gaierror as e:
+        return False, f"DNS resolution failed for {host}: {e}"
+    except Exception as e:
+        return False, f"Reachability probe failed for {host}:{port}: {e}"
+
+
+def check_prerequisites(
+    ollama_url: str = "http://localhost:11434",
+    recommended_model: str = "llama3.1:8b",
+    timeout: float = 3.0,
+) -> PrerequisiteStatus:
+    """
+    Performs unified preflight inspection of local Ollama installation,
+    daemon connectivity, installed models, and Edge-TTS synthesis endpoint.
+
+    Returns:
+        PrerequisiteStatus dataclass with diagnostic results and remediation hints.
+    """
+    binary_path = find_ollama_binary()
+    binary_found = binary_path is not None
+
+    clean_url = _validate_url(ollama_url)
+    client = OllamaClient(base_url=clean_url)
+    ollama_online = client.check_connection(timeout=timeout)
+
+    installed_models: list[str] = []
+    if ollama_online:
+        try:
+            installed_models = client.list_models(timeout=timeout)
+        except Exception:
+            installed_models = []
+
+    rec_prefix = recommended_model.split(":")[0].lower()
+    has_rec = any(
+        recommended_model.lower() == m.lower()
+        or m.lower().startswith(f"{rec_prefix}:")
+        or m.lower() == rec_prefix
+        for m in installed_models
+    )
+
+    edge_online, _ = check_edge_tts_reachability(timeout=timeout)
+    all_ready = ollama_online and (len(installed_models) > 0) and edge_online
+
+    remediations: list[str] = []
+    if not binary_found:
+        remediations.append(
+            "Ollama binary not found. Download and install Ollama from https://ollama.com."
+        )
+    if not ollama_online:
+        if binary_found:
+            remediations.append(
+                "Ollama service is offline. Click 'Start Ollama' or run 'ollama serve' in your terminal."
+            )
+        else:
+            remediations.append(
+                "Ollama is offline and binary was not found. Install and launch Ollama."
+            )
+    elif len(installed_models) == 0:
+        remediations.append(
+            f"No LLM models installed in Ollama. Click 'Download Model' or run 'ollama pull {recommended_model}'."
+        )
+    elif not has_rec:
+        remediations.append(
+            f"Recommended model '{recommended_model}' is not installed (installed: {', '.join(installed_models)})."
+        )
+
+    if not edge_online:
+        remediations.append(
+            "Edge-TTS neural voice endpoint is unreachable. Please verify internet connection and DNS settings."
+        )
+
+    return PrerequisiteStatus(
+        ollama_binary_found=binary_found,
+        ollama_binary_path=binary_path,
+        ollama_online=ollama_online,
+        installed_models=installed_models,
+        has_recommended_model=has_rec,
+        recommended_model_name=recommended_model,
+        edge_tts_online=edge_online,
+        all_ready=all_ready,
+        remediation_hints=remediations,
+    )
 
 
 class OllamaClient:
@@ -38,35 +589,34 @@ class OllamaClient:
     """
 
     def __init__(self, base_url: str = "http://localhost:11434"):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _validate_url(base_url)
 
     def check_connection(self, timeout: float = 3.0) -> bool:
         """
         Returns True if the Ollama service is reachable and responsive.
         """
         url = f"{self.base_url}/api/tags"
-        req = urllib.request.Request(url, headers={"User-Agent": "PodcastStudio/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "LocalPodcastLLMStudio/1.0"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                return response.status == 200
+            with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
+                return bool(response.status == 200)
         except Exception:
             return False
 
-    def list_models(self, timeout: float = 5.0) -> List[str]:
+    def list_models(self, timeout: float = 5.0) -> list[str]:
         """
         Retrieves list of installed model names (e.g. ['llama3.1:8b', 'qwen2.5:7b']).
-        
+
         Raises:
             OllamaConnectionError: If connection to Ollama fails.
         """
         url = f"{self.base_url}/api/tags"
-        req = urllib.request.Request(url, headers={"User-Agent": "PodcastStudio/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "LocalPodcastLLMStudio/1.0"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
                 data = json.loads(response.read().decode("utf-8"))
                 models = [
-                    m["name"] for m in data.get("models", [])
-                    if isinstance(m, dict) and "name" in m
+                    m["name"] for m in data.get("models", []) if isinstance(m, dict) and "name" in m
                 ]
                 return sorted(models)
         except urllib.error.URLError as e:
@@ -77,6 +627,38 @@ class OllamaClient:
         except Exception as e:
             raise OllamaConnectionError(f"Error fetching Ollama models: {e}") from e
 
+    def pull_model(
+        self,
+        model: str,
+        progress_callback: Callable[[ModelPullProgress], None] | None = None,
+        cancel_event: threading.Event | None = None,
+        timeout: float = 3600.0,
+    ) -> bool:
+        """
+        Pulls a model using the client's configured base_url.
+        """
+        return pull_model_stream(
+            model=model,
+            base_url=self.base_url,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+            timeout=timeout,
+        )
+
+    def check_prerequisites(
+        self,
+        recommended_model: str = "llama3.1:8b",
+        timeout: float = 3.0,
+    ) -> PrerequisiteStatus:
+        """
+        Checks prerequisites using this client's configured base_url.
+        """
+        return check_prerequisites(
+            ollama_url=self.base_url,
+            recommended_model=recommended_model,
+            timeout=timeout,
+        )
+
     def generate(
         self,
         model: str,
@@ -86,13 +668,13 @@ class OllamaClient:
         timeout: float = 300.0,
         temperature: float = 0.7,
         num_ctx: int = 8192,
-        cancel_event: Optional[threading.Event] = None,
-        callback: Optional[Callable[[str], None]] = None
+        cancel_event: threading.Event | None = None,
+        callback: Callable[[str], None] | None = None,
     ) -> str:
         """
         Generates text using Ollama /api/chat or fallback to /api/generate.
         Supports cancellation checks and streaming callbacks.
-        
+
         Raises:
             OllamaConnectionError, OllamaModelNotFoundError, TimeoutError, RuntimeError.
         """
@@ -103,20 +685,22 @@ class OllamaClient:
             "model": model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
             "stream": stream or (callback is not None),
             "options": {
                 "temperature": temperature,
                 "num_ctx": num_ctx,
                 "num_predict": 4096,
-            }
+            },
         }
 
         try:
             return self._execute_chat(chat_payload, timeout, cancel_event, callback)
-        except (socket.timeout, TimeoutError) as to_err:
-            raise TimeoutError(f"Ollama generation timed out after {timeout} seconds: {to_err}") from to_err
+        except TimeoutError as to_err:
+            raise TimeoutError(
+                f"Ollama generation timed out after {timeout} seconds: {to_err}"
+            ) from to_err
         except urllib.error.HTTPError as http_err:
             if http_err.code == 404:
                 err_body = http_err.read().decode("utf-8", errors="ignore")
@@ -124,12 +708,23 @@ class OllamaClient:
                     raise OllamaModelNotFoundError(
                         f"Model '{model}' is not installed in Ollama. "
                         f"Please run 'ollama pull {model}' in your terminal."
-                    )
+                    ) from http_err
             # Fallback to /api/generate
-            return self._execute_generate(model, prompt, system, timeout, temperature, num_ctx, cancel_event, callback)
+            return self._execute_generate(
+                model,
+                prompt,
+                system,
+                timeout,
+                temperature,
+                num_ctx,
+                cancel_event,
+                callback,
+            )
         except urllib.error.URLError as url_err:
             if isinstance(url_err.reason, socket.timeout):
-                raise TimeoutError(f"Ollama request timed out after {timeout} seconds.") from url_err
+                raise TimeoutError(
+                    f"Ollama request timed out after {timeout} seconds."
+                ) from url_err
             raise OllamaConnectionError(
                 f"Cannot connect to Ollama at {self.base_url}. "
                 "Please make sure Ollama is running ('ollama serve')."
@@ -141,7 +736,7 @@ class OllamaClient:
         system_prompt: str,
         user_prompt: str,
         timeout: float = 300.0,
-        temperature: float = 0.7
+        temperature: float = 0.7,
     ) -> str:
         """Convenience method for generating dialogue with system & user prompt."""
         return self.generate(
@@ -149,32 +744,35 @@ class OllamaClient:
             prompt=user_prompt,
             system=system_prompt,
             timeout=timeout,
-            temperature=temperature
+            temperature=temperature,
         )
 
     def _execute_chat(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         timeout: float,
-        cancel_event: Optional[threading.Event],
-        callback: Optional[Callable[[str], None]]
+        cancel_event: threading.Event | None,
+        callback: Callable[[str], None] | None,
     ) -> str:
         url = f"{self.base_url}/api/chat"
         req_data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=req_data,
-            headers={"Content-Type": "application/json", "User-Agent": "PodcastStudio/1.0"}
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "LocalPodcastLLMStudio/1.0",
+            },
         )
 
         is_streaming = payload.get("stream", False)
-        collected_chunks: List[str] = []
+        collected_chunks: list[str] = []
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
                 if not is_streaming:
                     data = json.loads(response.read().decode("utf-8"))
-                    return data.get("message", {}).get("content", "")
+                    return str(data.get("message", {}).get("content", ""))
 
                 for line in response:
                     if cancel_event and cancel_event.is_set():
@@ -195,7 +793,7 @@ class OllamaClient:
                         continue
 
             return "".join(collected_chunks)
-        except (socket.timeout, TimeoutError) as e:
+        except TimeoutError as e:
             raise TimeoutError(f"Ollama generation timed out after {timeout} seconds.") from e
 
     def _execute_generate(
@@ -206,8 +804,8 @@ class OllamaClient:
         timeout: float,
         temperature: float,
         num_ctx: int,
-        cancel_event: Optional[threading.Event],
-        callback: Optional[Callable[[str], None]]
+        cancel_event: threading.Event | None,
+        callback: Callable[[str], None] | None,
     ) -> str:
         url = f"{self.base_url}/api/generate"
         is_streaming = callback is not None
@@ -220,23 +818,26 @@ class OllamaClient:
                 "temperature": temperature,
                 "num_ctx": num_ctx,
                 "num_predict": 4096,
-            }
+            },
         }
 
         req_data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=req_data,
-            headers={"Content-Type": "application/json", "User-Agent": "PodcastStudio/1.0"}
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "LocalPodcastLLMStudio/1.0",
+            },
         )
 
-        collected_chunks: List[str] = []
+        collected_chunks: list[str] = []
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
                 if not is_streaming:
                     data = json.loads(response.read().decode("utf-8"))
-                    return data.get("response", "")
+                    return str(data.get("response", ""))
 
                 for line in response:
                     if cancel_event and cancel_event.is_set():
@@ -257,8 +858,15 @@ class OllamaClient:
                         continue
 
             return "".join(collected_chunks)
-        except (socket.timeout, TimeoutError) as e:
+        except TimeoutError as e:
             raise TimeoutError(f"Ollama generation timed out after {timeout} seconds.") from e
+
+
+def _call_with_supported_kwargs(func: Callable[..., Any], **kwargs: Any) -> Any:
+    """Helper to safely pass optional kwargs (e.g. grounding_mode) only if supported by prompt functions."""
+    sig = inspect.signature(func)
+    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return func(**filtered)
 
 
 def generate_podcast_script(
@@ -266,23 +874,24 @@ def generate_podcast_script(
     language: str = "nb-NO",
     format_type: str = "standard",
     tone_style: str = "casual",
+    grounding_mode: str = "strict",
     model: str = "llama3.1:8b",
     ollama_url: str = "http://localhost:11434",
     is_topic: bool = False,
     timeout: float = 300.0,
-    cancel_event: Optional[threading.Event] = None,
-    progress_callback: Optional[Callable[[str], None]] = None
-) -> List[DialogueTurn]:
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> list[DialogueTurn]:
     """
     High-level dialogue generation pipeline with Multi-Act Structured Generation:
     For short summaries: Generates single-shot dialogue.
     For standard, deep dive, and extended in-depth episodes:
       Executes sequential thematic acts (chapters) passing previous dialogue context,
       guaranteeing authentic progression and reaching the target 45-60 turns.
-    
+
     Returns:
         List[DialogueTurn] containing structured conversation.
-        
+
     Raises:
         OllamaConnectionError, OllamaModelNotFoundError, ValueError.
     """
@@ -295,8 +904,20 @@ def generate_podcast_script(
         if progress_callback:
             progress_callback(f"Generating episode dialogue via Ollama ({model})...")
 
-        system_prompt = build_system_prompt(language=lang, format_type=format_type, tone_style=tone_style)
-        user_prompt = build_user_prompt(content=content, language=lang, is_topic=is_topic)
+        system_prompt = _call_with_supported_kwargs(
+            build_system_prompt,
+            language=lang,
+            format_type=format_type,
+            tone_style=tone_style,
+            grounding_mode=grounding_mode,
+        )
+        user_prompt = _call_with_supported_kwargs(
+            build_user_prompt,
+            content=content,
+            language=lang,
+            grounding_mode=grounding_mode,
+            is_topic=is_topic,
+        )
 
         raw_response = client.generate(
             model=model,
@@ -304,7 +925,7 @@ def generate_podcast_script(
             system=system_prompt,
             stream=False,
             timeout=timeout,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
         )
 
         if not raw_response or not raw_response.strip():
@@ -313,7 +934,7 @@ def generate_podcast_script(
         return DialogueParser.parse(raw_response, default_language=lang)
 
     # 2. Multi-Act Sequential Generation Mode (Standard, Deep Dive, Extended In-Depth)
-    full_script: List[DialogueTurn] = []
+    full_script: list[DialogueTurn] = []
     total_acts = len(act_specs)
 
     for act_idx, act in enumerate(act_specs, 1):
@@ -327,7 +948,13 @@ def generate_podcast_script(
         next_speaker = "Host 1"
         if full_script:
             last_speaker = full_script[-1].speaker
-            next_speaker = "Host 2" if "1" in last_speaker or "kari" in last_speaker.lower() or "jenny" in last_speaker.lower() else "Host 1"
+            next_speaker = (
+                "Host 2"
+                if "1" in last_speaker
+                or "kari" in last_speaker.lower()
+                or "jenny" in last_speaker.lower()
+                else "Host 1"
+            )
 
         if progress_callback:
             progress_callback(
@@ -336,18 +963,22 @@ def generate_podcast_script(
             )
 
         prev_dict_turns = [t.to_dict() for t in full_script[-2:]] if full_script else None
-        act_system_prompt = build_act_system_prompt(
+        act_system_prompt = _call_with_supported_kwargs(
+            build_act_system_prompt,
             act=act,
             total_acts=total_acts,
             language=lang,
             tone_style=tone_style,
-            next_speaker=next_speaker
+            grounding_mode=grounding_mode,
+            next_speaker=next_speaker,
         )
-        act_user_prompt = build_act_user_prompt(
+        act_user_prompt = _call_with_supported_kwargs(
+            build_act_user_prompt,
             content=content,
             prev_turns=prev_dict_turns,
             language=lang,
-            is_topic=is_topic
+            grounding_mode=grounding_mode,
+            is_topic=is_topic,
         )
 
         raw_act_response = client.generate(
@@ -356,7 +987,7 @@ def generate_podcast_script(
             system=act_system_prompt,
             stream=False,
             timeout=timeout,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
         )
 
         if raw_act_response and raw_act_response.strip():
@@ -365,7 +996,7 @@ def generate_podcast_script(
                 if act_turns:
                     for t in act_turns:
                         full_script.append(t)
-            except Exception as parse_err:
+            except Exception:
                 if not full_script and act_idx == 1:
                     # Fallback retry on Act 1 if parsing failed
                     pass

@@ -1,10 +1,22 @@
-# PodcastStudio - Development, Build, and Testing Dependencies
+# LocalPodcastLLMStudio - Development, Build, Testing & Security Dependencies
 
 -r requirements.txt
 
-# Executable Packaging & Freezing Pipeline (One-Click Windows .exe)
+# Executable Packaging & Freezing Pipeline (One-Click Standalone Windows .exe)
 pyinstaller>=6.3.0
 
-# Unit and Integration Testing Framework
+# Unit, Integration, and Asynchronous Test Framework
 pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.23.0
 pytest-mock>=3.12.0
+
+# Static Analysis, Linting, and Code Formatting
+ruff>=0.1.0
+
+# Static Type Checking Engine
+mypy>=1.8.0
+
+# Security Auditing & Dependency Vulnerability Scanning
+bandit>=1.7.0
+pip-audit>=2.7.0

@@ -82,3 +82,102 @@ The user has specified 4 episode length options:
 
 Please ensure the UI episode length dropdown and the LLM prompt generator support these 4 depth levels (generating appropriately sized turn counts and pacing).
 
+## Follow-up — 2026-08-20T17:56:01Z
+
+Harden and standardize the `LocalPodcastStudio` repository by conducting a comprehensive security audit, enforcing strict static analysis / linting / testing standards, adding open-source governance (MIT license, security and contribution policies), and configuring production-ready GitHub Actions CI/CD workflows for automated testing, linting, security scanning, and PyInstaller Windows release deployments.
+
+Working directory: c:\Users\torpr\Documents\antigravity\epic-hubble
+Integrity mode: development
+
+## Requirements
+
+### R1. Comprehensive Security & Dependency Audit
+- Conduct a security scan using static security analysis tools (e.g. `bandit`, `pip-audit`) to detect and remediate potential vulnerabilities or insecure dependencies.
+- Verify safe handling and validation for input files (`.pdf`, `.txt`, `.md`) and external process/subprocess calls.
+- Confirm zero hardcoded secrets, private credentials, or personal system paths across all files and git history.
+- Add a formal `SECURITY.md` defining the vulnerability disclosure policy and supported versions.
+
+### R2. Strict Code Quality, Static Typing & Formatting
+- Introduce a centralized `pyproject.toml` configuration enforcing strict code quality with modern linters and formatters (e.g., `ruff` for linting/formatting and `mypy` for static type checking).
+- Refactor and clean up any detected code smells, dead code, type warnings, or inconsistencies across `core/`, `ui/`, `app.py`, and test suites.
+- Ensure 100% test pass rate with coverage verification across all unit and integration tests.
+
+### R3. GitHub Governance & Community Standards
+- Add an official `LICENSE` file (MIT License).
+- Create repository governance templates in `.github/`:
+  - `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`
+  - `.github/pull_request_template.md`
+  - Issue templates (`.github/ISSUE_TEMPLATE/bug_report.yml`, `.github/ISSUE_TEMPLATE/feature_request.yml`)
+- Update `README.md` with CI build badges, security status, and clear contribution and release guidelines.
+
+### R4. Automated CI/CD Workflows & GitHub Release Deployment
+- **CI Pipeline (`.github/workflows/ci.yml`)**: Automated pipeline triggered on push and pull requests to `main` that runs linting (`ruff`), type checking (`mypy`), security scanning (`bandit`), and unit/e2e test suites on Windows and Ubuntu environments.
+- **Release Pipeline (`.github/workflows/release.yml`)**: Automated release pipeline triggered on semantic version tags (`v*.*.*`) that builds the standalone Windows executable (`PodcastStudio.exe` via PyInstaller), computes SHA256 checksums, and publishes the binary and checksum assets to a new GitHub Release.
+
+## Acceptance Criteria
+
+### Security & Governance
+- [ ] Security scanners (`bandit`, `pip-audit`) report 0 high or critical vulnerabilities.
+- [ ] No personal workstation paths, tokens, or credentials exist in the tracked repository.
+- [ ] `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, and GitHub issue/PR templates are present and properly structured.
+
+### Strict Code Quality & Testing
+- [ ] `pyproject.toml` is configured with strict linting, formatting, and typing rules.
+- [ ] `ruff check .` and `ruff format --check .` execute with 0 errors or warnings.
+- [ ] All tests in `tests/` pass with 100% success rate under `pytest`.
+- [ ] Build scripts (`build_exe.bat`, `build_exe.ps1`, `setup.bat`, `setup.ps1`) run cleanly without deprecated syntax.
+
+### GitHub Deployment Automation
+- [ ] `.github/workflows/ci.yml` is valid YAML and includes linting, type-checking, and test jobs.
+- [ ] `.github/workflows/release.yml` is valid YAML and includes PyInstaller compilation and GitHub Release asset creation.
+- [ ] Project documentation (`README.md`) reflects updated architecture, CI badges, and release instructions.
+
+## Follow-up — 2026-08-20T18:09:03Z
+
+Implement an in-app 1-click prerequisite management system (automated Ollama service launcher and streaming model downloader with UI progress) and a configurable multi-tier document grounding engine (Strict Source-Only, Creative Analogy, and Open Topic) for the PodcastStudio desktop application.
+
+Working directory: c:\Users\torpr\Documents\antigravity\epic-hubble
+Integrity mode: development
+
+## Requirements
+
+### R1. In-App 1-Click Prerequisite Manager & Model Downloader
+- Detect missing or offline prerequisites in real time (Ollama offline, no models installed, Edge-TTS reachability).
+- Provide a 1-click "Start Ollama Service" button in diagnostic dialogs / model status panel that attempts to launch the local Ollama background process on Windows.
+- Provide a 1-click "Install Recommended Model" action (e.g. `llama3.1:8b` or `qwen2.5:7b`) that interfaces with the Ollama `/api/pull` streaming API to report real-time download percentage, download speed/bytes, and completion state.
+- Ensure all prerequisite operations run in asynchronous non-blocking worker threads so the CustomTkinter UI stays responsive with interactive progress bars.
+
+### R2. Multi-Tier Grounding & Anti-Hallucination Engine
+- Define 3 distinct grounding modes configurable via UI:
+  1. **Strict Source-Only**: Strict adherence to the provided document. Strictly forbids inventing external facts, unmentioned statistics, or fabricated claims. If a detail is missing, hosts explicitly acknowledge the document does not mention it.
+  2. **Creative Analogy & Synthesis**: Grounds core insights in the document while allowing relatable real-world analogies, metaphors, and conversational illustrative examples.
+  3. **Open Topic / Scratch**: Free generative synthesis from a topic prompt without document constraints.
+- Implement specialized system and user prompt engineering in `core/prompts.py` supporting both Norwegian Bokmål (`nb-NO`) and English (`en-US`) across all 3 grounding modes and all 4 episode lengths.
+
+### R3. UI Integration, Controls & Responsive Feedback
+- Add a Grounding Mode selector (dropdown or segmented card) to the PodcastStudio configuration panel in `ui/main_window.py`.
+- Upgrade the Model Status section and `ActionableErrorDialog` with interactive action buttons ("Start Ollama", "Download Model") and a dynamic progress bar for model downloads.
+- Connect background events (`PULL_PROGRESS`, `PULL_DONE`, `PULL_ERROR`) to the thread-safe UI message queue.
+
+### R4. Automated Testing & Verification
+- Unit and integration tests in `tests/` verifying:
+  - Streaming model pull parser and callback handling in `core/ollama.py`.
+  - Grounding prompt generation and negative constraint verification across languages in `core/prompts.py`.
+  - UI state transitions, queue messaging, and error dialog actions.
+- Ensure 100% test pass rate with `pytest` and clean linting with `ruff check .`.
+
+## Acceptance Criteria
+
+### Prerequisite Management
+- [ ] If Ollama is offline, the UI shows a "Start Ollama" action that can launch the service process.
+- [ ] If no models exist or when requested, "Install Recommended Model" pulls a model via Ollama `/api/pull` streaming API, displaying dynamic download progress (0-100%) in the UI without freezing.
+- [ ] Model dropdown auto-refreshes and selects the newly installed model upon download completion.
+
+### Grounding & Factual Integrity
+- [ ] Grounding mode is selectable in the UI ("Strict Source-Only", "Creative Analogy", "Open Topic").
+- [ ] In Strict Grounding mode, generated system prompts contain explicit negative constraints forbidding hallucinated facts/data outside the provided text.
+- [ ] Bilingual support (Norwegian Kari/Ola and English Jenny/Guy) works seamlessly across all grounding modes and format lengths.
+
+### Code Quality & Test Suite
+- [ ] `pytest tests/` passes with 100% success rate across all new and existing test suites.
+- [ ] `ruff check .` and `ruff format --check .` execute with zero errors or warnings.

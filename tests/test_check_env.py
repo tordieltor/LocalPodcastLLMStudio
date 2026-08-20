@@ -10,12 +10,10 @@ Covers Tiers 1 and 2:
 - JSON reporting and CLI option execution
 """
 
-import sys
 import json
-import socket
+import sys
 import urllib.error
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import check_env
 
@@ -65,6 +63,7 @@ class TestCheckEnvUnit:
 
     def test_check_packages_missing(self, monkeypatch):
         orig_import = __import__
+
         def mock_import(name, *args, **kwargs):
             if name == "pypdf":
                 raise ImportError("No module named pypdf")
@@ -85,6 +84,7 @@ class TestCheckEnvUnit:
 
     def test_check_pyinstaller_missing(self, monkeypatch):
         orig_import = __import__
+
         def mock_import(name, *args, **kwargs):
             if name == "PyInstaller":
                 raise ImportError("No module named PyInstaller")
@@ -132,7 +132,9 @@ class TestCheckEnvOllama:
             assert "ollama pull" in res["remediation"]
 
     def test_check_ollama_offline_url_error(self):
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
+        with patch(
+            "urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")
+        ):
             res = check_env.check_ollama_service("http://localhost:11434")
             assert res["ok"] is False
             assert res["online"] is False
@@ -140,11 +142,17 @@ class TestCheckEnvOllama:
             assert "ollama serve" in res["remediation"]
 
     def test_check_ollama_timeout(self):
-        with patch("urllib.request.urlopen", side_effect=socket.timeout()):
+        with patch("urllib.request.urlopen", side_effect=TimeoutError()):
             res = check_env.check_ollama_service("http://localhost:11434", timeout_sec=0.1)
             assert res["ok"] is False
             assert res["online"] is False
             assert "timed out" in res["detail"]
+
+    def test_check_ollama_service_invalid_scheme(self):
+        res = check_env.check_ollama_service("file:///etc/passwd")
+        assert res["ok"] is False
+        assert res["online"] is False
+        assert "Invalid Ollama URL" in res["detail"]
 
     def test_check_edge_tts_network_success(self):
         mock_sock = MagicMock()
@@ -155,7 +163,7 @@ class TestCheckEnvOllama:
             assert res["warn"] is False
 
     def test_check_edge_tts_network_failure(self):
-        with patch("socket.create_connection", side_effect=socket.error("DNS failed")):
+        with patch("socket.create_connection", side_effect=OSError("DNS failed")):
             res = check_env.check_edge_tts_network()
             assert res["ok"] is False
             assert res["reachable"] is False
@@ -173,8 +181,10 @@ class TestCheckEnvAggregationAndCLI:
         mock_resp.__enter__.return_value = mock_resp
 
         mock_sock = MagicMock()
-        with patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch("socket.create_connection", return_value=mock_sock):
+        with (
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            patch("socket.create_connection", return_value=mock_sock),
+        ):
             report = check_env.run_all_checks()
             assert "timestamp" in report
             assert "checks" in report
@@ -190,8 +200,10 @@ class TestCheckEnvAggregationAndCLI:
         mock_sock = MagicMock()
 
         monkeypatch.setattr(sys, "argv", ["check_env.py", "--json"])
-        with patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch("socket.create_connection", return_value=mock_sock):
+        with (
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            patch("socket.create_connection", return_value=mock_sock),
+        ):
             exit_code = check_env.main()
             captured = capsys.readouterr()
             parsed = json.loads(captured.out)
@@ -207,8 +219,10 @@ class TestCheckEnvAggregationAndCLI:
         mock_sock = MagicMock()
 
         monkeypatch.setattr(sys, "argv", ["check_env.py", "--quiet"])
-        with patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch("socket.create_connection", return_value=mock_sock):
+        with (
+            patch("urllib.request.urlopen", return_value=mock_resp),
+            patch("socket.create_connection", return_value=mock_sock),
+        ):
             exit_code = check_env.main()
             captured = capsys.readouterr()
             # In quiet mode, stdout should be empty

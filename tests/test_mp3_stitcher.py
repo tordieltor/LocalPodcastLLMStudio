@@ -13,20 +13,17 @@ Covers Tiers 1 and 2:
 """
 
 import os
-import io
+
 import pytest
 
-try:
-    from core.mp3_stitcher import MP3Stitcher, stitch_mp3_files
-except ImportError:
-    pass
+from core.mp3_stitcher import MP3Stitcher, stitch_mp3_files
 
 
 class TestMP3StitcherHeadersAndFrames:
     """Tier 1: MPEG header parsing and ID3 tag manipulation."""
 
     def test_strip_id3v2_tag(self, synthetic_mp3_factory):
-        from core.mp3_stitcher import MP3Stitcher
+
         raw_mp3 = synthetic_mp3_factory(num_frames=3, include_id3v2=True, include_id3v1=False)
         assert raw_mp3[:3] == b"ID3"
 
@@ -36,7 +33,7 @@ class TestMP3StitcherHeadersAndFrames:
         assert stripped[0] == 0xFF
 
     def test_strip_id3v1_tag(self, synthetic_mp3_factory):
-        from core.mp3_stitcher import MP3Stitcher
+
         raw_mp3 = synthetic_mp3_factory(num_frames=3, include_id3v2=False, include_id3v1=True)
         assert raw_mp3[-128:-125] == b"TAG"
 
@@ -45,7 +42,7 @@ class TestMP3StitcherHeadersAndFrames:
         assert stripped[-128:-125] != b"TAG"
 
     def test_parse_frame_header_valid(self, single_frame_mp3):
-        from core.mp3_stitcher import MP3Stitcher
+
         res = MP3Stitcher.parse_frame_header(single_frame_mp3[:4])
         assert res is not None
         frame_len, version_id, bitrate, sample_rate = res
@@ -54,13 +51,13 @@ class TestMP3StitcherHeadersAndFrames:
         assert sample_rate == 24000
 
     def test_parse_frame_header_invalid_sync(self):
-        from core.mp3_stitcher import MP3Stitcher
+
         bad_header = b"\x00\x00\x00\x00"
         res = MP3Stitcher.parse_frame_header(bad_header)
         assert res is None
 
     def test_extract_audio_frames(self, synthetic_mp3_factory):
-        from core.mp3_stitcher import MP3Stitcher
+
         raw_mp3 = synthetic_mp3_factory(num_frames=4, include_id3v2=True, include_id3v1=True)
         frames_res = MP3Stitcher.extract_audio_frames(raw_mp3)
         if isinstance(frames_res, tuple):
@@ -77,35 +74,34 @@ class TestMP3StitcherAssemblyAndExport:
     """Tier 2: Silence injection, ID3 tag writing, and full audio stitching."""
 
     def test_generate_silence_frame(self):
-        from core.mp3_stitcher import MP3Stitcher
+
         silence = MP3Stitcher.generate_silence_frame()
         assert len(silence) == 144
         assert silence[0] == 0xFF
         assert silence[1] & 0xE0 == 0xE0
 
     def test_generate_silence_bytes(self):
-        from core.mp3_stitcher import MP3Stitcher
+
         silence_bytes = MP3Stitcher.generate_silence_bytes(duration_ms=350)
         assert len(silence_bytes) > 0
         # Multiples of single frame length (144)
         assert len(silence_bytes) % 144 == 0
 
     def test_build_id3v23_tag(self):
-        from core.mp3_stitcher import MP3Stitcher
-        tag = MP3Stitcher.build_id3v23_tag(title="Test Episode", artist="PodcastStudio")
+
+        tag = MP3Stitcher.build_id3v23_tag(title="Test Episode", artist="LocalPodcastLLMStudio")
         assert tag[:3] == b"ID3"
         assert tag[3] == 0x03  # ID3v2.3
         assert b"TIT2" in tag
         assert b"TPE1" in tag
 
     def test_stitch_empty_inputs_raises_error(self, tmp_path):
-        from core.mp3_stitcher import stitch_mp3_files
+
         out_path = tmp_path / "empty.mp3"
         with pytest.raises(ValueError):
             stitch_mp3_files([], str(out_path))
 
     def test_stitch_mp3_files_to_disk(self, tmp_path, synthetic_mp3_factory):
-        from core.mp3_stitcher import stitch_mp3_files
 
         f1 = tmp_path / "turn1.mp3"
         f2 = tmp_path / "turn2.mp3"
@@ -118,7 +114,7 @@ class TestMP3StitcherAssemblyAndExport:
             str(out_path),
             silence_duration_ms=350,
             title="Episode 1",
-            artist="Kari & Ola"
+            artist="Kari & Ola",
         )
 
         assert os.path.exists(result_path)
@@ -129,7 +125,6 @@ class TestMP3StitcherAssemblyAndExport:
             assert b"TIT2" in data
 
     def test_stitch_mp3_bytes_inputs(self, tmp_path, synthetic_mp3_factory):
-        from core.mp3_stitcher import stitch_mp3_files
 
         b1 = synthetic_mp3_factory(num_frames=2, include_id3v2=True)
         b2 = synthetic_mp3_factory(num_frames=2, include_id3v2=True)

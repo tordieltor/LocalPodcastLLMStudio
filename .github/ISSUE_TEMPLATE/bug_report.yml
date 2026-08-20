@@ -1,0 +1,117 @@
+name: "🐛 Bug Report"
+description: "Report an issue, defect, or unexpected error in LocalPodcastLLMStudio"
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please fill out the form below with as much detail as possible to help us diagnose and resolve the issue quickly.
+        
+        Before filing:
+        - Check existing issues to see if this has already been reported.
+        - Run `python check_env.py` to check your environment health.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe the Bug"
+      description: "A clear and concise description of what the bug is."
+      placeholder: "When clicking 'Start Full Generation', the application..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to Reproduce"
+      description: "Step-by-step instructions to reproduce the behavior."
+      placeholder: |
+        1. Launch application via `python app.py` or `LocalPodcastLLMStudio.exe`
+        2. Select 'Norwegian Bokmål' from Language dropdown
+        3. Load a PDF document via 'Browse...'
+        4. Select 'Deep Dive' episode length
+        5. Click 'Start Full Generation'
+        6. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected Behavior"
+      description: "A clear description of what you expected to happen."
+      placeholder: "The application should extract text, generate dialogue script, synthesize audio, and output a playable MP3."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Error Messages & Terminal Logs"
+      description: "Paste complete error messages, stack traces, or output from `python check_env.py --json` here."
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: "Operating System"
+      description: "What operating system are you running?"
+      options:
+        - "Windows 11 (64-bit)"
+        - "Windows 10 (64-bit)"
+        - "Linux / Ubuntu (64-bit)"
+        - "macOS"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: execution_mode
+    attributes:
+      label: "Execution Mode"
+      description: "How are you running LocalPodcastLLMStudio?"
+      options:
+        - "Standalone Executable (LocalPodcastLLMStudio.exe from GitHub Releases)"
+        - "Source Code (via .venv and setup.ps1 / setup.bat)"
+        - "Custom / Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: python_version
+    attributes:
+      label: "Python Version"
+      description: "Which Python version are you using? (If running from source)"
+      options:
+        - "N/A (Using Standalone .exe)"
+        - "Python 3.12"
+        - "Python 3.11"
+        - "Python 3.10"
+        - "Other"
+    validations:
+      required: true
+
+  - type: input
+    id: ollama_model
+    attributes:
+      label: "Ollama Model & Version"
+      description: "Which Ollama model were you using? (e.g. mistral-nemo:latest, llama3.1:8b, qwen2.5:7b)"
+      placeholder: "mistral-nemo:latest"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: sanity_checks
+    attributes:
+      label: "Sanity Checks"
+      description: "Please confirm the following:"
+      options:
+        - label: "I have searched open and closed issues for duplicates."
+          required: true
+        - label: "I have verified that Ollama is running (`ollama list` or `check_env.py`)."
+          required: false
+        - label: "I am using the latest version of LocalPodcastLLMStudio."
+          required: true

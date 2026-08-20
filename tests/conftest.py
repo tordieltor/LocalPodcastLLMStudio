@@ -1,34 +1,22 @@
 """
-PodcastStudio Test Suite - Shared Fixtures and Utilities
+LocalPodcastLLMStudio Test Suite - Shared Fixtures and Utilities
 =========================================================
 Provides reusable test fixtures, mock servers, synthetic MPEG audio generators,
 sample document factories, and simulated external services (Ollama, Edge-TTS, WinMM).
 """
 
-import os
 import io
 import struct
-import tempfile
+from typing import Any
+
 import pytest
-from typing import List, Dict, Any, Generator
 
-# Import core models if available or provide fallback
-try:
-    from core.parser import DialogueTurn
-except ImportError:
-    try:
-        from core.models import DialogueTurn
-    except ImportError:
-        from dataclasses import dataclass
-        @dataclass
-        class DialogueTurn:
-            speaker: str
-            text: str
-
+from core.parser import DialogueTurn
 
 # ==============================================================================
 # Synthetic MPEG Frame & MP3 Generators
 # ==============================================================================
+
 
 def make_mpeg2_l3_frame(bitrate_idx: int = 4, sr_idx: int = 1, padding: int = 0) -> bytes:
     """
@@ -90,8 +78,8 @@ def make_id3v1_tag(title: str = "Test Title", artist: str = "Test Artist") -> by
     tag[:3] = b"TAG"
     t_bytes = title.encode("ascii", errors="replace")[:30]
     a_bytes = artist.encode("ascii", errors="replace")[:30]
-    tag[3:3+len(t_bytes)] = t_bytes
-    tag[33:33+len(a_bytes)] = a_bytes
+    tag[3 : 3 + len(t_bytes)] = t_bytes
+    tag[33 : 33 + len(a_bytes)] = a_bytes
     return bytes(tag)
 
 
@@ -100,7 +88,7 @@ def make_synthetic_mp3(
     include_id3v2: bool = True,
     include_id3v1: bool = False,
     title: str = "Turn Audio",
-    artist: str = "PodcastStudio"
+    artist: str = "LocalPodcastLLMStudio",
 ) -> bytes:
     """Builds a complete synthetic MP3 binary with headers, frames, and optional tags."""
     out = io.BytesIO()
@@ -135,13 +123,14 @@ def multi_frame_mp3() -> bytes:
 # Document & File Fixtures
 # ==============================================================================
 
+
 @pytest.fixture
 def sample_text_utf8(tmp_path) -> str:
     """Generates a sample UTF-8 encoded text document."""
     content = (
-        "PodcastStudio Test Document\n"
+        "LocalPodcastLLMStudio Test Document\n"
         "Dette er et testdokument på norsk med spesialtegn: æ, ø, å.\n"
-        "PodcastStudio gjør det enkelt å lage to-stemmers podcasts med lokal KI.\n"
+        "LocalPodcastLLMStudio gjør det enkelt å lage to-stemmers podcasts med lokal KI.\n"
         "Vert 1 stiller spørsmål, mens Vert 2 forklarer faglige temaer i dybden."
     )
     p = tmp_path / "sample_utf8.txt"
@@ -153,7 +142,7 @@ def sample_text_utf8(tmp_path) -> str:
 def sample_text_utf8_bom(tmp_path) -> str:
     """Generates a sample UTF-8 with BOM text document."""
     content = (
-        "PodcastStudio BOM Document\n"
+        "LocalPodcastLLMStudio BOM Document\n"
         "Tekst med UTF-8 Byte Order Mark (BOM).\n"
         "Inneholder norske bokstaver: Æ, Ø, Å."
     )
@@ -166,7 +155,7 @@ def sample_text_utf8_bom(tmp_path) -> str:
 def sample_text_cp1252(tmp_path) -> str:
     """Generates a sample Windows CP1252 encoded text document."""
     content = (
-        "PodcastStudio CP1252 Document\n"
+        "LocalPodcastLLMStudio CP1252 Document\n"
         "Windows-1252 encoded document with characters: \u00e6, \u00f8, \u00e5."
     )
     p = tmp_path / "sample_cp1252.txt"
@@ -178,7 +167,7 @@ def sample_text_cp1252(tmp_path) -> str:
 def sample_text_latin1(tmp_path) -> str:
     """Generates a sample ISO-8859-1 (Latin-1) encoded text document."""
     content = (
-        "PodcastStudio Latin-1 Document\n"
+        "LocalPodcastLLMStudio Latin-1 Document\n"
         "ISO-8859-1 encoded content: \u00e6, \u00f8, \u00e5, \u00e9, \u00fc."
     )
     p = tmp_path / "sample_latin1.txt"
@@ -210,7 +199,8 @@ def sample_pdf_file(tmp_path) -> str:
     """Generates a valid test PDF file containing extractable text using pypdf/io."""
     try:
         from pypdf import PdfWriter
-        writer = PdfWriter()
+
+        PdfWriter()
         # Add an empty page with some mock text if possible, or build basic PDF stream
         # Minimal valid PDF structure with text stream
         p = tmp_path / "sample_document.pdf"
@@ -220,7 +210,7 @@ def sample_pdf_file(tmp_path) -> str:
             b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
             b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n"
             b"4 0 obj << /Length 55 >> stream\n"
-            b"BT /F1 12 Tf 72 712 Td (PodcastStudio PDF Ingestion Test Document) Tj ET\n"
+            b"BT /F1 12 Tf 72 712 Td (LocalPodcastLLMStudio PDF Ingestion Test Document) Tj ET\n"
             b"endstream\n"
             b"endobj\n"
             b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
@@ -257,65 +247,96 @@ def sample_corrupted_pdf(tmp_path) -> str:
 # Dialogue & LLM Output Fixtures
 # ==============================================================================
 
+
 @pytest.fixture
-def sample_norwegian_turns() -> List[DialogueTurn]:
+def sample_norwegian_turns() -> list[DialogueTurn]:
     """Sample list of DialogueTurn dataclasses in Norwegian."""
     return [
-        DialogueTurn(speaker="Host 1", text="Hei og hjertelig velkommen til dagens episode av PodcastStudio!"),
-        DialogueTurn(speaker="Host 2", text="Hei Kari! I dag skal vi ta for oss et utrolig spennende tema."),
-        DialogueTurn(speaker="Host 1", text="Ja, vi skal snakke om hvordan store språkmodeller fungerer lokalt."),
-        DialogueTurn(speaker="Host 2", text="Det stemmer. Med verktøy som Ollama kan hvem som helst kjøre avansert KI rett på egen maskin."),
-        DialogueTurn(speaker="Host 1", text="Tusen takk for en fantastisk samtale, Ola, og takk til alle som lyttet på!"),
-        DialogueTurn(speaker="Host 2", text="Takk for i dag, Kari! Vi høres igjen i neste episode.")
+        DialogueTurn(
+            speaker="Host 1",
+            text="Hei og hjertelig velkommen til dagens episode av LocalPodcastLLMStudio!",
+        ),
+        DialogueTurn(
+            speaker="Host 2", text="Hei Kari! I dag skal vi ta for oss et utrolig spennende tema."
+        ),
+        DialogueTurn(
+            speaker="Host 1",
+            text="Ja, vi skal snakke om hvordan store språkmodeller fungerer lokalt.",
+        ),
+        DialogueTurn(
+            speaker="Host 2",
+            text="Det stemmer. Med verktøy som Ollama kan hvem som helst kjøre avansert KI rett på egen maskin.",
+        ),
+        DialogueTurn(
+            speaker="Host 1",
+            text="Tusen takk for en fantastisk samtale, Ola, og takk til alle som lyttet på!",
+        ),
+        DialogueTurn(
+            speaker="Host 2", text="Takk for i dag, Kari! Vi høres igjen i neste episode."
+        ),
     ]
 
 
 @pytest.fixture
-def sample_english_turns() -> List[DialogueTurn]:
+def sample_english_turns() -> list[DialogueTurn]:
     """Sample list of DialogueTurn dataclasses in English."""
     return [
-        DialogueTurn(speaker="Host 1", text="Welcome back to the show, everyone! Today we have an exciting topic."),
-        DialogueTurn(speaker="Host 2", text="Great to be here, Jenny! We're diving into local AI and offline audio synthesis."),
-        DialogueTurn(speaker="Host 1", text="How does PodcastStudio manage to generate studio audio without cloud fees?"),
-        DialogueTurn(speaker="Host 2", text="It pairs local LLMs via Ollama with Edge-TTS and direct binary MP3 stitching."),
-        DialogueTurn(speaker="Host 1", text="That is truly remarkable. Thanks for tuning in everyone!"),
-        DialogueTurn(speaker="Host 2", text="Thanks Jenny, and see you all next time!")
+        DialogueTurn(
+            speaker="Host 1",
+            text="Welcome back to the show, everyone! Today we have an exciting topic.",
+        ),
+        DialogueTurn(
+            speaker="Host 2",
+            text="Great to be here, Jenny! We're diving into local AI and offline audio synthesis.",
+        ),
+        DialogueTurn(
+            speaker="Host 1",
+            text="How does LocalPodcastLLMStudio manage to generate studio audio without cloud fees?",
+        ),
+        DialogueTurn(
+            speaker="Host 2",
+            text="It pairs local LLMs via Ollama with Edge-TTS and direct binary MP3 stitching.",
+        ),
+        DialogueTurn(
+            speaker="Host 1", text="That is truly remarkable. Thanks for tuning in everyone!"
+        ),
+        DialogueTurn(speaker="Host 2", text="Thanks Jenny, and see you all next time!"),
     ]
 
 
 @pytest.fixture
-def llm_output_cases() -> Dict[str, str]:
+def llm_output_cases() -> dict[str, str]:
     """Provides a variety of LLM output formats to test parser resilience."""
     return {
         "pure_json": (
-            '[\n'
+            "[\n"
             '  {"speaker": "Host 1", "text": "Welcome to the show!"},\n'
             '  {"speaker": "Host 2", "text": "Glad to be here, Jenny!"}\n'
-            ']'
+            "]"
         ),
         "markdown_fenced": (
-            'Here is your podcast script:\n\n'
-            '```json\n'
-            '[\n'
+            "Here is your podcast script:\n\n"
+            "```json\n"
+            "[\n"
             '  {"speaker": "Host 1", "text": "Welcome to the show!"},\n'
             '  {"speaker": "Host 2", "text": "Glad to be here, Jenny!"}\n'
-            ']\n'
-            '```\n\n'
-            'I hope this meets your expectations!'
+            "]\n"
+            "```\n\n"
+            "I hope this meets your expectations!"
         ),
         "fenced_no_lang": (
-            '```\n'
-            '[\n'
+            "```\n"
+            "[\n"
             '  {"speaker": "Host 1", "text": "Welcome to the show!"},\n'
             '  {"speaker": "Host 2", "text": "Glad to be here, Jenny!"}\n'
-            ']\n'
-            '```'
+            "]\n"
+            "```"
         ),
         "trailing_commas": (
-            '[\n'
+            "[\n"
             '  {"speaker": "Host 1", "text": "Welcome to the show!",},\n'
             '  {"speaker": "Host 2", "text": "Glad to be here, Jenny!",}\n'
-            ']'
+            "]"
         ),
         "single_quotes": (
             "[\n"
@@ -325,17 +346,17 @@ def llm_output_cases() -> Dict[str, str]:
         ),
         "preamble_and_postamble": (
             "Sure thing! Here is the dialogue between Kari and Ola:\n"
-            '[\n'
+            "[\n"
             '  {"speaker": "Kari", "text": "Hei og velkommen!"},\n'
             '  {"speaker": "Ola", "text": "Hei Kari, spennende tema i dag!"}\n'
-            ']\n'
+            "]\n"
             "Let me know if you need any adjustments!"
         ),
         "broken_brackets_regex": (
-            'Some broken intro without valid outer array:\n'
+            "Some broken intro without valid outer array:\n"
             '{"speaker": "Host 1", "text": "First line of dialogue."}\n'
             '{"speaker": "Host 2", "text": "Second line answering the question."}\n'
-            'End of generation.'
+            "End of generation."
         ),
         "plain_text_transcript": (
             "Host 1: Welcome to the episode everyone!\n"
@@ -348,7 +369,7 @@ def llm_output_cases() -> Dict[str, str]:
             "Ola: Hei Kari! I dag skal vi se nærmere på rapporten.\n"
             "Kari: Hva er de viktigste funnene?\n"
             "Ola: Hovedfunnet er en markant økning i produktivitet."
-        )
+        ),
     }
 
 
@@ -356,8 +377,9 @@ def llm_output_cases() -> Dict[str, str]:
 # Mock Ollama API Fixtures
 # ==============================================================================
 
+
 @pytest.fixture
-def mock_ollama_tags_data() -> Dict[str, Any]:
+def mock_ollama_tags_data() -> dict[str, Any]:
     """Standard mock data returned by GET /api/tags."""
     return {
         "models": [
@@ -370,8 +392,8 @@ def mock_ollama_tags_data() -> Dict[str, Any]:
                     "format": "gguf",
                     "family": "llama",
                     "parameter_size": "8.0B",
-                    "quantization_level": "Q4_K_M"
-                }
+                    "quantization_level": "Q4_K_M",
+                },
             },
             {
                 "name": "qwen2.5:7b",
@@ -382,8 +404,8 @@ def mock_ollama_tags_data() -> Dict[str, Any]:
                     "format": "gguf",
                     "family": "qwen2",
                     "parameter_size": "7.6B",
-                    "quantization_level": "Q4_K_M"
-                }
+                    "quantization_level": "Q4_K_M",
+                },
             },
             {
                 "name": "mistral-nemo:latest",
@@ -394,14 +416,14 @@ def mock_ollama_tags_data() -> Dict[str, Any]:
                     "format": "gguf",
                     "family": "mistral",
                     "parameter_size": "12.2B",
-                    "quantization_level": "Q4_K_M"
-                }
-            }
+                    "quantization_level": "Q4_K_M",
+                },
+            },
         ]
     }
 
 
 @pytest.fixture
-def mock_ollama_empty_tags() -> Dict[str, Any]:
+def mock_ollama_empty_tags() -> dict[str, Any]:
     """Mock data for Ollama running with 0 models."""
     return {"models": []}

@@ -1,5 +1,5 @@
 """
-PodcastStudio - Edge-TTS Neural Voice Synthesis Engine
+LocalPodcastLLMStudio - Edge-TTS Neural Voice Synthesis Engine
 Asynchronous and synchronous neural voice synthesis for Norwegian and English personas
 with rate/speed control and automatic connection retry logic.
 """
@@ -8,7 +8,7 @@ import asyncio
 import os
 import tempfile
 import threading
-from typing import List, Dict, Optional, Callable, Union
+from collections.abc import Callable
 
 from core.parser import DialogueTurn, normalize_speaker
 from core.prompts import normalize_language_code
@@ -16,7 +16,7 @@ from core.prompts import normalize_language_code
 # ==============================================================================
 # Voice Roster & Mapping
 # ==============================================================================
-VOICE_MAP: Dict[str, Dict[str, str]] = {
+VOICE_MAP: dict[str, dict[str, str]] = {
     "nb-NO": {
         "Host 1": "nb-NO-PernilleNeural",
         "Host 2": "nb-NO-FinnNeural",
@@ -28,7 +28,7 @@ VOICE_MAP: Dict[str, Dict[str, str]] = {
         "Host 2": "en-US-GuyNeural",
         "Jenny": "en-US-JennyNeural",
         "Guy": "en-US-GuyNeural",
-    }
+    },
 }
 
 DEFAULT_VOICES = {
@@ -45,7 +45,7 @@ def get_voice_for_speaker(speaker: str, language: str = "nb-NO") -> str:
     return voices.get(spk_norm, voices.get("Host 1", "en-US-JennyNeural"))
 
 
-def format_rate_str(rate: Union[str, int, float]) -> str:
+def format_rate_str(rate: str | int | float) -> str:
     """
     Normalizes rate input into Edge-TTS rate string, e.g. '+0%', '+10%', '-5%'.
     Clamps between -50% and +50% (standard UX: -10% to +15%).
@@ -80,14 +80,14 @@ def format_rate_str(rate: Union[str, int, float]) -> str:
 async def synthesize_turn(
     text: str,
     voice: str,
-    rate: Union[str, int, float] = "+0%",
-    output_path: Optional[str] = None,
-    max_retries: int = 3
+    rate: str | int | float = "+0%",
+    output_path: str | None = None,
+    max_retries: int = 3,
 ) -> bytes:
     """
     Synthesizes a single dialogue line using edge-tts.Communicate.
     Returns raw MP3 bytes and optionally saves to output_path.
-    
+
     Raises:
         RuntimeError: If synthesis fails after all retry attempts.
     """
@@ -96,21 +96,17 @@ async def synthesize_turn(
 
     try:
         import edge_tts
-    except ImportError:
+    except ImportError as err:
         raise RuntimeError(
             "edge-tts package is not installed. Please install edge-tts to synthesize audio."
-        )
+        ) from err
 
     rate_formatted = format_rate_str(rate)
     cleaned_text = text.strip()
 
     for attempt in range(1, max_retries + 1):
         try:
-            communicate = edge_tts.Communicate(
-                text=cleaned_text,
-                voice=voice,
-                rate=rate_formatted
-            )
+            communicate = edge_tts.Communicate(text=cleaned_text, voice=voice, rate=rate_formatted)
             audio_chunks = []
             async for chunk in communicate.stream():
                 if isinstance(chunk, dict) and chunk.get("type") == "audio" and "data" in chunk:
@@ -143,7 +139,7 @@ class TTSEngine:
     and batch async/sync generation workflows.
     """
 
-    def __init__(self, language: str = "nb-NO", rate: Union[str, int, float] = "+0%"):
+    def __init__(self, language: str = "nb-NO", rate: str | int | float = "+0%"):
         self.language = normalize_language_code(language)
         self.rate = format_rate_str(rate)
 
@@ -157,30 +153,23 @@ class TTSEngine:
         voices = VOICE_MAP.get(self.language, VOICE_MAP["en-US"])
         return voices.get(norm_speaker, voices.get("Host 1", "en-US-JennyNeural"))
 
-    async def synthesize_turn_bytes(
-        self,
-        turn: DialogueTurn,
-        max_retries: int = 3
-    ) -> bytes:
+    async def synthesize_turn_bytes(self, turn: DialogueTurn, max_retries: int = 3) -> bytes:
         """Synthesizes a single dialogue turn to MP3 bytes."""
         voice = self.get_voice_for_speaker(turn.speaker)
         return await synthesize_turn(
-            text=turn.text,
-            voice=voice,
-            rate=self.rate,
-            max_retries=max_retries
+            text=turn.text, voice=voice, rate=self.rate, max_retries=max_retries
         )
 
     async def synthesize_dialogue_pipeline(
         self,
-        dialogue: List[DialogueTurn],
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        cancel_event: Optional[threading.Event] = None
-    ) -> List[bytes]:
+        dialogue: list[DialogueTurn],
+        progress_callback: Callable[[int, int, str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> list[bytes]:
         """
         Asynchronously synthesizes an entire dialogue script into a list of MP3 byte buffers.
         """
-        results: List[bytes] = []
+        results: list[bytes] = []
         total = len(dialogue)
 
         for idx, turn in enumerate(dialogue, start=1):
@@ -188,7 +177,6 @@ class TTSEngine:
                 raise RuntimeError("Audio synthesis cancelled by user.")
 
             speaker = normalize_speaker(turn.speaker)
-            voice = self.get_voice_for_speaker(speaker)
 
             if progress_callback:
                 progress_callback(idx, total, f"Synthesizing turn {idx}/{total} ({speaker})...")
@@ -200,19 +188,19 @@ class TTSEngine:
 
     async def synthesize_dialogue_async(
         self,
-        dialogue: List[DialogueTurn],
-        progress_cb: Optional[Callable[[int, int, str], None]] = None,
-        cancel_event: Optional[threading.Event] = None
-    ) -> List[bytes]:
+        dialogue: list[DialogueTurn],
+        progress_cb: Callable[[int, int, str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> list[bytes]:
         """Alias for synthesize_dialogue_pipeline."""
         return await self.synthesize_dialogue_pipeline(dialogue, progress_cb, cancel_event)
 
     def run_synthesis_sync(
         self,
-        dialogue: List[DialogueTurn],
-        progress_cb: Optional[Callable[[int, int, str], None]] = None,
-        cancel_event: Optional[threading.Event] = None
-    ) -> List[bytes]:
+        dialogue: list[DialogueTurn],
+        progress_cb: Callable[[int, int, str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> list[bytes]:
         """
         Synchronous helper for executing asynchronous TTS synthesis inside a worker thread.
         """
@@ -227,16 +215,16 @@ class TTSEngine:
 
 
 def synthesize_dialogue_audio(
-    dialogue: List[DialogueTurn],
+    dialogue: list[DialogueTurn],
     language: str = "nb-NO",
-    rate: Union[str, int, float] = "+0%",
-    output_dir: Optional[str] = None,
-    progress_cb: Optional[Callable[[int, int], None]] = None,
-    cancel_event: Optional[threading.Event] = None
-) -> List[str]:
+    rate: str | int | float = "+0%",
+    output_dir: str | None = None,
+    progress_cb: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> list[str]:
     """
     Synthesizes each dialogue turn to a temporary MP3 file on disk.
-    
+
     Args:
         dialogue: List of DialogueTurn objects.
         language: 'nb-NO' or 'en-US'.
@@ -244,31 +232,29 @@ def synthesize_dialogue_audio(
         output_dir: Directory for temporary turn MP3 files.
         progress_cb: Callback function receiving (current_turn_index, total_turns).
         cancel_event: Threading event for aborting synthesis.
-        
+
     Returns:
         List of paths to generated turn MP3 files.
-        
+
     Raises:
         RuntimeError: If synthesis is cancelled or fails.
     """
     if not dialogue:
         return []
 
-    target_dir = output_dir or tempfile.mkdtemp(prefix="podcaststudio_tts_")
+    target_dir = output_dir or tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
     os.makedirs(target_dir, exist_ok=True)
 
     engine = TTSEngine(language=language, rate=rate)
-    temp_file_paths: List[str] = []
+    temp_file_paths: list[str] = []
 
-    def handle_progress(current: int, total: int, msg: str):
+    def handle_progress(current: int, total: int, msg: str) -> None:
         if progress_cb:
             progress_cb(current, total)
 
     try:
         audio_buffers = engine.run_synthesis_sync(
-            dialogue=dialogue,
-            progress_cb=handle_progress,
-            cancel_event=cancel_event
+            dialogue=dialogue, progress_cb=handle_progress, cancel_event=cancel_event
         )
 
         for idx, buf in enumerate(audio_buffers, start=1):

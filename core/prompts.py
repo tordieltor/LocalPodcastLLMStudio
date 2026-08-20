@@ -1,15 +1,173 @@
 """
-PodcastStudio - Prompt Engineering & Persona Templates
+LocalPodcastLLMStudio - Prompt Engineering & Persona Templates
 Bilingual (Norwegian Bokmål / English), 4-tier episode length presets,
-and 3-tier style/tone configurations for two-host podcast dialogue.
+3-tier style/tone configurations, and 3-tier document grounding engine
+for two-host podcast dialogue.
 """
 
-from typing import Dict, Any, Optional
+from enum import Enum
+from typing import Any
+
+# ==============================================================================
+# Grounding Modes & Anti-Hallucination Directives
+# ==============================================================================
+
+
+class GroundingMode(str, Enum):
+    """Grounding modes for podcast dialogue generation."""
+
+    STRICT = "strict"
+    CREATIVE = "creative"
+    OPEN_TOPIC = "open_topic"
+
+
+GROUNDING_MODE_PRESETS: dict[str, dict[str, Any]] = {
+    "strict": {
+        "id": "strict",
+        "name_en": "Strict Source-Only",
+        "name_nb": "Streng kildetroskap",
+        "badge": "100% Document Fidelity",
+        "description_en": (
+            "Strict adherence to provided document. Forbids inventing external facts, "
+            "unmentioned statistics, or fabricated claims. Hosts acknowledge missing details."
+        ),
+        "description_nb": (
+            "Streng forankring i det oppgitte dokumentet. Forbyr oppspinn av eksterne fakta, "
+            "tall eller påstander. Programlederne erkjenner eksplisitt manglende detaljer."
+        ),
+        "anti_hallucination_level": "strict",
+    },
+    "creative": {
+        "id": "creative",
+        "name_en": "Creative Analogy & Synthesis",
+        "name_nb": "Kreativ analogi & syntese",
+        "badge": "Grounded Insights + Analogies",
+        "description_en": (
+            "Grounds core insights in document while allowing relatable real-world analogies, "
+            "metaphors, and conversational illustrative examples."
+        ),
+        "description_nb": (
+            "Forankrer kjerneinnsikten i dokumentet, men tillater levende hverdagsanalogier, "
+            "metaforer og illustrerende eksempler."
+        ),
+        "anti_hallucination_level": "moderate",
+    },
+    "open_topic": {
+        "id": "open_topic",
+        "name_en": "Open Topic / Scratch",
+        "name_nb": "Åpent tema / Fritt manus",
+        "badge": "Free Generative Synthesis",
+        "description_en": (
+            "Free generative synthesis from topic prompt without document constraints. "
+            "Generates rich perspectives, background, and engaging scenarios."
+        ),
+        "description_nb": (
+            "Fri generering og idéutvikling basert på tema uten dokumentbegrensninger. "
+            "Skaper fyldige perspektiver, bakgrunn og engasjerende samtaler."
+        ),
+        "anti_hallucination_level": "none",
+    },
+}
+
+GROUNDING_MODE_ALIASES: dict[str, str] = {
+    "strict": "strict",
+    "strict_source_only": "strict",
+    "strict_source": "strict",
+    "strict-source": "strict",
+    "source_only": "strict",
+    "source-only": "strict",
+    "source": "strict",
+    "factual": "strict",
+    "streng": "strict",
+    "kildetro": "strict",
+    "kilde": "strict",
+    "creative": "creative",
+    "creative_analogy": "creative",
+    "creative-analogy": "creative",
+    "creative_synthesis": "creative",
+    "analogy": "creative",
+    "synthesis": "creative",
+    "metaphor": "creative",
+    "kreativ": "creative",
+    "open_topic": "open_topic",
+    "open-topic": "open_topic",
+    "open": "open_topic",
+    "topic": "open_topic",
+    "scratch": "open_topic",
+    "free": "open_topic",
+    "fritt": "open_topic",
+    "tema": "open_topic",
+    "åpent": "open_topic",
+    "åpent_tema": "open_topic",
+    "apent": "open_topic",
+    "apent_tema": "open_topic",
+}
+
+
+def normalize_grounding_mode(mode: str | GroundingMode | Any) -> str:
+    """
+    Normalizes grounding mode string or enum to 'strict', 'creative', or 'open_topic'.
+    Falls back to 'strict' on unrecognized or invalid inputs.
+    """
+    if isinstance(mode, GroundingMode):
+        return mode.value
+    if mode is None:
+        return GroundingMode.STRICT.value
+    raw = str(mode).lower().strip().replace(" ", "_").replace("-", "_")
+    aliased = GROUNDING_MODE_ALIASES.get(raw, raw)
+    if aliased in GROUNDING_MODE_PRESETS:
+        return aliased
+    return GroundingMode.STRICT.value
+
+
+GROUNDING_DIRECTIVES_NB: dict[str, str] = {
+    "strict": (
+        "STRENG KILDEKONTROLL OG FORANKRING (STRENG KILDETROSKAP):\n"
+        "- Samtalen skal KUN basere seg på faktiske opplysninger, data, funn og poenger som eksplisitt finnes i kildematerialet.\n"
+        "- STRENGT FORBUDT: Det er strengt forbudt å finne på eller dikte opp eksterne fakta, uprøvde påstander, unevnte statistikker, tall, sitater eller fiktive kilder som ikke forekommer i teksten.\n"
+        "- HÅNDTERING AV MANGLENDE DETALJER: Dersom informasjonen mangler eller en forklaring ikke er omtalt i kildematerialet, skal vertene eksplisitt og naturlig anerkjenne denne begrensningen (f.eks. «Dokumentet nevner ikke spesifikt...» eller «Det går ikke kilden nærmere inn på...»).\n"
+        "- Hold dere 100 % tro mot forfatterens intensjon og konklusjoner uten spekulative påstander."
+    ),
+    "creative": (
+        "KILDEFORANKRING OG KREATIV ANALOGI & SYNTESE (KREATIVITET OG FORKLARING):\n"
+        "- Forankre kjerneinnsiktene, faglige mekanismer, hovedfunn og tall trygt i kildematerialet, slik at kjernebudskap forblir intakt.\n"
+        "- LEVENDE ANALOGIER OG METAFORER: Vertene oppfordres sterkt til å bruke hverdagsanalogier, kreative metaforer og illustrative eksempler for å belyse komplekse konsepter og gjøre stoffet engasjerende for lytteren.\n"
+        "- RETNINGSLINJER FOR ANALOGIER: Analogi og illustrerende eksempler skal støtte og forklare kildens reelle poenger, og må aldri motbevise eller fabrikkere motstridende fakta."
+    ),
+    "open_topic": (
+        "FRITT TEMA OG ÅPEN DISKUSJON (ÅPENT TEMA / FRITT MANUS):\n"
+        "- Samtalen genereres som fri syntese og utforsking basert på det oppgitte temaet, uten binding til et fast kildedokument.\n"
+        "- Vertene bruker sin generelle ekspertise, bred allmennkunnskap og varierte perspektiver til å trekke inn relevante eksempler, historiske paralleller og engasjerende problemstillinger.\n"
+        "- Oppretthold en logisk, reflektert og engasjerende samtaledynamikk med god faglig troverdighet."
+    ),
+}
+
+GROUNDING_DIRECTIVES_EN: dict[str, str] = {
+    "strict": (
+        "GROUNDING & ANTI-HALLUCINATION (STRICT SOURCE-ONLY):\n"
+        "- Every fact, figure, claim, and conclusion MUST be derived EXCLUSIVELY from statements explicitly present in the source material.\n"
+        "- STRICTLY FORBIDDEN: It is strictly forbidden to fabricate or invent external facts, unmentioned statistics, fabricated claims, research findings, or person names not present in the text.\n"
+        "- HANDLING OMISSIONS: If a specific detail, mechanism, or explanation is not covered in the source (lack of information), the hosts MUST explicitly and naturally acknowledge the omission (e.g., 'The document doesn't mention that specifically...' or 'The text leaves that open...').\n"
+        "- Adhere strictly and remain 100% faithful to the source material's verified scope without speculative extrapolation."
+    ),
+    "creative": (
+        "GROUNDING & CREATIVE ANALOGY & SYNTHESIS (CREATIVITY & INTUITION):\n"
+        "- Anchor all core insights, key mechanisms, baseline findings, and data firmly in the source material so core facts and message remain uncompromised.\n"
+        "- VIVID ANALOGIES & METAPHORS: Hosts are strongly encouraged to employ relatable real-world analogies, metaphors, and conversational illustrative examples to clarify complex mechanics and make ideas intuitive.\n"
+        "- ANALOGY GUIDELINES: Creative metaphors and illustrative stories must illuminate the document's verified takeaways without distorting or fabricating conflicting data."
+    ),
+    "open_topic": (
+        "OPEN TOPIC & GENERATIVE SYNTHESIS (OPEN TOPIC / SCRATCH):\n"
+        "- Open, creative exploration and generative synthesis based on the provided topic prompt, without constraints to a single source document.\n"
+        "- Hosts draw upon broad general knowledge, analytical reasoning, and diverse perspectives to explore multiple dimensions, debate nuances, and deliver an engaging, educational dialogue.\n"
+        "- Maintain logical coherence, intellectual depth, and internal narrative consistency throughout."
+    ),
+}
 
 # ==============================================================================
 # Episode Format Presets
 # ==============================================================================
-FORMAT_PRESETS: Dict[str, Dict[str, Any]] = {
+FORMAT_PRESETS: dict[str, dict[str, Any]] = {
     "quick": {
         "id": "quick",
         "name": "Quick Summary",
@@ -53,7 +211,7 @@ FORMAT_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 # Format aliases for backward compatibility
-FORMAT_ALIASES: Dict[str, str] = {
+FORMAT_ALIASES: dict[str, str] = {
     "short": "quick",
     "summary": "quick",
     "quick_summary": "quick",
@@ -71,7 +229,7 @@ FORMAT_ALIASES: Dict[str, str] = {
 # ==============================================================================
 # Tone and Style Configurations
 # ==============================================================================
-TONE_DESCRIPTIONS: Dict[str, Dict[str, str]] = {
+TONE_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "casual": {
         "id": "casual",
         "name": "Casual & Lively",
@@ -92,7 +250,7 @@ TONE_DESCRIPTIONS: Dict[str, Dict[str, str]] = {
     },
 }
 
-TONE_ALIASES: Dict[str, str] = {
+TONE_ALIASES: dict[str, str] = {
     "casual & lively": "casual",
     "lively": "casual",
     "fun": "casual",
@@ -112,7 +270,7 @@ def normalize_language_code(language: str) -> str:
     return "en-US"
 
 
-def get_format_config(format_type: str) -> Dict[str, Any]:
+def get_format_config(format_type: str) -> dict[str, Any]:
     """Retrieves format preset dictionary with fallback."""
     key = str(format_type).lower().strip().replace(" ", "_").replace("-", "_")
     key = FORMAT_ALIASES.get(key, key)
@@ -146,6 +304,9 @@ EPISODE-FORMAT:
 TONE OG STIL:
 {tone_description}
 
+KILDEFORANKRING:
+{grounding_directive}
+
 STRUKTUR:
 1. INTRO (1-2 replikker): Kari ønsker lytterne hjertelig velkommen, fanger oppmerksomheten med en spennende innfallsvinkel og introduserer temaet. Ola hilser varmt tilbake.
 2. HOVEDDEL ({main_turns} replikker): Kari og Ola utforsker kjerneinnholdet. Kari stiller oppfølgingsspørsmål og ber om forklaringer. Ola deler innsikt, eksempler og aha-opplevelser. Unngå lange monologer; hold hver replikk til 1-3 poengterte setninger.
@@ -176,6 +337,9 @@ EPISODE FORMAT:
 TONE AND STYLE:
 {tone_description}
 
+GROUNDING DIRECTIVE:
+{grounding_directive}
+
 STRUCTURE:
 1. INTRO (1-2 turns): Jenny gives a warm welcome, creates an engaging hook, and introduces the episode topic. Guy greets Jenny and sets the stage.
 2. CORE DISCUSSION ({main_turns} turns): Jenny and Guy dive into the key ideas. Jenny asks thought-provoking questions and offers reactions; Guy explains mechanisms and nuances with clarity. Avoid lengthy monologues; keep each turn between 1-3 conversational sentences.
@@ -196,14 +360,19 @@ Exact JSON schema example:
 def build_system_prompt(
     language: str = "nb-NO",
     format_type: str = "standard",
-    tone_style: str = "casual"
+    tone_style: str = "casual",
+    grounding_mode: str = "strict",
 ) -> str:
     """
-    Builds the complete LLM system prompt configured for language, length preset, and tone.
+    Builds the complete LLM system prompt configured for language, length preset, tone, and grounding mode.
     """
     lang = normalize_language_code(language)
     fmt = get_format_config(format_type)
     tone_desc = get_tone_description(tone_style, lang)
+    norm_mode = normalize_grounding_mode(grounding_mode)
+
+    directives = GROUNDING_DIRECTIVES_NB if lang == "nb-NO" else GROUNDING_DIRECTIVES_EN
+    grounding_directive = directives.get(norm_mode, directives["strict"])
 
     template = SYSTEM_PROMPT_NB if lang == "nb-NO" else SYSTEM_PROMPT_EN
     main_turns = max(2, fmt["target_turns"] - 3)
@@ -215,22 +384,25 @@ def build_system_prompt(
         min_turns=fmt["min_turns"],
         max_turns=fmt["max_turns"],
         main_turns=main_turns,
-        tone_description=tone_desc
+        tone_description=tone_desc,
+        grounding_directive=grounding_directive,
     ).strip()
 
 
 def build_user_prompt(
     content: str,
     language: str = "nb-NO",
-    is_topic: bool = False
+    grounding_mode: str = "strict",
+    is_topic: bool = False,
 ) -> str:
     """
-    Builds the LLM user prompt based on whether input is a source document or a scratch topic.
+    Builds the LLM user prompt based on input content, language, grounding mode, and is_topic flag.
     """
     lang = normalize_language_code(language)
+    norm_mode = normalize_grounding_mode(grounding_mode)
     cleaned_content = content.strip()
 
-    if is_topic:
+    if is_topic or norm_mode == GroundingMode.OPEN_TOPIC:
         if lang == "nb-NO":
             return (
                 f"Lag en fullstendig podcast-episode basert på følgende tema/oppgave:\n\n"
@@ -244,32 +416,51 @@ def build_user_prompt(
                 f"Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
             )
 
-    # Document-driven mode
-    if lang == "nb-NO":
-        return (
-            f"Her er kildematerialet som skal diskuteres i podcasten:\n\n"
-            f"--- START KILDEMATERIALE ---\n"
-            f"{cleaned_content}\n"
-            f"--- SLUTT KILDEMATERIALE ---\n\n"
-            f"Lag podcast-manuset basert på kildematerialet over. "
-            f"Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
-        )
-    else:
-        return (
-            f"Here is the source material to be discussed in the podcast episode:\n\n"
-            f"--- START SOURCE MATERIAL ---\n"
-            f"{cleaned_content}\n"
-            f"--- END SOURCE MATERIAL ---\n\n"
-            f"Create the podcast script based strictly on the source material above. "
-            f"Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
-        )
+    if norm_mode == GroundingMode.CREATIVE:
+        if lang == "nb-NO":
+            return (
+                f"Her er kildematerialet som skal diskuteres i podcasten:\n\n"
+                f"--- START KILDEMATERIALE ---\n"
+                f"{cleaned_content}\n"
+                f"--- SLUTT KILDEMATERIALE ---\n\n"
+                f"Lag podcast-manuset forankret i kildematerialet over med engasjerende analogier og pedagogiske eksempler. "
+                f"Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+            )
+        else:
+            return (
+                f"Here is the source material to be discussed in the podcast episode:\n\n"
+                f"--- START SOURCE MATERIAL ---\n"
+                f"{cleaned_content}\n"
+                f"--- END SOURCE MATERIAL ---\n\n"
+                f"Create the podcast script anchored in the source material above using relatable analogies and illustrative examples. "
+                f"Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+            )
+    else:  # Strict mode (default)
+        if lang == "nb-NO":
+            return (
+                f"Her er kildematerialet som skal diskuteres i podcasten:\n\n"
+                f"--- START KILDEMATERIALE ---\n"
+                f"{cleaned_content}\n"
+                f"--- SLUTT KILDEMATERIALE ---\n\n"
+                f"Lag podcast-manuset basert strengt på kildematerialet over uten å finne på eksterne fakta. "
+                f"Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+            )
+        else:
+            return (
+                f"Here is the source material to be discussed in the podcast episode:\n\n"
+                f"--- START SOURCE MATERIAL ---\n"
+                f"{cleaned_content}\n"
+                f"--- END SOURCE MATERIAL ---\n\n"
+                f"Create the podcast script based strictly on the source material above without inventing external facts. "
+                f"Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+            )
 
 
 # ==============================================================================
 # Multi-Act Structured Episodic Presets (NOU-guru Architecture)
 # ==============================================================================
 
-ACT_SPECS_NB: Dict[str, List[Dict[str, Any]]] = {
+ACT_SPECS_NB: dict[str, list[dict[str, Any]]] = {
     "quick": [
         {
             "act_num": 1,
@@ -302,7 +493,7 @@ ACT_SPECS_NB: Dict[str, List[Dict[str, Any]]] = {
             "max_turns": 8,
             "is_intro": False,
             "is_outro": True,
-        }
+        },
     ],
     "deep_dive": [
         {
@@ -334,7 +525,7 @@ ACT_SPECS_NB: Dict[str, List[Dict[str, Any]]] = {
             "max_turns": 9,
             "is_intro": False,
             "is_outro": True,
-        }
+        },
     ],
     "extended": [
         {
@@ -386,11 +577,11 @@ ACT_SPECS_NB: Dict[str, List[Dict[str, Any]]] = {
             "max_turns": 12,
             "is_intro": False,
             "is_outro": True,
-        }
-    ]
+        },
+    ],
 }
 
-ACT_SPECS_EN: Dict[str, List[Dict[str, Any]]] = {
+ACT_SPECS_EN: dict[str, list[dict[str, Any]]] = {
     "quick": [
         {
             "act_num": 1,
@@ -423,7 +614,7 @@ ACT_SPECS_EN: Dict[str, List[Dict[str, Any]]] = {
             "max_turns": 8,
             "is_intro": False,
             "is_outro": True,
-        }
+        },
     ],
     "deep_dive": [
         {
@@ -455,7 +646,7 @@ ACT_SPECS_EN: Dict[str, List[Dict[str, Any]]] = {
             "max_turns": 9,
             "is_intro": False,
             "is_outro": True,
-        }
+        },
     ],
     "extended": [
         {
@@ -507,12 +698,12 @@ ACT_SPECS_EN: Dict[str, List[Dict[str, Any]]] = {
             "max_turns": 12,
             "is_intro": False,
             "is_outro": True,
-        }
-    ]
+        },
+    ],
 }
 
 
-def get_act_specs(format_type: str, language: str = "nb-NO") -> List[Dict[str, Any]]:
+def get_act_specs(format_type: str, language: str = "nb-NO") -> list[dict[str, Any]]:
     """Retrieves the list of thematic act specifications for an episode preset."""
     key = str(format_type).lower().strip().replace(" ", "_").replace("-", "_")
     key = FORMAT_ALIASES.get(key, key)
@@ -522,15 +713,20 @@ def get_act_specs(format_type: str, language: str = "nb-NO") -> List[Dict[str, A
 
 
 def build_act_system_prompt(
-    act: Dict[str, Any],
+    act: dict[str, Any],
     total_acts: int,
     language: str = "nb-NO",
     tone_style: str = "casual",
-    next_speaker: str = "Host 1"
+    grounding_mode: str = "strict",
+    next_speaker: str = "Host 1",
 ) -> str:
     """Builds a specialized prompt for an individual act in a multi-act episode."""
     lang = normalize_language_code(language)
     tone_desc = get_tone_description(tone_style, lang)
+    norm_mode = normalize_grounding_mode(grounding_mode)
+    directives = GROUNDING_DIRECTIVES_NB if lang == "nb-NO" else GROUNDING_DIRECTIVES_EN
+    grounding_directive = directives.get(norm_mode, directives["strict"])
+
     act_num = act["act_num"]
     act_title = act["title"]
     prompt_theme = act["prompt_theme"]
@@ -543,13 +739,13 @@ def build_act_system_prompt(
     if lang == "nb-NO":
         continuity_rule = (
             "1. Dette er AKT 1 (INTRO). Start med at Host 1 ønsker velkommen og setter scenen med en fengende innfallsvinkel."
-            if is_intro else
-            f"1. VIKTIG: Dette er AKT {act_num} av {total_acts} (PÅGÅENDE SAMTALE). IKKE si 'velkommen' eller 'hei og velkommen' på nytt! Fortsett den eksisterende samtalen sømløst. Start med {next_speaker}."
+            if is_intro
+            else f"1. VIKTIG: Dette er AKT {act_num} av {total_acts} (PÅGÅENDE SAMTALE). IKKE si 'velkommen' eller 'hei og velkommen' på nytt! Fortsett den eksisterende samtalen sømløst. Start med {next_speaker}."
         )
         ending_rule = (
             "2. Dette er siste akt. Host 1 oppsummerer kort og runder av sendingen med en hyggelig avskjedshilsen."
-            if is_outro else
-            "2. VIKTIG: IKKE avslutt sendingen eller si 'hadet' eller 'takk for at du hørte på' ennå! Avslutt denne akten med et engasjerende poeng eller overgang til neste tema."
+            if is_outro
+            else "2. VIKTIG: IKKE avslutt sendingen eller si 'hadet' eller 'takk for at du hørte på' ennå! Avslutt denne akten med et engasjerende poeng eller overgang til neste tema."
         )
 
         return f"""Du er en prisvinnende podcast-manusforfatter for en anerkjent radiopodcast.
@@ -560,6 +756,9 @@ TEMA OG FOKUS FOR DENNE AKTEN:
 
 TONE OG STIL:
 {tone_desc}
+
+KILDEFORANKRING:
+{grounding_directive}
 
 STRENGE KRAV TIL LENGDE OG STRUKTUR:
 - Skriv nøyaktig {target_turns} replikker vekselvis mellom Host 1 og Host 2 (minst {min_turns}, maks {max_turns} replikker).
@@ -577,13 +776,13 @@ Svar KUN med et gyldig JSON-array. Ingen tekst utenom JSON.
     else:
         continuity_rule = (
             "1. This is ACT 1 (INTRO). Start with Host 1 giving a warm welcome and setting the hook."
-            if is_intro else
-            f"1. IMPORTANT: This is ACT {act_num} of {total_acts} (CONTINUATION). DO NOT say 'welcome back' or restart the intro! Seamlessly continue the ongoing conversation. Begin with {next_speaker}."
+            if is_intro
+            else f"1. IMPORTANT: This is ACT {act_num} of {total_acts} (CONTINUATION). DO NOT say 'welcome back' or restart the intro! Seamlessly continue the ongoing conversation. Begin with {next_speaker}."
         )
         ending_rule = (
             "2. This is the final act. Host 1 summarizes key learnings and delivers a polished sign-off."
-            if is_outro else
-            "2. IMPORTANT: DO NOT conclude or say goodbye yet! End this act with an intriguing takeaway or natural transition."
+            if is_outro
+            else "2. IMPORTANT: DO NOT conclude or say goodbye yet! End this act with an intriguing takeaway or natural transition."
         )
 
         return f"""You are a world-class podcast scriptwriter and audio dramatist.
@@ -594,6 +793,9 @@ TOPIC AND FOCUS FOR THIS ACT:
 
 TONE AND STYLE:
 {tone_desc}
+
+GROUNDING DIRECTIVE:
+{grounding_directive}
 
 STRICT REQUIREMENTS FOR LENGTH AND PACING:
 - Write exactly {target_turns} dialogue turns alternating between Host 1 and Host 2 (minimum {min_turns}, maximum {max_turns} turns).
@@ -612,23 +814,27 @@ Respond ONLY with a valid JSON array. No surrounding text.
 
 def build_act_user_prompt(
     content: str,
-    prev_turns: Optional[List[Dict[str, str]]] = None,
+    prev_turns: list[dict[str, str]] | None = None,
     language: str = "nb-NO",
-    is_topic: bool = False
+    grounding_mode: str = "strict",
+    is_topic: bool = False,
 ) -> str:
-    """Builds the user prompt for an individual act with optional previous context continuity."""
+    """Builds the user prompt for an individual act with optional previous context continuity and grounding mode."""
     lang = normalize_language_code(language)
+    norm_mode = normalize_grounding_mode(grounding_mode)
     cleaned_content = content.strip()
 
     prev_context = ""
     if prev_turns and len(prev_turns) > 0:
-        turns_snippet = "\n".join([f"{t.get('speaker', 'Host')}: {t.get('text', '')}" for t in prev_turns[-2:]])
+        turns_snippet = "\n".join(
+            [f"{t.get('speaker', 'Host')}: {t.get('text', '')}" for t in prev_turns[-2:]]
+        )
         if lang == "nb-NO":
             prev_context = f"\nSISTE REPLIKKER FRA FORRIGE DEL (FOR SØMLØS OVERGANG OG SAMMENHENG):\n{turns_snippet}\n"
         else:
             prev_context = f"\nLAST TURNS FROM PREVIOUS ACT (FOR CONTEXT & SEAMLESS TRANSITION):\n{turns_snippet}\n"
 
-    if is_topic:
+    if is_topic or norm_mode == GroundingMode.OPEN_TOPIC:
         if lang == "nb-NO":
             return (
                 f"Tema for podcasten: {cleaned_content}\n"
@@ -656,4 +862,3 @@ def build_act_user_prompt(
                 f"{prev_context}\n"
                 f"Write the dialogue turns for this act based on the source material as a valid JSON array."
             )
-

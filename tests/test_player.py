@@ -13,18 +13,17 @@ Covers Tiers 1 and 2:
 """
 
 import os
-import pytest
-from unittest.mock import patch, MagicMock
+from typing import Any
+from unittest.mock import patch
 
-try:
-    from core.player import (
-        WindowsAudioPlayer,
-        format_ms,
-        parse_time_str,
-        export_audio_file,
-    )
-except ImportError:
-    pass
+import pytest
+
+from core.player import (
+    WindowsAudioPlayer,
+    export_audio_file,
+    format_ms,
+    parse_time_str,
+)
 
 
 class TestWindowsPlayerMCI:
@@ -32,6 +31,7 @@ class TestWindowsPlayerMCI:
 
     def test_player_init(self):
         from core.player import WindowsAudioPlayer
+
         player = WindowsAudioPlayer()
         assert player is not None
         assert player.get_volume() == 80
@@ -50,6 +50,7 @@ class TestWindowsPlayerMCI:
 
     def test_player_open_nonexistent_file_returns_false(self):
         from core.player import WindowsAudioPlayer
+
         player = WindowsAudioPlayer()
         res = player.open("non_existent_file_123.mp3")
         assert res is False
@@ -98,12 +99,14 @@ class TestWindowsPlayerMCI:
             assert "close" in all_cmds
 
     def test_volume_clamping(self):
-        from core.player import WindowsAudioPlayer
-
         player = WindowsAudioPlayer()
         commands_sent = []
 
-        with patch.object(player, "_send_command", side_effect=lambda cmd, **kw: commands_sent.append(cmd) or ""):
+        def _mock_send(cmd: str, **kw: Any) -> str:
+            commands_sent.append(cmd)
+            return ""
+
+        with patch.object(player, "_send_command", side_effect=_mock_send):
             player._is_opened = True
             # Volume > 100% clamped to 100
             player.set_volume(150)
@@ -120,28 +123,31 @@ class TestWindowsPlayerMCI:
 class TestPlayerHelpers:
     """Tests for format_ms, parse_time_str, and export_audio_file."""
 
-    @pytest.mark.parametrize("ms,expected", [
-        (0, "00:00"),
-        (65000, "01:05"),
-        (125000, "02:05"),
-        (3665000, "01:01:05"),
-    ])
+    @pytest.mark.parametrize(
+        "ms,expected",
+        [
+            (0, "00:00"),
+            (65000, "01:05"),
+            (125000, "02:05"),
+            (3665000, "01:01:05"),
+        ],
+    )
     def test_format_ms(self, ms, expected):
-        from core.player import format_ms
         assert format_ms(ms) == expected
 
-    @pytest.mark.parametrize("time_str,expected_ms", [
-        ("00:00", 0),
-        ("01:05", 65000),
-        ("02:05", 125000),
-        ("01:01:05", 3665000),
-    ])
+    @pytest.mark.parametrize(
+        "time_str,expected_ms",
+        [
+            ("00:00", 0),
+            ("01:05", 65000),
+            ("02:05", 125000),
+            ("01:01:05", 3665000),
+        ],
+    )
     def test_parse_time_str(self, time_str, expected_ms):
-        from core.player import parse_time_str
         assert parse_time_str(time_str) == expected_ms
 
     def test_export_audio_file(self, tmp_path, single_frame_mp3):
-        from core.player import export_audio_file
 
         src = tmp_path / "original.mp3"
         src.write_bytes(single_frame_mp3)

@@ -1,5 +1,5 @@
 """
-PodcastStudio - Zero-FFmpeg MP3 Binary Frame Stitcher
+LocalPodcastLLMStudio - Zero-FFmpeg MP3 Binary Frame Stitcher
 100% pure Python MPEG Audio Layer III frame extractor, ID3v2 tag stripper,
 inter-speaker silence frame injector, and unified ID3v2.3 metadata writer.
 Zero external ffmpeg binary dependencies.
@@ -8,7 +8,7 @@ Zero external ffmpeg binary dependencies.
 import io
 import os
 import struct
-from typing import List, Tuple, Optional, Union
+from collections.abc import Sequence
 
 
 class MP3Stitcher:
@@ -50,7 +50,7 @@ class MP3Stitcher:
         total_len = len(mp3_data)
 
         # 1. Strip ID3v2 Header(s) at start
-        while pos + 10 <= total_len and mp3_data[pos:pos + 3] == b"ID3":
+        while pos + 10 <= total_len and mp3_data[pos : pos + 3] == b"ID3":
             flags = mp3_data[pos + 5]
             has_footer = bool(flags & 0x10)  # Bit 4 in ID3v2.4
 
@@ -67,11 +67,11 @@ class MP3Stitcher:
         end_pos = total_len
 
         # 2. Strip trailing ID3v1 Tag (128 bytes starting with 'TAG')
-        if end_pos - pos >= 128 and mp3_data[end_pos - 128:end_pos - 125] == b"TAG":
+        if end_pos - pos >= 128 and mp3_data[end_pos - 128 : end_pos - 125] == b"TAG":
             end_pos -= 128
 
         # 3. Strip trailing Enhanced ID3v1 Tag ('TAG+' 227 bytes)
-        if end_pos - pos >= 227 and mp3_data[end_pos - 227:end_pos - 223] == b"TAG+":
+        if end_pos - pos >= 227 and mp3_data[end_pos - 227 : end_pos - 223] == b"TAG+":
             end_pos -= 227
 
         if pos >= end_pos:
@@ -80,10 +80,10 @@ class MP3Stitcher:
         return mp3_data[pos:end_pos]
 
     @classmethod
-    def parse_frame_header(cls, header_bytes: bytes) -> Optional[Tuple[int, int, int, int]]:
+    def parse_frame_header(cls, header_bytes: bytes) -> tuple[int, int, int, int] | None:
         """
         Parses a 4-byte MPEG Audio header.
-        
+
         Returns:
             (frame_length_bytes, version_id, bitrate_kbps, sample_rate_hz)
             or None if header is invalid or not Layer III.
@@ -91,14 +91,14 @@ class MP3Stitcher:
         if len(header_bytes) < 4:
             return None
 
-        b0, b1, b2, b3 = header_bytes[0], header_bytes[1], header_bytes[2], header_bytes[3]
+        b0, b1, b2, _b3 = header_bytes[0], header_bytes[1], header_bytes[2], header_bytes[3]
 
         # Check sync word (11 bits = 0xFF followed by 0xE0 mask in byte 1)
         if b0 != 0xFF or (b1 & 0xE0) != 0xE0:
             return None
 
         version_id = (b1 >> 3) & 0x03  # 3=MPEG-1, 2=MPEG-2, 0=MPEG-2.5, 1=reserved
-        layer = (b1 >> 1) & 0x03       # 1=Layer III, 2=Layer II, 3=Layer I, 0=reserved
+        layer = (b1 >> 1) & 0x03  # 1=Layer III, 2=Layer II, 3=Layer I, 0=reserved
 
         if version_id == 1 or layer != 1:
             return None
@@ -130,7 +130,7 @@ class MP3Stitcher:
     def extract_audio_frames(cls, mp3_data: bytes) -> bytes:
         """
         Scans binary MP3 data, strips ID3 tags, and extracts contiguous valid MPEG Layer III frames.
-        
+
         Returns:
             Pure MPEG audio frames as bytes.
         """
@@ -144,11 +144,11 @@ class MP3Stitcher:
 
         while idx <= total_len - 4:
             if clean_data[idx] == 0xFF and (clean_data[idx + 1] & 0xE0) == 0xE0:
-                header_info = cls.parse_frame_header(clean_data[idx:idx + 4])
+                header_info = cls.parse_frame_header(clean_data[idx : idx + 4])
                 if header_info:
                     frame_len, _, _, _ = header_info
                     if idx + frame_len <= total_len:
-                        out.write(clean_data[idx:idx + frame_len])
+                        out.write(clean_data[idx : idx + frame_len])
                         idx += frame_len
                         continue
             idx += 1
@@ -161,7 +161,7 @@ class MP3Stitcher:
         version_id: int = 2,
         bitrate_kbps: int = 48,
         sample_rate: int = 24000,
-        channel_mode: int = 3
+        channel_mode: int = 3,
     ) -> bytes:
         """
         Generates a valid, standard-compliant MPEG Layer III silent frame.
@@ -204,7 +204,7 @@ class MP3Stitcher:
         version_id: int = 2,
         bitrate_kbps: int = 48,
         sample_rate: int = 24000,
-        channel_mode: int = 3
+        channel_mode: int = 3,
     ) -> bytes:
         """
         Generates silence MPEG audio frames corresponding to the desired duration in ms.
@@ -220,7 +220,7 @@ class MP3Stitcher:
             version_id=version_id,
             bitrate_kbps=bitrate_kbps,
             sample_rate=sample_rate,
-            channel_mode=channel_mode
+            channel_mode=channel_mode,
         )
 
         return single_frame * num_frames
@@ -229,17 +229,17 @@ class MP3Stitcher:
     def build_id3v23_tag(
         cls,
         title: str = "Podcast Episode",
-        artist: str = "PodcastStudio",
-        album: str = "PodcastStudio AI Podcast",
+        artist: str = "LocalPodcastLLMStudio",
+        album: str = "LocalPodcastLLMStudio AI Podcast",
         year: str = "2026",
-        genre: str = "Podcast"
+        genre: str = "Podcast",
     ) -> bytes:
         """
         Builds a standard ID3v2.3 metadata header with UTF-16 / ISO-8859-1 frames.
         """
         frames_buf = io.BytesIO()
 
-        def write_frame(frame_id: str, text: str):
+        def write_frame(frame_id: str, text: str) -> None:
             if not text:
                 return
             encoded_text = text.encode("utf-16")
@@ -271,11 +271,11 @@ class MP3Stitcher:
     @classmethod
     def stitch(
         cls,
-        segments: List[Union[bytes, bytearray]],
+        segments: Sequence[bytes | bytearray],
         title: str = "Podcast Episode",
-        artist: str = "PodcastStudio",
-        album: str = "PodcastStudio AI Podcast",
-        pause_ms: int = 350
+        artist: str = "LocalPodcastLLMStudio",
+        album: str = "LocalPodcastLLMStudio AI Podcast",
+        pause_ms: int = 350,
     ) -> bytes:
         """
         Stitches a list of MP3 byte segments in-memory into a single MP3 byte buffer.
@@ -283,8 +283,8 @@ class MP3Stitcher:
         if not segments:
             return b""
 
-        extracted_frames: List[bytes] = []
-        stream_info: Optional[Tuple[int, int, int, int]] = None
+        extracted_frames: list[bytes] = []
+        stream_info: tuple[int, int, int, int] | None = None
 
         for seg in segments:
             raw_data = bytes(seg)
@@ -311,7 +311,7 @@ class MP3Stitcher:
             version_id=version_id,
             bitrate_kbps=bitrate_kbps,
             sample_rate=sample_rate,
-            channel_mode=3
+            channel_mode=3,
         )
 
         out = io.BytesIO()
@@ -327,23 +327,23 @@ class MP3Stitcher:
 
 
 def stitch_mp3_files(
-    input_files_or_bytes: List[Union[str, bytes]],
+    input_files_or_bytes: Sequence[str | bytes | bytearray],
     output_file_path: str,
     silence_duration_ms: int = 350,
     title: str = "Podcast Episode",
-    artist: str = "PodcastStudio",
-    album: str = "PodcastStudio AI Podcast"
+    artist: str = "LocalPodcastLLMStudio",
+    album: str = "LocalPodcastLLMStudio AI Podcast",
 ) -> str:
     """
     Stitches multiple MP3 audio files or byte buffers into a single master MP3 file.
-    
+
     Returns:
         Absolute path to the created master MP3 file.
     """
     if not input_files_or_bytes:
         raise ValueError("Cannot stitch empty list of MP3 inputs.")
 
-    byte_segments: List[bytes] = []
+    byte_segments: list[bytes] = []
     for item in input_files_or_bytes:
         if isinstance(item, str):
             if not os.path.exists(item):
@@ -358,7 +358,7 @@ def stitch_mp3_files(
         title=title,
         artist=artist,
         album=album,
-        pause_ms=silence_duration_ms
+        pause_ms=silence_duration_ms,
     )
 
     if not stitched_bytes:

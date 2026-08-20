@@ -1,92 +1,78 @@
 """
-PodcastStudio - Main Window & Asynchronous Pipeline Controller
+LocalPodcastLLMStudio - Main Window & Asynchronous Pipeline Controller
 Universal 100% Local Windows Desktop UI with CustomTkinter Fluent Dark theme,
 dedicated non-blocking background worker thread, thread-safe queue event loop,
 interactive script studio, integrated native MCI audio player, and actionable error dialogs.
 """
 
-import os
-import sys
 import json
-import time
+import os
 import queue
 import shutil
+import sys
 import tempfile
 import threading
-from typing import List, Dict, Any, Optional
+import time
+from tkinter import filedialog, messagebox
+from typing import Any
 
 import customtkinter as ctk
-from tkinter import filedialog, messagebox
 
 # Core Subsystem Imports
-from core.extractor import extract_text, extract_text_from_file, DocumentExtractionError
-from core.prompts import (
-    FORMAT_PRESETS,
-    TONE_DESCRIPTIONS,
-    normalize_language_code,
-)
-from core.parser import (
-    DialogueTurn,
-    DialogueParser,
-    dialogue_to_json,
-    dialogue_from_json,
-    dialogue_to_markdown,
-)
+from core.extractor import DocumentExtractionError, extract_text
+from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import (
     OllamaClient,
-    generate_podcast_script,
     OllamaConnectionError,
     OllamaModelNotFoundError,
+    generate_podcast_script,
 )
+from core.parser import (
+    DialogueParser,
+    DialogueTurn,
+    dialogue_to_json,
+    dialogue_to_markdown,
+)
+from core.player import WindowsAudioPlayer, export_audio_file
 from core.tts import (
-    TTSEngine,
-    synthesize_dialogue_audio,
     format_rate_str,
+    synthesize_dialogue_audio,
 )
-from core.mp3_stitcher import stitch_mp3_files
-from core.player import WindowsAudioPlayer, export_audio_file, format_ms
 
 # UI Theming & Reusable Widgets
 from ui.theme import (
     APP_TITLE,
-    DEFAULT_WINDOW_SIZE,
-    MIN_WINDOW_WIDTH,
-    MIN_WINDOW_HEIGHT,
-    COLOR_BG,
-    COLOR_CARD,
-    COLOR_CARD_BORDER,
-    COLOR_INPUT_BG,
-    COLOR_INPUT_BORDER,
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
-    COLOR_SUCCESS,
-    COLOR_WARNING,
+    COLOR_BG,
     COLOR_ERROR,
+    COLOR_INPUT_BG,
+    COLOR_INPUT_BORDER,
+    COLOR_SUCCESS,
+    COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
-    COLOR_TEXT_MUTED,
-    CARD_RADIUS,
-    BUTTON_RADIUS,
-    PADDING_SM,
-    PADDING_MD,
-    PADDING_LG,
-    get_font_title,
-    get_font_subtitle,
-    get_font_heading,
+    DEFAULT_WINDOW_SIZE,
+    MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
+    enable_windows_dark_titlebar,
     get_font_body,
     get_font_body_bold,
     get_font_caption,
     get_font_code,
-    enable_windows_dark_titlebar,
+    get_font_heading,
+    get_font_subtitle,
+    get_font_title,
 )
 from ui.widgets import (
+    AboutDialog,
+    ActionableErrorDialog,
     CardFrame,
+    DialogueTurnCard,
+    LabeledSlider,
     SectionHeader,
     StatusBadge,
-    LabeledSlider,
     TimeSlider,
-    DialogueTurnCard,
-    ActionableErrorDialog,
 )
 
 
@@ -112,7 +98,7 @@ class GenerationWorker(threading.Thread):
         output_dir: str,
         msg_queue: queue.Queue,
         cancel_event: threading.Event,
-        ollama_url: str = "http://localhost:11434"
+        ollama_url: str = "http://localhost:11434",
     ):
         super().__init__(daemon=True)
         self.mode = mode
@@ -127,13 +113,13 @@ class GenerationWorker(threading.Thread):
         self.msg_queue = msg_queue
         self.cancel_event = cancel_event
         self.ollama_url = ollama_url
-        self.temp_turn_files: List[str] = []
+        self.temp_turn_files: list[str] = []
 
     def run(self):
         try:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             os.makedirs(self.output_dir, exist_ok=True)
-            dialogue: List[DialogueTurn] = []
+            dialogue: list[DialogueTurn] = []
 
             # ------------------------------------------------------------------
             # Phase 1: Ingestion & Script Generation (if not audio_from_script)
@@ -153,30 +139,43 @@ class GenerationWorker(threading.Thread):
 
                 try:
                     extracted_text = extract_text(
-                        source=source_content,
-                        is_raw_text=is_raw,
-                        is_topic=is_topic
+                        source=source_content, is_raw_text=is_raw, is_topic=is_topic
                     )
                 except DocumentExtractionError as de_err:
-                    self.msg_queue.put(("ERROR", {
-                        "title": "Document Extraction Error",
-                        "message": str(de_err),
-                        "details": f"Source: {source_content[:100]}...\nError: {de_err}",
-                        "remedy": "Please check that the document contains selectable text (not scanned images) and is not password protected."
-                    }))
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "Document Extraction Error",
+                                "message": str(de_err),
+                                "details": f"Source: {source_content[:100]}...\nError: {de_err}",
+                                "remedy": "Please check that the document contains selectable text (not scanned images) and is not password protected.",
+                            },
+                        )
+                    )
                     return
 
                 if not extracted_text or len(extracted_text.strip()) < 10:
-                    self.msg_queue.put(("ERROR", {
-                        "title": "Empty Content",
-                        "message": "The provided document or prompt is empty or too short.",
-                        "details": "Minimum 10 characters required.",
-                        "remedy": "Please provide a document with text or enter a more descriptive topic prompt."
-                    }))
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "Empty Content",
+                                "message": "The provided document or prompt is empty or too short.",
+                                "details": "Minimum 10 characters required.",
+                                "remedy": "Please provide a document with text or enter a more descriptive topic prompt.",
+                            },
+                        )
+                    )
                     return
 
                 self.msg_queue.put(("PROGRESS", 0.15))
-                self.msg_queue.put(("STATUS", f"Connecting to Ollama ({self.model}) and generating dialogue script..."))
+                self.msg_queue.put(
+                    (
+                        "STATUS",
+                        f"Connecting to Ollama ({self.model}) and generating dialogue script...",
+                    )
+                )
 
                 if self.cancel_event.is_set():
                     self.msg_queue.put(("CANCELLED", "Generation cancelled before LLM request."))
@@ -206,23 +205,33 @@ class GenerationWorker(threading.Thread):
                         ollama_url=self.ollama_url,
                         is_topic=is_topic,
                         cancel_event=self.cancel_event,
-                        progress_callback=progress_cb
+                        progress_callback=progress_cb,
                     )
                 except OllamaConnectionError as oc_err:
-                    self.msg_queue.put(("ERROR", {
-                        "title": "Ollama Connection Error",
-                        "message": "Could not connect to Ollama local service.",
-                        "details": str(oc_err),
-                        "remedy": "Ensure Ollama is running ('ollama serve' in terminal or Windows tray app) and click Refresh (↻)."
-                    }))
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "Ollama Connection Error",
+                                "message": "Could not connect to Ollama local service.",
+                                "details": str(oc_err),
+                                "remedy": "Ensure Ollama is running ('ollama serve' in terminal or Windows tray app) and click Refresh (↻).",
+                            },
+                        )
+                    )
                     return
                 except OllamaModelNotFoundError as mnf_err:
-                    self.msg_queue.put(("ERROR", {
-                        "title": "Ollama Model Missing",
-                        "message": f"Requested model '{self.model}' is not installed.",
-                        "details": str(mnf_err),
-                        "remedy": f"Open terminal and run: 'ollama pull {self.model}', then refresh the model list."
-                    }))
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "Ollama Model Missing",
+                                "message": f"Requested model '{self.model}' is not installed.",
+                                "details": str(mnf_err),
+                                "remedy": f"Open terminal and run: 'ollama pull {self.model}', then refresh the model list.",
+                            },
+                        )
+                    )
                     return
 
                 if self.cancel_event.is_set():
@@ -230,12 +239,17 @@ class GenerationWorker(threading.Thread):
                     return
 
                 if not dialogue:
-                    self.msg_queue.put(("ERROR", {
-                        "title": "Script Parsing Failed",
-                        "message": "Failed to parse a structured dialogue script from the model's output.",
-                        "details": "The model response did not contain valid dialogue turns.",
-                        "remedy": "Try selecting a more capable model (e.g., llama3.1:8b or qwen2.5:7b) and try again."
-                    }))
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "Script Parsing Failed",
+                                "message": "Failed to parse a structured dialogue script from the model's output.",
+                                "details": "The model response did not contain valid dialogue turns.",
+                                "remedy": "Try selecting a more capable model (e.g., llama3.1:8b or qwen2.5:7b) and try again.",
+                            },
+                        )
+                    )
                     return
 
                 # Send script to UI
@@ -253,12 +267,19 @@ class GenerationWorker(threading.Thread):
 
                 if self.mode == "script_only":
                     self.msg_queue.put(("PROGRESS", 1.0))
-                    self.msg_queue.put(("STATUS", f"Script generated successfully! ({len(dialogue)} turns)"))
-                    self.msg_queue.put(("SCRIPT_ONLY_DONE", {
-                        "script_path": script_json_path,
-                        "script_md_path": script_md_path,
-                        "dialogue": dialogue
-                    }))
+                    self.msg_queue.put(
+                        ("STATUS", f"Script generated successfully! ({len(dialogue)} turns)")
+                    )
+                    self.msg_queue.put(
+                        (
+                            "SCRIPT_ONLY_DONE",
+                            {
+                                "script_path": script_json_path,
+                                "script_md_path": script_md_path,
+                                "dialogue": dialogue,
+                            },
+                        )
+                    )
                     return
 
             else:
@@ -274,7 +295,7 @@ class GenerationWorker(threading.Thread):
                 return
 
             self.msg_queue.put(("STATUS", "Synthesizing neural voices with Edge-TTS..."))
-            total_turns = len(dialogue)
+            len(dialogue)
 
             def tts_progress_cb(curr: int, tot: int):
                 if not self.cancel_event.is_set():
@@ -282,9 +303,11 @@ class GenerationWorker(threading.Thread):
                     pct = 0.40 + (0.50 * (curr / max(1, tot)))
                     turn_speaker = dialogue[curr - 1].speaker if curr <= len(dialogue) else "Host"
                     self.msg_queue.put(("PROGRESS", pct))
-                    self.msg_queue.put(("STATUS", f"Synthesizing turn {curr}/{tot} ({turn_speaker})..."))
+                    self.msg_queue.put(
+                        ("STATUS", f"Synthesizing turn {curr}/{tot} ({turn_speaker})...")
+                    )
 
-            temp_tts_dir = tempfile.mkdtemp(prefix="podcaststudio_tts_")
+            temp_tts_dir = tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
 
             try:
                 self.temp_turn_files = synthesize_dialogue_audio(
@@ -293,7 +316,7 @@ class GenerationWorker(threading.Thread):
                     rate=self.speed_rate,
                     output_dir=temp_tts_dir,
                     progress_cb=tts_progress_cb,
-                    cancel_event=self.cancel_event
+                    cancel_event=self.cancel_event,
                 )
             except Exception as tts_err:
                 # Clean up temp files
@@ -301,12 +324,17 @@ class GenerationWorker(threading.Thread):
                 if self.cancel_event.is_set():
                     self.msg_queue.put(("CANCELLED", "Audio synthesis cancelled by user."))
                     return
-                self.msg_queue.put(("ERROR", {
-                    "title": "Voice Synthesis Error",
-                    "message": f"Edge-TTS synthesis encountered an error: {tts_err}",
-                    "details": str(tts_err),
-                    "remedy": "Please check your internet connection for Microsoft Edge-TTS voice generation."
-                }))
+                self.msg_queue.put(
+                    (
+                        "ERROR",
+                        {
+                            "title": "Voice Synthesis Error",
+                            "message": f"Edge-TTS synthesis encountered an error: {tts_err}",
+                            "details": str(tts_err),
+                            "remedy": "Please check your internet connection for Microsoft Edge-TTS voice generation.",
+                        },
+                    )
+                )
                 return
 
             if self.cancel_event.is_set():
@@ -328,16 +356,21 @@ class GenerationWorker(threading.Thread):
                     output_file_path=output_mp3_path,
                     silence_duration_ms=350,
                     title=f"Podcast {timestamp}",
-                    artist="PodcastStudio"
+                    artist="LocalPodcastLLMStudio",
                 )
             except Exception as stitch_err:
                 self._cleanup_temp_dir(temp_tts_dir)
-                self.msg_queue.put(("ERROR", {
-                    "title": "MP3 Stitching Error",
-                    "message": f"Failed to stitch MP3 audio frames: {stitch_err}",
-                    "details": str(stitch_err),
-                    "remedy": "Check write permissions in the output directory."
-                }))
+                self.msg_queue.put(
+                    (
+                        "ERROR",
+                        {
+                            "title": "MP3 Stitching Error",
+                            "message": f"Failed to stitch MP3 audio frames: {stitch_err}",
+                            "details": str(stitch_err),
+                            "remedy": "Check write permissions in the output directory.",
+                        },
+                    )
+                )
                 return
 
             # Clean up temporary turn files
@@ -347,20 +380,34 @@ class GenerationWorker(threading.Thread):
             # Phase 4: Completion & Readiness
             # ------------------------------------------------------------------
             self.msg_queue.put(("PROGRESS", 1.0))
-            self.msg_queue.put(("STATUS", f"Ready! Master podcast generated: {os.path.basename(output_mp3_path)}"))
-            self.msg_queue.put(("GENERATION_DONE", {
-                "mp3_path": output_mp3_path,
-                "script_path": os.path.join(self.output_dir, f"podcast_script_{timestamp}.json"),
-                "dialogue": dialogue
-            }))
+            self.msg_queue.put(
+                ("STATUS", f"Ready! Master podcast generated: {os.path.basename(output_mp3_path)}")
+            )
+            self.msg_queue.put(
+                (
+                    "GENERATION_DONE",
+                    {
+                        "mp3_path": output_mp3_path,
+                        "script_path": os.path.join(
+                            self.output_dir, f"podcast_script_{timestamp}.json"
+                        ),
+                        "dialogue": dialogue,
+                    },
+                )
+            )
 
         except Exception as unhandled_err:
-            self.msg_queue.put(("ERROR", {
-                "title": "Unexpected Pipeline Error",
-                "message": str(unhandled_err),
-                "details": str(unhandled_err),
-                "remedy": "Please review the error details and try again."
-            }))
+            self.msg_queue.put(
+                (
+                    "ERROR",
+                    {
+                        "title": "Unexpected Pipeline Error",
+                        "message": str(unhandled_err),
+                        "details": str(unhandled_err),
+                        "remedy": "Please review the error details and try again.",
+                    },
+                )
+            )
 
     def _cleanup_temp_dir(self, temp_dir: str):
         """Recursively cleans temporary turn files."""
@@ -398,12 +445,12 @@ class MainWindow(ctk.CTk):
         # Concurrency & Event State
         self.msg_queue: queue.Queue = queue.Queue()
         self.cancel_event: threading.Event = threading.Event()
-        self.current_worker: Optional[GenerationWorker] = None
+        self.current_worker: GenerationWorker | None = None
 
         # Data & Playback State
-        self.current_dialogue: List[DialogueTurn] = []
-        self.current_mp3_path: Optional[str] = None
-        self.current_script_path: Optional[str] = None
+        self.current_dialogue: list[DialogueTurn] = []
+        self.current_mp3_path: str | None = None
+        self.current_script_path: str | None = None
         self.player: WindowsAudioPlayer = WindowsAudioPlayer()
         self.is_busy: bool = False
 
@@ -425,7 +472,9 @@ class MainWindow(ctk.CTk):
     # Header Layout
     # ==========================================================================
     def _build_header(self):
-        header_card = CardFrame(self, height=65, corner_radius=0, border_width=0, fg_color="#1f2335")
+        header_card = CardFrame(
+            self, height=65, corner_radius=0, border_width=0, fg_color="#1f2335"
+        )
         header_card.pack(fill="x", padx=0, pady=(0, 10))
 
         inner_header = ctk.CTkFrame(header_card, fg_color="transparent")
@@ -437,9 +486,9 @@ class MainWindow(ctk.CTk):
 
         app_title = ctk.CTkLabel(
             title_group,
-            text="🎙️ PodcastStudio",
+            text="🎙️ LocalPodcastLLMStudio",
             font=get_font_title(),
-            text_color=COLOR_ACCENT
+            text_color=COLOR_ACCENT,
         )
         app_title.pack(side="left")
 
@@ -447,7 +496,7 @@ class MainWindow(ctk.CTk):
             title_group,
             text="100% Local AI Two-Host Podcast Generator",
             font=get_font_subtitle(),
-            text_color=COLOR_TEXT_SECONDARY
+            text_color=COLOR_TEXT_SECONDARY,
         )
         subtitle.pack(side="left", padx=(14, 0), pady=(3, 0))
 
@@ -456,9 +505,7 @@ class MainWindow(ctk.CTk):
         status_group.pack(side="right")
 
         self.ollama_badge = StatusBadge(
-            status_group,
-            initial_status="checking",
-            initial_text="Checking Ollama..."
+            status_group, initial_status="checking", initial_text="Checking Ollama..."
         )
         self.ollama_badge.pack(side="left", padx=(0, 8))
 
@@ -470,9 +517,21 @@ class MainWindow(ctk.CTk):
             font=get_font_caption(),
             fg_color="#2b314a",
             hover_color="#3d4566",
-            command=self.refresh_ollama_models
+            command=self.refresh_ollama_models,
         )
         self.btn_refresh_models.pack(side="left")
+
+        self.btn_about = ctk.CTkButton(
+            status_group,
+            text="ℹ️ About",
+            width=75,
+            height=30,
+            font=get_font_caption(),
+            fg_color="#2b314a",
+            hover_color="#3d4566",
+            command=self.show_about_dialog,
+        )
+        self.btn_about.pack(side="left", padx=(8, 0))
 
     # ==========================================================================
     # Main 2-Column Responsive Layout
@@ -507,14 +566,14 @@ class MainWindow(ctk.CTk):
             scroll_container,
             title="Ingestion Source",
             subtitle="Choose source document, paste text, or write a topic prompt",
-            icon="📄"
+            icon="📄",
         ).pack(fill="x", pady=(0, 10))
 
         self.input_modality_var = ctk.StringVar(value="file")
         self.modality_segmented = ctk.CTkSegmentedButton(
             scroll_container,
             values=["Document (.txt/.md/.pdf)", "Pasted Text", "Topic Prompt (Scratch)"],
-            command=self._on_modality_changed
+            command=self._on_modality_changed,
         )
         self.modality_segmented.set("Document (.txt/.md/.pdf)")
         self.modality_segmented.pack(fill="x", pady=(0, 10))
@@ -529,7 +588,7 @@ class MainWindow(ctk.CTk):
             file_row,
             placeholder_text="Select a .txt, .md, or .pdf file...",
             fg_color=COLOR_INPUT_BG,
-            border_color=COLOR_INPUT_BORDER
+            border_color=COLOR_INPUT_BORDER,
         )
         self.file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.btn_browse_file = ctk.CTkButton(
@@ -538,7 +597,7 @@ class MainWindow(ctk.CTk):
             width=80,
             fg_color="#33384d",
             hover_color="#414868",
-            command=self._browse_input_file
+            command=self._browse_input_file,
         )
         self.btn_browse_file.pack(side="right")
 
@@ -547,7 +606,7 @@ class MainWindow(ctk.CTk):
             text="Ready to load document.",
             font=get_font_caption(),
             text_color=COLOR_TEXT_SECONDARY,
-            anchor="w"
+            anchor="w",
         )
         self.file_info_label.pack(anchor="w", pady=(4, 0))
 
@@ -559,7 +618,7 @@ class MainWindow(ctk.CTk):
             font=get_font_body(),
             fg_color=COLOR_INPUT_BG,
             border_color=COLOR_INPUT_BORDER,
-            border_width=1
+            border_width=1,
         )
         self.text_input_box.pack(fill="both", expand=True)
 
@@ -568,7 +627,7 @@ class MainWindow(ctk.CTk):
             scroll_container,
             title="Podcast & Voice Configuration",
             subtitle="Target language, personas, Ollama model, length, tone and rate",
-            icon="⚙️"
+            icon="⚙️",
         ).pack(fill="x", pady=(14, 10))
 
         cfg_grid = ctk.CTkFrame(scroll_container, fg_color="transparent")
@@ -576,23 +635,23 @@ class MainWindow(ctk.CTk):
         cfg_grid.grid_columnconfigure(1, weight=1)
 
         # Language Selector
-        ctk.CTkLabel(cfg_grid, text="Language:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY).grid(
-            row=0, column=0, sticky="w", pady=6
-        )
+        ctk.CTkLabel(
+            cfg_grid, text="Language:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
+        ).grid(row=0, column=0, sticky="w", pady=6)
         self.lang_menu = ctk.CTkOptionMenu(
             cfg_grid,
             values=["Norwegian Bokmål (Kari & Ola)", "English (Jenny & Guy)"],
             fg_color="#2b314a",
             button_color=COLOR_ACCENT,
-            button_hover_color=COLOR_ACCENT_HOVER
+            button_hover_color=COLOR_ACCENT_HOVER,
         )
         self.lang_menu.set("Norwegian Bokmål (Kari & Ola)")
         self.lang_menu.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         # Ollama Model Dropdown
-        ctk.CTkLabel(cfg_grid, text="Ollama Model:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY).grid(
-            row=1, column=0, sticky="w", pady=6
-        )
+        ctk.CTkLabel(
+            cfg_grid, text="Ollama Model:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
+        ).grid(row=1, column=0, sticky="w", pady=6)
         model_row = ctk.CTkFrame(cfg_grid, fg_color="transparent")
         model_row.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
         self.model_menu = ctk.CTkOptionMenu(
@@ -600,39 +659,39 @@ class MainWindow(ctk.CTk):
             values=["Checking models..."],
             fg_color="#2b314a",
             button_color=COLOR_ACCENT,
-            button_hover_color=COLOR_ACCENT_HOVER
+            button_hover_color=COLOR_ACCENT_HOVER,
         )
         self.model_menu.pack(side="left", fill="x", expand=True)
 
         # Episode Length Preset
-        ctk.CTkLabel(cfg_grid, text="Episode Length:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY).grid(
-            row=2, column=0, sticky="w", pady=6
-        )
+        ctk.CTkLabel(
+            cfg_grid, text="Episode Length:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
+        ).grid(row=2, column=0, sticky="w", pady=6)
         self.length_menu = ctk.CTkOptionMenu(
             cfg_grid,
             values=[
                 "Quick Summary (6-8 turns, ~2-3 min)",
                 "Standard Episode (12-16 turns, ~5-7 min)",
                 "Deep Dive (20-26 turns, ~10-15 min)",
-                "Extended In-Depth (45-60 turns, ~25-30 min)"
+                "Extended In-Depth (45-60 turns, ~25-30 min)",
             ],
             fg_color="#2b314a",
             button_color=COLOR_ACCENT,
-            button_hover_color=COLOR_ACCENT_HOVER
+            button_hover_color=COLOR_ACCENT_HOVER,
         )
         self.length_menu.set("Standard Episode (12-16 turns, ~5-7 min)")
         self.length_menu.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         # Tone / Style Preset
-        ctk.CTkLabel(cfg_grid, text="Tone / Style:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY).grid(
-            row=3, column=0, sticky="w", pady=6
-        )
+        ctk.CTkLabel(
+            cfg_grid, text="Tone / Style:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
+        ).grid(row=3, column=0, sticky="w", pady=6)
         self.tone_menu = ctk.CTkOptionMenu(
             cfg_grid,
             values=["Casual & Lively", "Analytical & Educational", "Lively Debate"],
             fg_color="#2b314a",
             button_color=COLOR_ACCENT,
-            button_hover_color=COLOR_ACCENT_HOVER
+            button_hover_color=COLOR_ACCENT_HOVER,
         )
         self.tone_menu.set("Casual & Lively")
         self.tone_menu.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=6)
@@ -644,23 +703,24 @@ class MainWindow(ctk.CTk):
             from_=-10.0,
             to=15.0,
             number_of_steps=5,
-            default_value=0.0
+            default_value=0.0,
         )
         self.speed_slider.pack(fill="x", pady=(4, 10))
 
         # Output Folder Selector
         out_header = ctk.CTkFrame(scroll_container, fg_color="transparent")
         out_header.pack(fill="x", pady=(4, 4))
-        ctk.CTkLabel(out_header, text="Output Directory:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY).pack(
-            side="left"
-        )
+        ctk.CTkLabel(
+            out_header,
+            text="Output Directory:",
+            font=get_font_body(),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(side="left")
 
         out_row = ctk.CTkFrame(scroll_container, fg_color="transparent")
         out_row.pack(fill="x", pady=(0, 14))
         self.output_entry = ctk.CTkEntry(
-            out_row,
-            fg_color=COLOR_INPUT_BG,
-            border_color=COLOR_INPUT_BORDER
+            out_row, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER
         )
         default_out = os.path.abspath(os.path.join(os.getcwd(), "output"))
         self.output_entry.insert(0, default_out)
@@ -672,16 +732,14 @@ class MainWindow(ctk.CTk):
             width=80,
             fg_color="#33384d",
             hover_color="#414868",
-            command=self._browse_output_dir
+            command=self._browse_output_dir,
         )
         self.btn_browse_output.pack(side="right")
 
         # --- Section 3: Action Buttons ---
-        SectionHeader(
-            scroll_container,
-            title="Generate & Actions",
-            icon="🚀"
-        ).pack(fill="x", pady=(6, 10))
+        SectionHeader(scroll_container, title="Generate & Actions", icon="🚀").pack(
+            fill="x", pady=(6, 10)
+        )
 
         # Primary Action: Generate Full Podcast
         self.btn_generate_full = ctk.CTkButton(
@@ -691,7 +749,7 @@ class MainWindow(ctk.CTk):
             font=get_font_body_bold(),
             fg_color=COLOR_ACCENT,
             hover_color=COLOR_ACCENT_HOVER,
-            command=lambda: self.start_generation(mode="full")
+            command=lambda: self.start_generation(mode="full"),
         )
         self.btn_generate_full.pack(fill="x", pady=(0, 8))
 
@@ -703,7 +761,7 @@ class MainWindow(ctk.CTk):
             font=get_font_body(),
             fg_color="#2b314a",
             hover_color="#3d4566",
-            command=lambda: self.start_generation(mode="script_only")
+            command=lambda: self.start_generation(mode="script_only"),
         )
         self.btn_generate_script.pack(fill="x", pady=(0, 8))
 
@@ -718,7 +776,7 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_ERROR,
             hover_color="#db4b4b",
             state="disabled",
-            command=self.cancel_generation
+            command=self.cancel_generation,
         )
         self.btn_cancel.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
@@ -728,7 +786,7 @@ class MainWindow(ctk.CTk):
             font=get_font_body(),
             fg_color="#33384d",
             hover_color="#414868",
-            command=self.reset_form
+            command=self.reset_form,
         )
         self.btn_reset.pack(side="right", fill="x", expand=True, padx=(4, 0))
 
@@ -751,23 +809,17 @@ class MainWindow(ctk.CTk):
             text="Ready to generate your podcast.",
             font=get_font_body_bold(),
             text_color=COLOR_TEXT_PRIMARY,
-            anchor="w"
+            anchor="w",
         )
         self.status_label.pack(side="left", fill="x", expand=True)
 
         self.progress_pct_label = ctk.CTkLabel(
-            status_top,
-            text="0%",
-            font=get_font_caption(),
-            text_color=COLOR_TEXT_SECONDARY
+            status_top, text="0%", font=get_font_caption(), text_color=COLOR_TEXT_SECONDARY
         )
         self.progress_pct_label.pack(side="right")
 
         self.progress_bar = ctk.CTkProgressBar(
-            status_box,
-            height=10,
-            progress_color=COLOR_ACCENT,
-            fg_color="#24283b"
+            status_box, height=10, progress_color=COLOR_ACCENT, fg_color="#24283b"
         )
         self.progress_bar.set(0.0)
         self.progress_bar.pack(fill="x", padx=12, pady=(0, 10))
@@ -779,7 +831,7 @@ class MainWindow(ctk.CTk):
             studio_header_row,
             text="Interactive Script Studio",
             font=get_font_heading(),
-            text_color=COLOR_TEXT_PRIMARY
+            text_color=COLOR_TEXT_PRIMARY,
         ).pack(side="left")
 
         # Tabview for Formatted Dialogue vs. Editable Script
@@ -787,7 +839,7 @@ class MainWindow(ctk.CTk):
             container,
             fg_color="#1a1c29",
             segmented_button_selected_color=COLOR_ACCENT,
-            segmented_button_selected_hover_color=COLOR_ACCENT_HOVER
+            segmented_button_selected_hover_color=COLOR_ACCENT_HOVER,
         )
         self.script_tabs.pack(fill="both", expand=True, pady=(0, 8))
         self.tab_formatted = self.script_tabs.add("Formatted Dialogue")
@@ -801,7 +853,7 @@ class MainWindow(ctk.CTk):
             self.formatted_scroll,
             text="No dialogue script generated yet.\nGenerate a script to preview turns here.",
             font=get_font_body(),
-            text_color=COLOR_TEXT_MUTED
+            text_color=COLOR_TEXT_MUTED,
         )
         self.empty_script_placeholder.pack(pady=40)
 
@@ -812,7 +864,7 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_INPUT_BG,
             border_color=COLOR_INPUT_BORDER,
             border_width=1,
-            text_color=COLOR_TEXT_PRIMARY
+            text_color=COLOR_TEXT_PRIMARY,
         )
         self.editable_script_box.pack(fill="both", expand=True, padx=4, pady=4)
 
@@ -827,7 +879,7 @@ class MainWindow(ctk.CTk):
             fg_color="#2b314a",
             hover_color="#3d4566",
             font=get_font_caption(),
-            command=self._copy_script_to_clipboard
+            command=self._copy_script_to_clipboard,
         )
         self.btn_copy_script.pack(side="left", padx=(0, 6))
 
@@ -838,7 +890,7 @@ class MainWindow(ctk.CTk):
             fg_color="#2b314a",
             hover_color="#3d4566",
             font=get_font_caption(),
-            command=self._save_script_as
+            command=self._save_script_as,
         )
         self.btn_save_script_as.pack(side="left", padx=(0, 6))
 
@@ -848,7 +900,7 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_ACCENT,
             hover_color=COLOR_ACCENT_HOVER,
             font=get_font_body_bold(),
-            command=self._synthesize_from_edited_script
+            command=self._synthesize_from_edited_script,
         )
         self.btn_synth_from_script.pack(side="right")
 
@@ -865,7 +917,7 @@ class MainWindow(ctk.CTk):
             text="Audio Player: No audio loaded",
             font=get_font_caption(),
             text_color=COLOR_TEXT_SECONDARY,
-            anchor="w"
+            anchor="w",
         )
         self.player_title_label.pack(side="left", fill="x", expand=True)
 
@@ -884,7 +936,7 @@ class MainWindow(ctk.CTk):
             state="disabled",
             fg_color="#2b314a",
             hover_color="#3d4566",
-            command=self._play_audio
+            command=self._play_audio,
         )
         self.btn_play.pack(side="left", padx=(0, 4))
 
@@ -895,7 +947,7 @@ class MainWindow(ctk.CTk):
             state="disabled",
             fg_color="#2b314a",
             hover_color="#3d4566",
-            command=self._pause_audio
+            command=self._pause_audio,
         )
         self.btn_pause.pack(side="left", padx=(0, 4))
 
@@ -906,21 +958,21 @@ class MainWindow(ctk.CTk):
             state="disabled",
             fg_color="#2b314a",
             hover_color="#3d4566",
-            command=self._stop_audio
+            command=self._stop_audio,
         )
         self.btn_stop.pack(side="left", padx=(0, 10))
 
         # Volume Slider
-        ctk.CTkLabel(ctrl_bar, text="Vol:", font=get_font_caption(), text_color=COLOR_TEXT_SECONDARY).pack(
-            side="left", padx=(0, 4)
-        )
+        ctk.CTkLabel(
+            ctrl_bar, text="Vol:", font=get_font_caption(), text_color=COLOR_TEXT_SECONDARY
+        ).pack(side="left", padx=(0, 4))
         self.volume_slider = ctk.CTkSlider(
             ctrl_bar,
             from_=0,
             to=100,
             width=90,
             button_color=COLOR_ACCENT,
-            command=self._on_volume_changed
+            command=self._on_volume_changed,
         )
         self.volume_slider.set(80)
         self.volume_slider.pack(side="left", padx=(0, 10))
@@ -934,7 +986,7 @@ class MainWindow(ctk.CTk):
             fg_color="#33384d",
             hover_color="#414868",
             font=get_font_caption(),
-            command=self._save_mp3_as
+            command=self._save_mp3_as,
         )
         self.btn_export_mp3.pack(side="right", padx=(4, 0))
 
@@ -945,7 +997,7 @@ class MainWindow(ctk.CTk):
             fg_color="#33384d",
             hover_color="#414868",
             font=get_font_caption(),
-            command=self._open_output_folder
+            command=self._open_output_folder,
         )
         self.btn_open_folder.pack(side="right")
 
@@ -972,7 +1024,7 @@ class MainWindow(ctk.CTk):
             ("Text Files (*.txt)", "*.txt"),
             ("Markdown Files (*.md)", "*.md"),
             ("PDF Documents (*.pdf)", "*.pdf"),
-            ("All Files", "*.*")
+            ("All Files", "*.*"),
         ]
         chosen = filedialog.askopenfilename(filetypes=filetypes)
         if chosen:
@@ -982,7 +1034,7 @@ class MainWindow(ctk.CTk):
                 size_kb = os.path.getsize(chosen) / 1024
                 self.file_info_label.configure(
                     text=f"Selected: {os.path.basename(chosen)} ({size_kb:.1f} KB)",
-                    text_color=COLOR_SUCCESS
+                    text_color=COLOR_SUCCESS,
                 )
             except Exception:
                 self.file_info_label.configure(text=f"Selected: {os.path.basename(chosen)}")
@@ -1007,11 +1059,13 @@ class MainWindow(ctk.CTk):
                 models = client.list_models(timeout=3.0)
                 self.msg_queue.put(("OLLAMA_STATUS", {"connected": True, "models": models}))
             except Exception as err:
-                self.msg_queue.put(("OLLAMA_STATUS", {"connected": False, "models": [], "error": str(err)}))
+                self.msg_queue.put(
+                    ("OLLAMA_STATUS", {"connected": False, "models": [], "error": str(err)})
+                )
 
         threading.Thread(target=_bg_fetch, daemon=True).start()
 
-    def _handle_ollama_status(self, data: Dict[str, Any]):
+    def _handle_ollama_status(self, data: dict[str, Any]):
         self.btn_refresh_models.configure(state="normal")
         if data.get("connected") and data.get("models"):
             models = data["models"]
@@ -1019,8 +1073,13 @@ class MainWindow(ctk.CTk):
 
             # Smart preferred model selection
             preferred_order = [
-                "llama3.1:8b", "mistral-nemo:latest", "qwen2.5:7b",
-                "llama3:8b", "mistral:latest", "gemma2:9b", "phi3:medium"
+                "llama3.1:8b",
+                "mistral-nemo:latest",
+                "qwen2.5:7b",
+                "llama3:8b",
+                "mistral:latest",
+                "gemma2:9b",
+                "phi3:medium",
             ]
             selected = models[0]
             for pref in preferred_order:
@@ -1050,7 +1109,7 @@ class MainWindow(ctk.CTk):
                     self,
                     title="Missing Document File",
                     message="Please select a valid .txt, .md, or .pdf file before generating.",
-                    remedy="Click 'Browse...' in the left panel to choose a file."
+                    details="Click 'Browse...' in the left panel to choose a file.",
                 )
                 return
             source_data = file_path
@@ -1060,7 +1119,7 @@ class MainWindow(ctk.CTk):
                 ActionableErrorDialog(
                     self,
                     title="Input Required",
-                    message="Please enter some text or a topic prompt description in the input box."
+                    message="Please enter some text or a topic prompt description in the input box.",
                 )
                 return
             source_data = text_data
@@ -1073,7 +1132,7 @@ class MainWindow(ctk.CTk):
                 message="Local Ollama is offline or no models were found.\n\nPlease start Ollama and ensure you have pulled a model.",
                 details="Run 'ollama serve' in terminal or launch Ollama from Windows tray.\nRun 'ollama pull llama3.1:8b' to install a model.",
                 action_button_text="Refresh Ollama",
-                action_callback=self.refresh_ollama_models
+                action_callback=self.refresh_ollama_models,
             )
             return
 
@@ -1118,7 +1177,7 @@ class MainWindow(ctk.CTk):
             speed_rate=speed_rate,
             output_dir=out_dir,
             msg_queue=self.msg_queue,
-            cancel_event=self.cancel_event
+            cancel_event=self.cancel_event,
         )
         self.current_worker.start()
 
@@ -1136,18 +1195,19 @@ class MainWindow(ctk.CTk):
             ActionableErrorDialog(
                 self,
                 title="Empty Script",
-                message="No dialogue script content found in the editor to synthesize."
+                message="No dialogue script content found in the editor to synthesize.",
             )
             return
 
-        dialogue_turns: List[DialogueTurn] = []
+        dialogue_turns: list[DialogueTurn] = []
         # Attempt JSON parsing first, then fallback to multi-tier dialogue parsing
         try:
             parsed_json = json.loads(raw_text)
             if isinstance(parsed_json, list):
                 dialogue_turns = [
                     DialogueTurn(speaker=t.get("speaker", "Host 1"), text=t.get("text", ""))
-                    for t in parsed_json if isinstance(t, dict)
+                    for t in parsed_json
+                    if isinstance(t, dict)
                 ]
         except Exception:
             pass
@@ -1160,7 +1220,7 @@ class MainWindow(ctk.CTk):
                 self,
                 title="Invalid Script Format",
                 message="Could not parse dialogue turns from the script box.",
-                details="Please ensure dialogue turns follow JSON or 'Host 1: ...' format."
+                details="Please ensure dialogue turns follow JSON or 'Host 1: ...' format.",
             )
             return
 
@@ -1185,7 +1245,7 @@ class MainWindow(ctk.CTk):
             speed_rate=speed_rate,
             output_dir=out_dir,
             msg_queue=self.msg_queue,
-            cancel_event=self.cancel_event
+            cancel_event=self.cancel_event,
         )
         self.current_worker.start()
 
@@ -1234,7 +1294,7 @@ class MainWindow(ctk.CTk):
                     title=payload.get("title", "Error"),
                     message=payload.get("message", "An error occurred."),
                     details=payload.get("details"),
-                    action_button_text="Dismiss"
+                    action_button_text="Dismiss",
                 )
             else:
                 messagebox.showerror("Error", str(payload))
@@ -1252,7 +1312,7 @@ class MainWindow(ctk.CTk):
         self.btn_reset.configure(state=state)
         self.btn_cancel.configure(state="normal" if busy else "disabled")
 
-    def _render_transcript(self, dialogue: List[DialogueTurn]):
+    def _render_transcript(self, dialogue: list[DialogueTurn]):
         self.current_dialogue = dialogue
 
         # Clear existing formatted dialogue cards
@@ -1264,17 +1324,14 @@ class MainWindow(ctk.CTk):
                 self.formatted_scroll,
                 text="No dialogue turns available.",
                 font=get_font_body(),
-                text_color=COLOR_TEXT_MUTED
+                text_color=COLOR_TEXT_MUTED,
             )
             self.empty_script_placeholder.pack(pady=40)
             return
 
         for idx, turn in enumerate(dialogue, start=1):
             turn_card = DialogueTurnCard(
-                self.formatted_scroll,
-                turn_number=idx,
-                speaker=turn.speaker,
-                text=turn.text
+                self.formatted_scroll, turn_number=idx, speaker=turn.speaker, text=turn.text
             )
             turn_card.pack(fill="x", pady=4)
 
@@ -1282,7 +1339,7 @@ class MainWindow(ctk.CTk):
         self.editable_script_box.delete("1.0", "end")
         self.editable_script_box.insert("1.0", dialogue_to_json(dialogue))
 
-    def _on_generation_done(self, result: Dict[str, Any]):
+    def _on_generation_done(self, result: dict[str, Any]):
         self._set_busy_state(False)
         self.current_mp3_path = result.get("mp3_path")
         self.current_script_path = result.get("script_path")
@@ -1301,12 +1358,12 @@ class MainWindow(ctk.CTk):
             tot_ms = self.player.get_length()
             self.time_slider.update_position(0, tot_ms, "Loaded")
 
-    def _on_script_only_done(self, result: Dict[str, Any]):
+    def _on_script_only_done(self, result: dict[str, Any]):
         self._set_busy_state(False)
         self.current_script_path = result.get("script_path")
         messagebox.showinfo(
             "Script Ready",
-            f"Podcast dialogue script generated successfully!\n\nSaved to: {os.path.basename(str(self.current_script_path))}"
+            f"Podcast dialogue script generated successfully!\n\nSaved to: {os.path.basename(str(self.current_script_path))}",
         )
 
     # ==========================================================================
@@ -1354,7 +1411,7 @@ class MainWindow(ctk.CTk):
         dest = filedialog.asksaveasfilename(
             defaultextension=".mp3",
             filetypes=[("MP3 Audio Files", "*.mp3")],
-            initialfile=os.path.basename(self.current_mp3_path)
+            initialfile=os.path.basename(self.current_mp3_path),
         )
         if dest:
             try:
@@ -1391,9 +1448,9 @@ class MainWindow(ctk.CTk):
             filetypes=[
                 ("JSON Script", "*.json"),
                 ("Markdown Transcript", "*.md"),
-                ("Plain Text", "*.txt")
+                ("Plain Text", "*.txt"),
             ],
-            initialfile="podcast_dialogue.json"
+            initialfile="podcast_dialogue.json",
         )
         if dest:
             try:
@@ -1406,13 +1463,19 @@ class MainWindow(ctk.CTk):
     def reset_form(self):
         """Clears inputs and resets view."""
         self.file_entry.delete(0, "end")
-        self.file_info_label.configure(text="Ready to load document.", text_color=COLOR_TEXT_SECONDARY)
+        self.file_info_label.configure(
+            text="Ready to load document.", text_color=COLOR_TEXT_SECONDARY
+        )
         self.text_input_box.delete("1.0", "end")
         self.editable_script_box.delete("1.0", "end")
         self.progress_bar.set(0.0)
         self.progress_pct_label.configure(text="0%")
         self.status_label.configure(text="Ready to generate your podcast.")
         self._render_transcript([])
+
+    def show_about_dialog(self):
+        """Displays the modal About dialog explaining tech stack, pipeline, and limitations."""
+        AboutDialog(self)
 
     def _on_close(self):
         """Safely cleans up player and background workers on application exit."""

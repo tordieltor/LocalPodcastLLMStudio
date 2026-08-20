@@ -1,5 +1,5 @@
 """
-PodcastStudio - Multi-Tier Resilient Dialogue Parser
+LocalPodcastLLMStudio - Multi-Tier Resilient Dialogue Parser
 Converts raw LLM responses into structured List[DialogueTurn] using a 6-tier
 fallback pipeline capable of salvaging malformed JSON, markdown fences, syntax errors,
 regex object extraction, and plain text transcripts.
@@ -7,27 +7,37 @@ regex object extraction, and plain text transcripts.
 
 import json
 import re
-from dataclasses import dataclass, asdict
-from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
 class DialogueTurn:
     """Represents a single conversational turn in a podcast episode."""
-    speaker: str  # Normalized to 'Host 1' or 'Host 2'
-    text: str     # Spoken dialogue text
 
-    def to_dict(self) -> Dict[str, str]:
+    speaker: str  # Normalized to 'Host 1' or 'Host 2'
+    text: str  # Spoken dialogue text
+
+    def to_dict(self) -> dict[str, str]:
         return {"speaker": self.speaker, "text": self.text}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "DialogueTurn":
-        speaker = data.get("speaker") or data.get("host") or data.get("name") or data.get("role") or "Host 1"
-        text = data.get("text") or data.get("content") or data.get("dialogue") or data.get("line") or ""
-        return cls(
-            speaker=normalize_speaker(str(speaker)),
-            text=str(text).strip()
+    def from_dict(cls, data: dict[str, Any]) -> "DialogueTurn":
+        speaker = (
+            data.get("speaker")
+            or data.get("host")
+            or data.get("name")
+            or data.get("role")
+            or "Host 1"
         )
+        text = (
+            data.get("text")
+            or data.get("content")
+            or data.get("dialogue")
+            or data.get("line")
+            or ""
+        )
+        return cls(speaker=normalize_speaker(str(speaker)), text=str(text).strip())
 
 
 def normalize_speaker(raw_speaker: str) -> str:
@@ -42,7 +52,9 @@ def normalize_speaker(raw_speaker: str) -> str:
     s = raw_speaker.strip().lower()
 
     # Host 1 patterns
-    if any(k in s for k in ["1", "kari", "jenny", "host 1", "host1", "speaker 1", "host_1", "host a"]):
+    if any(
+        k in s for k in ["1", "kari", "jenny", "host 1", "host1", "speaker 1", "host_1", "host a"]
+    ):
         return "Host 1"
 
     # Host 2 patterns
@@ -59,10 +71,10 @@ class DialogueParser:
     """
 
     @classmethod
-    def parse(cls, raw_output: str, default_language: str = "en-US") -> List[DialogueTurn]:
+    def parse(cls, raw_output: str, default_language: str = "en-US") -> list[DialogueTurn]:
         """
         Parses raw LLM string into List[DialogueTurn] using 6 cascading recovery tiers.
-        
+
         Tiers:
         - Tier 1: Direct JSON parse
         - Tier 2: Markdown code fence block extraction (```json ... ```)
@@ -70,7 +82,7 @@ class DialogueParser:
         - Tier 4: Syntax sanitizer (trailing commas, single quotes, control chars)
         - Tier 5: Line-by-line / object-by-object regex extractor
         - Tier 6: Plain-text transcript line salvager
-        
+
         Raises:
             ValueError: If parsing fails across all 6 tiers or returns empty dialogue.
         """
@@ -144,15 +156,17 @@ class DialogueParser:
         if turns:
             return turns
 
-        raise ValueError("Failed to parse dialogue script from LLM output across all 6 parser tiers.")
+        raise ValueError(
+            "Failed to parse dialogue script from LLM output across all 6 parser tiers."
+        )
 
     @classmethod
-    def _try_bracket_parse(cls, text: str) -> Optional[List[DialogueTurn]]:
+    def _try_bracket_parse(cls, text: str) -> list[DialogueTurn] | None:
         """Finds outer [ ... ] brackets and attempts JSON parsing."""
         start_idx = text.find("[")
         end_idx = text.rfind("]")
         if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            bracket_slice = text[start_idx:end_idx + 1].strip()
+            bracket_slice = text[start_idx : end_idx + 1].strip()
             try:
                 data = json.loads(bracket_slice)
                 return cls._validate_and_convert(data)
@@ -183,14 +197,14 @@ class DialogueParser:
         # Clean unescaped ASCII control characters in strings
         s = re.sub(
             r"[\x00-\x1f]",
-            lambda m: "\\u{:04x}".format(ord(m.group(0))) if m.group(0) not in "\r\n\t" else m.group(0),
-            s
+            lambda m: f"\\u{ord(m.group(0)):04x}" if m.group(0) not in "\r\n\t" else m.group(0),
+            s,
         )
 
         return s
 
     @classmethod
-    def _validate_and_convert(cls, data: Any) -> Optional[List[DialogueTurn]]:
+    def _validate_and_convert(cls, data: Any) -> list[DialogueTurn] | None:
         """Converts raw parsed data into List[DialogueTurn]."""
         if isinstance(data, dict):
             # Handle {"dialogue": [...]} or {"turns": [...]} or {"podcast": [...]}
@@ -208,7 +222,7 @@ class DialogueParser:
         if not isinstance(data, list):
             return None
 
-        turns: List[DialogueTurn] = []
+        turns: list[DialogueTurn] = []
         for item in data:
             if isinstance(item, dict):
                 turn = DialogueTurn.from_dict(item)
@@ -223,22 +237,22 @@ class DialogueParser:
         return turns if turns else None
 
     @classmethod
-    def _regex_object_parser(cls, text: str) -> Optional[List[DialogueTurn]]:
+    def _regex_object_parser(cls, text: str) -> list[DialogueTurn] | None:
         """Extracts individual dialogue turn objects using regex."""
         pattern1 = re.compile(
             r'\{\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*,\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*\}',
-            re.MULTILINE | re.DOTALL | re.IGNORECASE
+            re.MULTILINE | re.DOTALL | re.IGNORECASE,
         )
         pattern2 = re.compile(
             r'\{\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*,\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*\}',
-            re.MULTILINE | re.DOTALL | re.IGNORECASE
+            re.MULTILINE | re.DOTALL | re.IGNORECASE,
         )
 
         matches = list(pattern1.finditer(text))
         if not matches:
             matches = list(pattern2.finditer(text))
 
-        turns: List[DialogueTurn] = []
+        turns: list[DialogueTurn] = []
         for match in matches:
             spk = normalize_speaker(match.group("speaker"))
             raw_txt = match.group("text")
@@ -254,7 +268,7 @@ class DialogueParser:
         return turns if turns else None
 
     @classmethod
-    def _transcript_salvage_parser(cls, text: str) -> Optional[List[DialogueTurn]]:
+    def _transcript_salvage_parser(cls, text: str) -> list[DialogueTurn] | None:
         """
         Parses line-by-line plain-text transcript formats:
         e.g. 'Host 1: Hello everyone!', '**Kari:** Hei!', '- Guy: Great point.'
@@ -262,14 +276,14 @@ class DialogueParser:
         """
         line_pattern = re.compile(
             r"^(?:[\*\-\#\_\[\s]*)(Host\s*[12]|Kari|Ola|Jenny|Guy|Speaker\s*[12])(?:[\*\_\]\s]*)\s*:\s*(?:\*{0,2})\s*(.+)$",
-            re.IGNORECASE
+            re.IGNORECASE,
         )
 
-        turns: List[DialogueTurn] = []
-        current_speaker: Optional[str] = None
-        current_lines: List[str] = []
+        turns: list[DialogueTurn] = []
+        current_speaker: str | None = None
+        current_lines: list[str] = []
 
-        def flush_current():
+        def flush_current() -> None:
             nonlocal current_speaker, current_lines
             if current_speaker and current_lines:
                 full_text = " ".join(current_lines).strip()
@@ -292,7 +306,11 @@ class DialogueParser:
                 if line_content:
                     current_lines.append(line_content)
             elif current_speaker is not None:
-                if not line.startswith("```") and not line.startswith("---") and not line.startswith("#"):
+                if (
+                    not line.startswith("```")
+                    and not line.startswith("---")
+                    and not line.startswith("#")
+                ):
                     current_lines.append(line)
 
         flush_current()
@@ -303,21 +321,21 @@ class DialogueParser:
 parse_dialogue_json = DialogueParser.parse
 
 
-def dialogue_to_json(turns: List[DialogueTurn], indent: int = 2) -> str:
+def dialogue_to_json(turns: list[DialogueTurn], indent: int = 2) -> str:
     """Serializes a list of dialogue turns to a formatted JSON string."""
     data = [turn.to_dict() for turn in turns]
     return json.dumps(data, indent=indent, ensure_ascii=False)
 
 
-def dialogue_from_json(json_str: str) -> List[DialogueTurn]:
+def dialogue_from_json(json_str: str) -> list[DialogueTurn]:
     """Deserializes a JSON string into a list of dialogue turns using DialogueParser."""
     return DialogueParser.parse(json_str)
 
 
-def dialogue_to_markdown(turns: List[DialogueTurn], language: str = "nb-NO") -> str:
+def dialogue_to_markdown(turns: list[DialogueTurn], language: str = "nb-NO") -> str:
     """Formats dialogue turns into readable Markdown transcript."""
     lines = ["# Podcast Transcript\n"]
-    for idx, turn in enumerate(turns, start=1):
+    for _idx, turn in enumerate(turns, start=1):
         if turn.speaker == "Host 1":
             speaker_label = "Host 1 (Kari)" if "nb" in language.lower() else "Host 1 (Jenny)"
         else:

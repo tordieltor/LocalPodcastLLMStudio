@@ -1,4 +1,4 @@
-# PodcastStudio - Runtime Dependencies
+# LocalPodcastLLMStudio - Runtime Dependencies
 # Universal 100% Local Two-Host Podcast Generator
 
 # Core Desktop GUI Framework (Windows 11 Fluent Dark UI)

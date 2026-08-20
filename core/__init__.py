@@ -1,63 +1,66 @@
 """
-PodcastStudio - Core Subsystems Package
+LocalPodcastLLMStudio - Core Subsystems Package
 Zero-cloud-cost, 100% local podcast generation and audio processing engines.
 """
 
-from core.parser import (
-    DialogueTurn,
-    DialogueParser,
-    normalize_speaker,
-    parse_dialogue_json,
-    dialogue_to_json,
-    dialogue_from_json,
-    dialogue_to_markdown,
-)
-
 from core.extractor import (
+    DocumentExtractionError,
     extract_text,
     extract_text_from_file,
     extract_text_from_pdf,
     normalize_extracted_text,
-    DocumentExtractionError,
 )
-
-from core.prompts import (
-    FORMAT_PRESETS,
-    TONE_DESCRIPTIONS,
-    build_system_prompt,
-    build_user_prompt,
-    get_format_config,
-    get_tone_description,
-    normalize_language_code,
-)
-
-from core.ollama import (
-    OllamaClient,
-    generate_podcast_script,
-    OllamaConnectionError,
-    OllamaModelNotFoundError,
-)
-
-from core.tts import (
-    TTSEngine,
-    get_voice_for_speaker,
-    synthesize_turn,
-    synthesize_dialogue_audio,
-    format_rate_str,
-    VOICE_MAP,
-)
-
 from core.mp3_stitcher import (
     MP3Stitcher,
     stitch_mp3_files,
 )
-
+from core.ollama import (
+    OllamaClient,
+    OllamaConnectionError,
+    OllamaModelNotFoundError,
+    generate_podcast_script,
+)
+from core.parser import (
+    DialogueParser,
+    DialogueTurn,
+    dialogue_from_json,
+    dialogue_to_json,
+    dialogue_to_markdown,
+    normalize_speaker,
+    parse_dialogue_json,
+)
 from core.player import (
     WindowsAudioPlayer,
     WindowsMCIPlayer,
     export_audio_file,
     format_ms,
     parse_time_str,
+)
+from core.prompts import (
+    FORMAT_PRESETS,
+    GROUNDING_DIRECTIVES_EN,
+    GROUNDING_DIRECTIVES_NB,
+    GROUNDING_MODE_ALIASES,
+    GROUNDING_MODE_PRESETS,
+    TONE_DESCRIPTIONS,
+    GroundingMode,
+    build_act_system_prompt,
+    build_act_user_prompt,
+    build_system_prompt,
+    build_user_prompt,
+    get_act_specs,
+    get_format_config,
+    get_tone_description,
+    normalize_grounding_mode,
+    normalize_language_code,
+)
+from core.tts import (
+    VOICE_MAP,
+    TTSEngine,
+    format_rate_str,
+    get_voice_for_speaker,
+    synthesize_dialogue_audio,
+    synthesize_turn,
 )
 
 __all__ = [
@@ -75,11 +78,20 @@ __all__ = [
     "extract_text_from_pdf",
     "normalize_extracted_text",
     "DocumentExtractionError",
-    # Prompts
+    # Prompts & Grounding
+    "GroundingMode",
+    "GROUNDING_MODE_PRESETS",
+    "GROUNDING_MODE_ALIASES",
+    "GROUNDING_DIRECTIVES_NB",
+    "GROUNDING_DIRECTIVES_EN",
+    "normalize_grounding_mode",
     "FORMAT_PRESETS",
     "TONE_DESCRIPTIONS",
     "build_system_prompt",
     "build_user_prompt",
+    "build_act_system_prompt",
+    "build_act_user_prompt",
+    "get_act_specs",
     "get_format_config",
     "get_tone_description",
     "normalize_language_code",

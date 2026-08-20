@@ -1,10 +1,11 @@
 """
-PodcastStudio - Windows 11 Fluent Dark Theme & Styling Constants
+LocalPodcastLLMStudio - Windows 11 Fluent Dark Theme & Styling Constants
 Defines the color palette, typography, layout dimensions, and DWM window integration.
 """
 
-import sys
 import ctypes
+import sys
+
 import customtkinter as ctk
 
 # ==============================================================================
@@ -12,41 +13,41 @@ import customtkinter as ctk
 # ==============================================================================
 
 # Backgrounds & Surfaces
-COLOR_BG = "#1a1b26"           # App background (deep Tokyo dark slate)
-COLOR_CARD = "#24283b"         # Card / surface background
-COLOR_CARD_HOVER = "#2f3549"   # Card hover state
+COLOR_BG = "#1a1b26"  # App background (deep Tokyo dark slate)
+COLOR_CARD = "#24283b"  # Card / surface background
+COLOR_CARD_HOVER = "#2f3549"  # Card hover state
 COLOR_CARD_BORDER = "#414868"  # Subtle card border
-COLOR_INPUT_BG = "#16161e"     # Textbox and input entry background
-COLOR_INPUT_BORDER = "#414868" # Border for text inputs and dropdowns
-COLOR_TOOLBAR = "#1f2335"      # Toolbar / action bar background
+COLOR_INPUT_BG = "#16161e"  # Textbox and input entry background
+COLOR_INPUT_BORDER = "#414868"  # Border for text inputs and dropdowns
+COLOR_TOOLBAR = "#1f2335"  # Toolbar / action bar background
 
 # Accent & Action Colors
-COLOR_ACCENT = "#7aa2f7"       # Primary vibrant accent (Tokyo Cyan / Blue)
-COLOR_ACCENT_HOVER = "#565f89" # Accent hover state
-COLOR_ACCENT_ACTIVE = "#3d59a1"# Accent pressed state
+COLOR_ACCENT = "#7aa2f7"  # Primary vibrant accent (Tokyo Cyan / Blue)
+COLOR_ACCENT_HOVER = "#565f89"  # Accent hover state
+COLOR_ACCENT_ACTIVE = "#3d59a1"  # Accent pressed state
 
 # State Indicators
-COLOR_SUCCESS = "#9ece6a"      # Vibrant emerald green (Connected / Ready)
-COLOR_WARNING = "#ff9e64"      # Warm amber orange (Checking / Busy / Warning)
-COLOR_ERROR = "#f7768e"        # Soft crimson red (Offline / Error / Cancelled)
-COLOR_INFO = "#7dcfff"         # Cyan blue (Informational notifications)
+COLOR_SUCCESS = "#9ece6a"  # Vibrant emerald green (Connected / Ready)
+COLOR_WARNING = "#ff9e64"  # Warm amber orange (Checking / Busy / Warning)
+COLOR_ERROR = "#f7768e"  # Soft crimson red (Offline / Error / Cancelled)
+COLOR_INFO = "#7dcfff"  # Cyan blue (Informational notifications)
 
 # Text & Typography Colors
 COLOR_TEXT_PRIMARY = "#c0caf5"  # High-contrast readable text
-COLOR_TEXT_SECONDARY = "#7982a9"# Muted text for captions and subtitles
-COLOR_TEXT_MUTED = "#565f89"    # Deep muted text for placeholders
-COLOR_TEXT_DARK = "#15161e"     # Dark text for light button badges
+COLOR_TEXT_SECONDARY = "#7982a9"  # Muted text for captions and subtitles
+COLOR_TEXT_MUTED = "#565f89"  # Deep muted text for placeholders
+COLOR_TEXT_DARK = "#15161e"  # Dark text for light button badges
 
 # Persona Speaker Badges
-COLOR_HOST1 = "#7aa2f7"        # Host 1 / Kari / Jenny (Accent Cyan Blue)
-COLOR_HOST1_BG = "#1f2744"     # Host 1 Dialogue Card Surface
-COLOR_HOST2 = "#9ece6a"        # Host 2 / Ola / Guy (Emerald Green)
-COLOR_HOST2_BG = "#1d2b27"     # Host 2 Dialogue Card Surface
+COLOR_HOST1 = "#7aa2f7"  # Host 1 / Kari / Jenny (Accent Cyan Blue)
+COLOR_HOST1_BG = "#1f2744"  # Host 1 Dialogue Card Surface
+COLOR_HOST2 = "#9ece6a"  # Host 2 / Ola / Guy (Emerald Green)
+COLOR_HOST2_BG = "#1d2b27"  # Host 2 Dialogue Card Surface
 
 # ==============================================================================
 # Dimensions, Radii, & Paddings
 # ==============================================================================
-APP_TITLE = "PodcastStudio - 100% Local AI Podcast Generator"
+APP_TITLE = "LocalPodcastLLMStudio - 100% Local AI Podcast Generator"
 DEFAULT_WINDOW_SIZE = "1200x860"
 MIN_WINDOW_WIDTH = 1080
 MIN_WINDOW_HEIGHT = 740
@@ -60,6 +61,7 @@ PADDING_XS = 4
 PADDING_SM = 8
 PADDING_MD = 14
 PADDING_LG = 20
+
 
 # ==============================================================================
 # Typography Helper Functions

@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PodcastStudio - PyInstaller Specification File
+LocalPodcastLLMStudio - PyInstaller Specification File
 Universal 100% Local AI Podcast Desktop Application
 Bundles CustomTkinter Fluent Dark GUI, Edge-TTS Neural Voice Engine,
 PyPDF Document Parser, Zero-FFmpeg MP3 Stitcher, and Native MCI Audio Player.
@@ -8,9 +8,38 @@ PyPDF Document Parser, Zero-FFmpeg MP3 Stitcher, and Native MCI Audio Player.
 
 import os
 import sys
+import importlib.util
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
+# Increase recursion limit to handle deep AST graphs during CustomTkinter/aiohttp analysis
+sys.setrecursionlimit(5000)
+
 block_cipher = None
+
+# Determine base directory reliably regardless of invocation method
+spec_dir = os.path.abspath(
+    SPECPATH if "SPECPATH" in globals()
+    else os.path.dirname(__file__) if "__file__" in globals()
+    else os.getcwd()
+)
+
+def safe_collect_data_files(package_name: str):
+    """Safely collect data files if package is installed."""
+    try:
+        if importlib.util.find_spec(package_name) is not None:
+            return collect_data_files(package_name)
+    except Exception:
+        pass
+    return []
+
+def safe_collect_submodules(package_name: str):
+    """Safely collect submodules if package is installed."""
+    try:
+        if importlib.util.find_spec(package_name) is not None:
+            return collect_submodules(package_name)
+    except Exception:
+        pass
+    return []
 
 # ---------------------------------------------------------------------------
 # 1. Collect Data Assets & Resources
@@ -18,20 +47,21 @@ block_cipher = None
 datas = []
 
 # Collect themes, fonts, and icon assets for CustomTkinter
-datas += collect_data_files('customtkinter')
+datas += safe_collect_data_files('customtkinter')
 
 # Collect bundled resources for Edge-TTS
-datas += collect_data_files('edge_tts')
+datas += safe_collect_data_files('edge_tts')
 
 # Collect SSL CA certificates bundle from Certifi for secure Edge-TTS WebSockets
-datas += collect_data_files('certifi')
+datas += safe_collect_data_files('certifi')
 
 # Collect encoding tables and data files for PyPDF
-datas += collect_data_files('pypdf')
+datas += safe_collect_data_files('pypdf')
 
 # Include local application assets folder if present
-if os.path.exists('assets'):
-    datas.append(('assets', 'assets'))
+assets_path = os.path.join(spec_dir, 'assets')
+if os.path.exists(assets_path):
+    datas.append((assets_path, 'assets'))
 
 # ---------------------------------------------------------------------------
 # 2. Collect Hidden Imports & Dynamic Submodules
@@ -39,10 +69,14 @@ if os.path.exists('assets'):
 hiddenimports = []
 
 # Package submodules
-hiddenimports += collect_submodules('customtkinter')
-hiddenimports += collect_submodules('edge_tts')
-hiddenimports += collect_submodules('pypdf')
-hiddenimports += collect_submodules('requests')
+hiddenimports += safe_collect_submodules('customtkinter')
+hiddenimports += safe_collect_submodules('edge_tts')
+hiddenimports += safe_collect_submodules('pypdf')
+hiddenimports += safe_collect_submodules('requests')
+
+# Conditionally collect optional websockets submodule if present
+if importlib.util.find_spec('websockets') is not None:
+    hiddenimports += safe_collect_submodules('websockets')
 
 # Core application modules
 hiddenimports += [
@@ -57,6 +91,7 @@ hiddenimports += [
     'ui',
     'ui.theme',
     'ui.widgets',
+    'ui.about_dialog',
     'ui.main_window',
 ]
 
@@ -64,7 +99,6 @@ hiddenimports += [
 hiddenimports += [
     'aiohttp',
     'asyncio',
-    'websockets',
     'certifi',
     'requests',
     'urllib.request',
@@ -98,8 +132,8 @@ hiddenimports += [
 # 3. Analysis Configuration
 # ---------------------------------------------------------------------------
 a = Analysis(
-    ['app.py'],
-    pathex=['.'],
+    [os.path.join(spec_dir, 'app.py')],
+    pathex=[spec_dir],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -137,6 +171,8 @@ pyz = PYZ(
 # ---------------------------------------------------------------------------
 # 5. Executable Target (Single-File Standalone Binary)
 # ---------------------------------------------------------------------------
+icon_file = os.path.join(spec_dir, 'assets', 'icon.ico')
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -144,7 +180,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='PodcastStudio',
+    name='LocalPodcastLLMStudio',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -156,5 +192,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/icon.ico' if os.path.exists('assets/icon.ico') else None,
+    icon=icon_file if os.path.exists(icon_file) else None,
 )

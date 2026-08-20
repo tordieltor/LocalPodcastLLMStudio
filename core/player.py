@@ -1,5 +1,5 @@
 """
-PodcastStudio - Native Windows Audio Player (winmm.dll / MCI)
+LocalPodcastLLMStudio - Native Windows Audio Player (winmm.dll / MCI)
 Provides high-performance, zero-external-dependency audio playback, seeking, volume,
 and export control using the Windows Multimedia Media Control Interface (MCI).
 """
@@ -7,8 +7,7 @@ and export control using the Windows Multimedia Media Control Interface (MCI).
 import os
 import shutil
 import sys
-import time
-from typing import Optional
+from typing import Any
 
 
 class WindowsAudioPlayer:
@@ -17,9 +16,9 @@ class WindowsAudioPlayer:
     Supports MP3 playback, pause, resume, stop, position seeking, volume, and length queries.
     """
 
-    def __init__(self, alias: str = "podcaststudio_mci_player"):
+    def __init__(self, alias: str = "localpodcastllmstudio_mci_player"):
         self.alias = alias
-        self.current_file: Optional[str] = None
+        self.current_file: str | None = None
         self._is_opened = False
         self._length_ms = 0
         self._volume_percent = 80
@@ -29,6 +28,7 @@ class WindowsAudioPlayer:
         if sys.platform == "win32":
             try:
                 import ctypes
+
                 self._winmm = ctypes.windll.winmm
             except Exception:
                 self._winmm = None
@@ -38,7 +38,7 @@ class WindowsAudioPlayer:
         return self._is_opened
 
     @_is_open.setter
-    def _is_open(self, val: bool):
+    def _is_open(self, val: bool) -> None:
         self._is_opened = val
 
     def _send_command(self, cmd: str, buffer_len: int = 256) -> str:
@@ -47,6 +47,7 @@ class WindowsAudioPlayer:
             return ""
 
         import ctypes
+
         buf = ctypes.create_unicode_buffer(buffer_len)
         error_code = self._winmm.mciSendStringW(cmd, buf, buffer_len, 0)
         if error_code != 0:
@@ -56,10 +57,10 @@ class WindowsAudioPlayer:
     def open(self, file_path: str) -> bool:
         """
         Opens an MP3 audio file for playback.
-        
+
         Args:
             file_path: Absolute or relative path to MP3 file.
-            
+
         Returns:
             True if file opened successfully, False otherwise.
         """
@@ -97,7 +98,7 @@ class WindowsAudioPlayer:
             raise FileNotFoundError(f"Audio file not found: {file_path}")
         return self.open(file_path)
 
-    def play(self, from_ms: Optional[int] = None) -> bool:
+    def play(self, from_ms: int | None = None) -> bool:
         """
         Starts or restarts audio playback.
         """
@@ -224,13 +225,13 @@ class WindowsAudioPlayer:
             self._length_ms = 0
         return True
 
-    def __enter__(self):
+    def __enter__(self) -> "WindowsAudioPlayer":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
 
-    def __del__(self):
+    def __del__(self) -> None:
         try:
             self.close()
         except Exception:
@@ -280,7 +281,7 @@ def parse_time_str(time_str: str) -> int:
 def export_audio_file(source_path: str, destination_path: str) -> str:
     """
     Exports/copies generated podcast MP3 to a user-selected destination directory or path.
-    
+
     Returns:
         Absolute path to the exported file.
     """

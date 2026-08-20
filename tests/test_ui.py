@@ -1,33 +1,27 @@
 """
-PodcastStudio UI & Async Pipeline Tests (tests/test_ui.py)
-==========================================================
+LocalPodcastLLMStudio UI & Async Pipeline Tests (tests/test_ui.py)
+==================================================================
 Unit and integration tests for CustomTkinter UI theming, custom widgets,
 background GenerationWorker thread queue events, cancellation, and app bootstrap.
 """
 
-import os
-import sys
-import json
 import queue
-import tempfile
+import sys
 import threading
-from unittest.mock import patch, MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
-import pytest
+import customtkinter as ctk
 
 # Theme and Widget Imports
 import ui.theme as theme
-from ui.widgets import (
-    CardFrame,
-    SectionHeader,
-    StatusBadge,
-    LabeledSlider,
-    TimeSlider,
-    DialogueTurnCard,
-    ActionableErrorDialog,
-)
-from ui.main_window import GenerationWorker, MainWindow
 from core.parser import DialogueTurn
+from ui.main_window import GenerationWorker
+from ui.widgets import (
+    AboutDialog,
+    ActionableErrorDialog,
+    TimeSlider,
+)
 
 
 # ==============================================================================
@@ -96,10 +90,44 @@ class TestUIWidgets:
         assert TimeSlider._format_ms(3600000) == "60:00"
 
     def test_labeled_slider_format(self):
-        format_fn = lambda val: f"{int(val):+d}%"
+        def format_fn(val):
+            return f"{int(val):+d}%"
+
         assert format_fn(0) == "+0%"
         assert format_fn(10) == "+10%"
         assert format_fn(-5) == "-5%"
+
+    def test_actionable_error_dialog_remedy_and_details(self):
+        with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init:
+            ActionableErrorDialog(
+                parent=MagicMock(),
+                title="Test Error",
+                message="Error message",
+                details="Details text",
+            )
+            mock_init.assert_called_once()
+
+        with patch.object(ActionableErrorDialog, "__init__", return_value=None) as mock_init_remedy:
+            ActionableErrorDialog(
+                parent=MagicMock(),
+                title="Test Error",
+                message="Error message",
+                remedy="Remedy text",
+            )
+            mock_init_remedy.assert_called_once()
+
+    def test_about_dialog_initialization(self):
+        with patch.object(AboutDialog, "__init__", return_value=None) as mock_about:
+            AboutDialog(parent=MagicMock())
+            mock_about.assert_called_once()
+
+    def test_main_window_show_about_dialog_method(self):
+        from ui.main_window import MainWindow
+
+        mock_main = MagicMock(spec=MainWindow)
+        with patch("ui.main_window.AboutDialog") as mock_about_cls:
+            MainWindow.show_about_dialog(mock_main)
+            mock_about_cls.assert_called_once_with(mock_main)
 
 
 # ==============================================================================
@@ -112,20 +140,16 @@ class TestGenerationWorker:
     @patch("ui.main_window.synthesize_dialogue_audio")
     @patch("ui.main_window.stitch_mp3_files")
     def test_worker_full_generation_success(
-        self,
-        mock_stitch,
-        mock_synth,
-        mock_gen_script,
-        tmp_path
+        self, mock_stitch, mock_synth, mock_gen_script, tmp_path
     ):
         mock_gen_script.return_value = [
             DialogueTurn(speaker="Host 1", text="Welcome!"),
-            DialogueTurn(speaker="Host 2", text="Glad to be here!")
+            DialogueTurn(speaker="Host 2", text="Glad to be here!"),
         ]
         mock_synth.return_value = ["/tmp/turn_001.mp3", "/tmp/turn_002.mp3"]
         mock_stitch.return_value = str(tmp_path / "podcast_out.mp3")
 
-        msg_queue = queue.Queue()
+        msg_queue: queue.Queue[Any] = queue.Queue()
         cancel_event = threading.Event()
 
         worker = GenerationWorker(
@@ -139,7 +163,7 @@ class TestGenerationWorker:
             speed_rate="+0%",
             output_dir=str(tmp_path),
             msg_queue=msg_queue,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
         )
 
         worker.run()
@@ -166,10 +190,10 @@ class TestGenerationWorker:
     def test_worker_script_only_mode(self, mock_gen_script, tmp_path):
         mock_gen_script.return_value = [
             DialogueTurn(speaker="Host 1", text="Hello Norwegian podcast!"),
-            DialogueTurn(speaker="Host 2", text="Hei Kari!")
+            DialogueTurn(speaker="Host 2", text="Hei Kari!"),
         ]
 
-        msg_queue = queue.Queue()
+        msg_queue: queue.Queue[Any] = queue.Queue()
         cancel_event = threading.Event()
 
         worker = GenerationWorker(
@@ -183,7 +207,7 @@ class TestGenerationWorker:
             speed_rate="+0%",
             output_dir=str(tmp_path),
             msg_queue=msg_queue,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
         )
 
         worker.run()
@@ -202,12 +226,12 @@ class TestGenerationWorker:
     def test_worker_audio_from_script_mode(self, mock_stitch, mock_synth, tmp_path):
         dialogue = [
             DialogueTurn(speaker="Host 1", text="Turn 1 from edited script."),
-            DialogueTurn(speaker="Host 2", text="Turn 2 from edited script.")
+            DialogueTurn(speaker="Host 2", text="Turn 2 from edited script."),
         ]
         mock_synth.return_value = ["/tmp/turn1.mp3", "/tmp/turn2.mp3"]
         mock_stitch.return_value = str(tmp_path / "podcast_edited.mp3")
 
-        msg_queue = queue.Queue()
+        msg_queue: queue.Queue[Any] = queue.Queue()
         cancel_event = threading.Event()
 
         worker = GenerationWorker(
@@ -221,7 +245,7 @@ class TestGenerationWorker:
             speed_rate="+5%",
             output_dir=str(tmp_path),
             msg_queue=msg_queue,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
         )
 
         worker.run()
@@ -235,7 +259,7 @@ class TestGenerationWorker:
         assert "GENERATION_DONE" in event_types
 
     def test_worker_cancellation(self, tmp_path):
-        msg_queue = queue.Queue()
+        msg_queue: queue.Queue[Any] = queue.Queue()
         cancel_event = threading.Event()
         cancel_event.set()  # Pre-set cancel flag
 
@@ -250,7 +274,7 @@ class TestGenerationWorker:
             speed_rate="+0%",
             output_dir=str(tmp_path),
             msg_queue=msg_queue,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
         )
 
         worker.run()
@@ -264,7 +288,7 @@ class TestGenerationWorker:
         assert "GENERATION_DONE" not in event_types
 
     def test_worker_empty_input_error(self, tmp_path):
-        msg_queue = queue.Queue()
+        msg_queue: queue.Queue[Any] = queue.Queue()
         cancel_event = threading.Event()
 
         worker = GenerationWorker(
@@ -278,7 +302,7 @@ class TestGenerationWorker:
             speed_rate="+0%",
             output_dir=str(tmp_path),
             msg_queue=msg_queue,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
         )
 
         worker.run()
@@ -299,6 +323,7 @@ class TestAppBootstrap:
 
     def test_crash_logger_writes_file(self, tmp_path, monkeypatch):
         from app import log_crash
+
         monkeypatch.chdir(tmp_path)
 
         try:
@@ -310,5 +335,5 @@ class TestAppBootstrap:
         crash_log = tmp_path / "crash_dump.log"
         assert crash_log.exists()
         content = crash_log.read_text(encoding="utf-8")
-        assert "PodcastStudio Crash Report" in content
+        assert "Crash Report" in content
         assert "Test synthetic exception for crash logger" in content

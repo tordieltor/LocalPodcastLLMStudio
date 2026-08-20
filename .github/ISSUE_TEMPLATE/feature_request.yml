@@ -1,0 +1,69 @@
+name: "✨ Feature Request"
+description: "Suggest an idea, enhancement, or new capability for LocalPodcastLLMStudio"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We love hearing new ideas! Please provide a clear explanation of the feature you would like to see, why it would be beneficial, and how it aligns with LocalPodcastLLMStudio's 100% local, zero-cloud-cost architecture.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: "Feature Category"
+      description: "Which component does this feature request primarily affect?"
+      options:
+        - "UI / User Experience (CustomTkinter / Dark Mode)"
+        - "Ollama Script Generation & Prompt Engineering"
+        - "Edge-TTS Neural Voice Synthesis"
+        - "Document Ingestion & File Parsing (.pdf, .md, .txt, web)"
+        - "Audio Stitching & Playback"
+        - "Build & Packaging (PyInstaller, Standalone Executable)"
+        - "CI/CD & Developer Experience"
+        - "Other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem Statement / Motivation"
+      description: "Is your feature request related to a specific problem or limitation? Please describe."
+      placeholder: "I find it difficult to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: "Proposed Solution"
+      description: "Describe the desired capability, UI flow, or functionality."
+      placeholder: "Add support for..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Alternatives Considered"
+      description: "Describe any alternative solutions or workarounds you've explored."
+      placeholder: "Currently I work around this by..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: "Additional Context / Mockups"
+      description: "Add any screenshots, mockups, or extra context if helpful."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: "Willingness to Contribute"
+      options:
+        - label: "I would be willing to submit a pull request implementing this feature."
+          required: false

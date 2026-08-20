@@ -1,8 +1,9 @@
-# PodcastStudio - One-Click PowerShell Executable Builder
-# Builds a standalone, single-file Windows executable (dist/PodcastStudio.exe)
+# LocalPodcastLLMStudio - One-Click PowerShell Executable Builder
+# Builds a standalone, single-file Windows executable (dist/LocalPodcastLLMStudio.exe)
 #
 # Usage:
 #   .\build_exe.ps1
+#   .\build_exe.ps1 -NoPause
 #
 # If execution policy prevents script execution:
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -15,9 +16,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Auto-detect non-interactive CI environments
+if ($env:CI -eq "true" -or $env:GITHUB_ACTIONS -eq "true" -or $env:TF_BUILD -eq "True") {
+    $NoPause = $true
+}
+
 function Write-Banner {
     Write-Host "=======================================================================" -ForegroundColor Cyan
-    Write-Host "          PodcastStudio - PyInstaller One-Click Build Pipeline         " -ForegroundColor White
+    Write-Host "       LocalPodcastLLMStudio - PyInstaller One-Click Build Pipeline    " -ForegroundColor White
     Write-Host "=======================================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -31,31 +37,77 @@ $ScriptDir = $PSScriptRoot
 if (-not $ScriptDir) {
     $ScriptDir = (Get-Location).Path
 }
+Set-Location -Path $ScriptDir
 
 # ---------------------------------------------------------------------------
-# 2. Discover Python Runtime (.venv, venv, or system PATH)
+# 2. Resilient Multi-Candidate Python 3.10+ Discovery
 # ---------------------------------------------------------------------------
-$VenvPython = Join-Path $ScriptDir ".venv\Scripts\python.exe"
-$AltVenvPython = Join-Path $ScriptDir "venv\Scripts\python.exe"
-$PyCmd = $null
-$PyArgs = @()
+function Find-Python3 {
+    param([string]$ProjectDir)
+    
+    # 1. Check existing .venv
+    $venvPy = Join-Path $ProjectDir ".venv\Scripts\python.exe"
+    if (Test-Path $venvPy) {
+        try {
+            $ver = & $venvPy -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $ver) {
+                return @{ Command = $venvPy; Args = @(); Version = $ver.Trim(); Source = "Local Virtual Environment (.venv)" }
+            }
+        } catch {}
+    }
 
-if (Test-Path $VenvPython) {
-    Write-Host "[1/5] Using local virtual environment (.venv)..." -ForegroundColor Cyan
-    Write-Host "      Path: $VenvPython" -ForegroundColor Gray
-    $PyCmd = $VenvPython
-} elseif (Test-Path $AltVenvPython) {
-    Write-Host "[1/5] Using local virtual environment (venv)..." -ForegroundColor Cyan
-    Write-Host "      Path: $AltVenvPython" -ForegroundColor Gray
-    $PyCmd = $AltVenvPython
-} elseif (Get-Command py -ErrorAction SilentlyContinue) {
-    Write-Host "[1/5] Using system Python Launcher (py -3)..." -ForegroundColor Cyan
-    $PyCmd = "py"
-    $PyArgs = @("-3")
-} elseif (Get-Command python -ErrorAction SilentlyContinue) {
-    Write-Host "[1/5] Using system Python from PATH..." -ForegroundColor Cyan
-    $PyCmd = "python"
-} else {
+    # 2. Check alternative venv
+    $altVenvPy = Join-Path $ProjectDir "venv\Scripts\python.exe"
+    if (Test-Path $altVenvPy) {
+        try {
+            $ver = & $altVenvPy -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $ver) {
+                return @{ Command = $altVenvPy; Args = @(); Version = $ver.Trim(); Source = "Local Virtual Environment (venv)" }
+            }
+        } catch {}
+    }
+
+    # 3. Check candidate system commands
+    $candidates = [System.Collections.Generic.List[hashtable]]::new()
+    $candidates.Add(@{ Cmd = "python"; Args = @() })
+    $candidates.Add(@{ Cmd = "python3"; Args = @() })
+    $candidates.Add(@{ Cmd = "py"; Args = @("-3") })
+
+    # 4. Check standard installation directories
+    $searchPatterns = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+        "$env:ProgramFiles\Python3*\python.exe",
+        "${env:ProgramFiles(x86)}\Python3*\python.exe",
+        "$env:APPDATA\uv\python\*\python.exe"
+    )
+    foreach ($pattern in $searchPatterns) {
+        if ($pattern) {
+            $matches = Resolve-Path $pattern -ErrorAction SilentlyContinue
+            if ($matches) {
+                foreach ($m in $matches) {
+                    $candidates.Add(@{ Cmd = $m.Path; Args = @() })
+                }
+            }
+        }
+    }
+
+    foreach ($c in $candidates) {
+        try {
+            if (-not (Get-Command $c.Cmd -ErrorAction SilentlyContinue) -and -not (Test-Path $c.Cmd)) {
+                continue
+            }
+            $fullArgs = $c.Args + @("-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); sys.exit(0 if sys.version_info >= (3, 10) else 1)")
+            $ver = & $c.Cmd $fullArgs 2>$null
+            if ($LASTEXITCODE -eq 0 -and $ver) {
+                return @{ Command = $c.Cmd; Args = $c.Args; Version = $ver.Trim(); Source = $c.Cmd }
+            }
+        } catch {}
+    }
+    return $null
+}
+
+$PyRuntime = Find-Python3 -ProjectDir $ScriptDir
+if (-not $PyRuntime) {
     Write-Host "[ERROR] Python 3.10+ runtime was not found on your system!" -ForegroundColor Red
     Write-Host ""
     Write-Host "Please install Python 3.10 or newer from:" -ForegroundColor Yellow
@@ -66,28 +118,15 @@ if (Test-Path $VenvPython) {
     exit 1
 }
 
-# ---------------------------------------------------------------------------
-# 3. Verify Python Version >= 3.10
-# ---------------------------------------------------------------------------
-try {
-    $verCheckScript = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); sys.exit(0 if sys.version_info >= (3, 10) else 1)"
-    $fullVerArgs = $PyArgs + @("-c", $verCheckScript)
-    $verOutput = & $PyCmd $fullVerArgs
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] Detected Python version ($verOutput) is incompatible. Python 3.10+ required." -ForegroundColor Red
-        if (-not $NoPause) { Read-Host "Press Enter to exit" }
-        exit 1
-    }
-    Write-Host "[OK] Python runtime verified: Python $verOutput" -ForegroundColor Green
-    Write-Host ""
-} catch {
-    Write-Host "[ERROR] Failed to execute Python version check: $_" -ForegroundColor Red
-    if (-not $NoPause) { Read-Host "Press Enter to exit" }
-    exit 1
-}
+$PyCmd = $PyRuntime.Command
+$PyArgs = $PyRuntime.Args
+Write-Host "[1/5] Using Python runtime: $PyCmd" -ForegroundColor Cyan
+Write-Host "      Source: $($PyRuntime.Source) (Python $($PyRuntime.Version))" -ForegroundColor Gray
+Write-Host "[OK] Python runtime verified: Python $($PyRuntime.Version)" -ForegroundColor Green
+Write-Host ""
 
 # ---------------------------------------------------------------------------
-# 4. Verify / Install PyInstaller
+# 3. Verify / Install PyInstaller
 # ---------------------------------------------------------------------------
 Write-Host "[2/5] Verifying PyInstaller installation..." -ForegroundColor Cyan
 $checkPyInstArgs = $PyArgs + @("-c", "import PyInstaller; print(PyInstaller.__version__)")
@@ -116,11 +155,32 @@ if (-not $pyinstVer -or $LASTEXITCODE -ne 0) {
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# 5. Clean Previous Build Artifacts
+# 4. Clean Previous Build Artifacts & Guard Process Locks
 # ---------------------------------------------------------------------------
 Write-Host "[3/5] Cleaning previous build workspaces (build, dist)..." -ForegroundColor Cyan
 $BuildPath = Join-Path $ScriptDir "build"
 $DistPath = Join-Path $ScriptDir "dist"
+$TargetExe = Join-Path $DistPath "LocalPodcastLLMStudio.exe"
+
+# Guard against running application instances
+$runningProcesses = Get-Process -Name "LocalPodcastLLMStudio" -ErrorAction SilentlyContinue
+if ($runningProcesses) {
+    Write-Host "[WARN] Found active LocalPodcastLLMStudio process (PID: $(($runningProcesses.Id) -join ', '))." -ForegroundColor Yellow
+    Write-Host "Terminating running process to release file lock on $TargetExe..." -ForegroundColor Yellow
+    Stop-Process -Name "LocalPodcastLLMStudio" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+}
+
+if (Test-Path $TargetExe) {
+    try {
+        Remove-Item -Path $TargetExe -Force -ErrorAction Stop
+    } catch {
+        Write-Host "[ERROR] dist\LocalPodcastLLMStudio.exe is locked by another process and cannot be removed: $_" -ForegroundColor Red
+        Write-Host "Please close any open instances and retry." -ForegroundColor Yellow
+        if (-not $NoPause) { Read-Host "Press Enter to exit" }
+        exit 1
+    }
+}
 
 if (Test-Path $BuildPath) {
     Remove-Item -Path $BuildPath -Recurse -Force -ErrorAction SilentlyContinue
@@ -134,10 +194,10 @@ Write-Host "[OK] Workspace cleaned." -ForegroundColor Green
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# 6. Execute PyInstaller Compilation
+# 5. Execute PyInstaller Compilation
 # ---------------------------------------------------------------------------
 Write-Host "[4/5] Compiling standalone executable..." -ForegroundColor Cyan
-$SpecFile = Join-Path $ScriptDir "PodcastStudio.spec"
+$SpecFile = Join-Path $ScriptDir "LocalPodcastLLMStudio.spec"
 
 Write-Host "-----------------------------------------------------------------------" -ForegroundColor DarkGray
 if (Test-Path $SpecFile) {
@@ -145,13 +205,13 @@ if (Test-Path $SpecFile) {
     $buildArgs = $PyArgs + @("-m", "PyInstaller", "--clean", $SpecFile)
     & $PyCmd $buildArgs
 } else {
-    Write-Host "[WARN] PodcastStudio.spec not found, building with CLI flags..." -ForegroundColor Yellow
+    Write-Host "[WARN] LocalPodcastLLMStudio.spec not found, building with CLI flags..." -ForegroundColor Yellow
     $AppFile = Join-Path $ScriptDir "app.py"
     $buildArgs = $PyArgs + @(
         "-m", "PyInstaller",
         "--noconsole",
         "--onefile",
-        "--name", "PodcastStudio",
+        "--name", "LocalPodcastLLMStudio",
         "--clean",
         "--collect-all", "customtkinter",
         "--collect-all", "edge_tts",
@@ -177,15 +237,21 @@ Write-Host "[OK] PyInstaller compilation completed successfully." -ForegroundCol
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# 7. Post-Build Binary Validation & Sizing
+# 6. Post-Build Binary Validation & Sizing
 # ---------------------------------------------------------------------------
 Write-Host "[5/5] Performing post-build verification..." -ForegroundColor Cyan
-$ExePath = Join-Path $DistPath "PodcastStudio.exe"
+$ExePath = Join-Path $DistPath "LocalPodcastLLMStudio.exe"
 
 if (Test-Path $ExePath) {
     $ExeItem = Get-Item $ExePath
     $SizeBytes = $ExeItem.Length
+    if ($SizeBytes -le 0) {
+        Write-Host "[ERROR] Output binary $ExePath is empty (0 bytes)!" -ForegroundColor Red
+        if (-not $NoPause) { Read-Host "Press Enter to exit" }
+        exit 1
+    }
     $SizeMB = [math]::Round($SizeBytes / 1MB, 2)
+    $FileHash = (Get-FileHash -Path $ExePath -Algorithm SHA256).Hash
 
     Write-Host ""
     Write-Host "=======================================================================" -ForegroundColor Green
@@ -193,15 +259,16 @@ if (Test-Path $ExePath) {
     Write-Host "=======================================================================" -ForegroundColor Green
     Write-Host "  Output Binary : $ExePath" -ForegroundColor White
     Write-Host "  Binary Size   : $SizeMB MB ($SizeBytes bytes)" -ForegroundColor Cyan
+    Write-Host "  SHA256 Hash   : $FileHash" -ForegroundColor DarkCyan
     Write-Host "  Window Mode   : Standalone Windowed (--noconsole, Zero UI Freezing)" -ForegroundColor Gray
     Write-Host "=======================================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "To launch the compiled application:" -ForegroundColor White
-    Write-Host "  .\dist\PodcastStudio.exe" -ForegroundColor Yellow
+    Write-Host "  .\dist\LocalPodcastLLMStudio.exe" -ForegroundColor Yellow
     Write-Host ""
 } else {
     Write-Host ""
-    Write-Host "[ERROR] dist\PodcastStudio.exe was not created!" -ForegroundColor Red
+    Write-Host "[ERROR] dist\LocalPodcastLLMStudio.exe was not created!" -ForegroundColor Red
     Write-Host "Expected binary path: $ExePath" -ForegroundColor Yellow
     Write-Host ""
     if (-not $NoPause) { Read-Host "Press Enter to exit" }
@@ -209,6 +276,5 @@ if (Test-Path $ExePath) {
 }
 
 if (-not $NoPause) {
-    Write-Host "Press Enter to close this window..." -ForegroundColor DarkGray
-    # Silent continue if running non-interactively
+    Read-Host "Press Enter to close this window..."
 }
