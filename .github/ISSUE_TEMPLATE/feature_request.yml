@@ -16,7 +16,7 @@ body:
       options:
         - "UI / User Experience (CustomTkinter / Dark Mode)"
         - "Ollama Script Generation & Prompt Engineering"
-        - "Edge-TTS Neural Voice Synthesis"
+        - "Piper TTS Neural Voice Synthesis"
         - "Document Ingestion & File Parsing (.pdf, .md, .txt, web)"
         - "Audio Stitching & Playback"
         - "Build & Packaging (PyInstaller, Standalone Executable)"

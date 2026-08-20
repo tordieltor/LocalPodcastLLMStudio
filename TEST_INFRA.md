@@ -26,10 +26,10 @@
 ## Test Architecture & Runners
 - **Primary Smart Runner**: `.venv\Scripts\python.exe run_tests.py`
   - `--quick` / `--mvp`: Rapid smoke battery (398 tests in ~3s).
-  - `--full` / `--all`: Exhaustive 1,238-test multi-tier matrix with multi-core parallel execution via `pytest-xdist`.
+  - `--full` / `--all`: Exhaustive 1,649-test multi-tier matrix with multi-core parallel execution via `pytest-xdist`.
 - **Direct Pytest Runner**: `.venv\Scripts\python.exe -m pytest -v tests/`
 - **Lint & Format Gate**: `.venv\Scripts\python.exe -m ruff check .` and `.venv\Scripts\python.exe -m ruff format --check .`
-- **Pass/Fail Semantics**: Exit code 0, 100% test pass rate (1,238/1,238 passed), zero regressions, zero ruff violations.
+- **Pass/Fail Semantics**: Exit code 0, 100% test pass rate (1,649/1,649 passed), zero regressions, zero ruff violations.
 
 ## Real-World Application Scenarios (Tier 4)
 | # | Scenario | Features Exercised | Complexity |
@@ -48,7 +48,7 @@
 - **Tier 3 (Cross-Feature Combinations)**: Full combinatorial prompt matrices (2 Languages × 4 Lengths × 3 Tones × 3 Grounding Modes).
 - **Tier 4 (Workloads & E2E Pipelines)**: Real-world document, scratch, and script-only pipeline journeys.
 - **Tier 5 (Adversarial Challenger)**: Concurrency stress, prompt injection resistance, malformed stream salvaging.
-- **Total Test Cases**: 1,647 passing tests across full empirical test suite.
+- **Total Test Cases**: 1,649 passing tests across full empirical test suite.
 
 ## Cross-Platform Testing & Shell Invariants (Learnings & Guardrails)
 1. **Windows Batch Scripting Invariant**:

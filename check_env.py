@@ -34,7 +34,7 @@ if sys.platform == "win32":
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         if hasattr(sys.stderr, "reconfigure"):
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         pass
     try:
         import ctypes
@@ -46,7 +46,7 @@ if sys.platform == "win32":
             kernel32.SetConsoleMode(
                 hOut, out_mode.value | 0x0004
             )  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    except Exception:
+    except (AttributeError, OSError, TypeError):
         pass
 
 # ANSI Color and Formatting Codes
@@ -107,7 +107,6 @@ def check_packages() -> dict[str, Any]:
     """Check availability of required runtime dependencies."""
     required = [
         ("customtkinter", "customtkinter", "GUI framework"),
-        ("edge-tts", "edge_tts", "Voice synthesis engine"),
         ("pypdf", "pypdf", "PDF document parser"),
         ("requests", "requests", "Ollama HTTP client"),
     ]
@@ -287,7 +286,7 @@ def check_ollama_service(
             from core.ollama import find_ollama_binary
 
             bin_path = find_ollama_binary()
-        except Exception:
+        except (ImportError, OSError):
             bin_path = None
 
         if bin_path:
@@ -318,7 +317,7 @@ def check_ollama_service(
             "detail": f"Connection timed out after {timeout_sec}s",
             "remediation": "Ollama is taking too long to respond. Ensure the Ollama daemon is responsive.",
         }
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         return {
             "name": "Ollama LLM Service",
             "ok": False,
@@ -358,7 +357,7 @@ def check_edge_tts_network(timeout_sec: float = 3.0) -> dict[str, Any]:
             "detail": f"Network probe timed out after {timeout_sec}s",
             "remediation": "Ensure your internet connection is active. Edge-TTS neural voices require outbound HTTPS to speech.platform.bing.com.",
         }
-    except Exception as e:
+    except (socket.gaierror, OSError, RuntimeError) as e:
         return {
             "name": "Edge-TTS Voice Network",
             "ok": False,

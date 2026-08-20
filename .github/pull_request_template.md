@@ -36,10 +36,10 @@ Closes #
 - [ ] `python check_env.py --json` verifies clean diagnostics
 
 ### Manual / Integration Verification
-<!-- Describe manual verification steps performed (e.g. testing GUI, building .exe, testing Edge-TTS generation): -->
+<!-- Describe manual verification steps performed (e.g. testing GUI, building .exe, testing Piper TTS generation): -->
 - [ ] Verified GUI launches and remains responsive during background generation
 - [ ] Tested script generation and JSON parsing with local Ollama model
-- [ ] Tested Edge-TTS synthesis and pure-Python MP3 binary stitching
+- [ ] Tested Piper TTS synthesis and pure-Python MP3 binary stitching
 - [ ] Tested document ingestion (.txt, .md, .pdf)
 
 ## Security & Privacy Checklist

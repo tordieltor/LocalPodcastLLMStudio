@@ -158,10 +158,10 @@ When adding or modifying components, adhere to the established architectural bou
    - Communicates with local Ollama HTTP REST API (`http://localhost:11434`).
    - Validates URLs against scheme whitelist (`http://`, `https://`) and localhost bindings.
 5. **`core/tts.py`**:
-   - Asynchronous synthesis using Microsoft Edge-TTS neural voices.
+   - 100% offline neural voice synthesis using Piper TTS local ONNX models with in-memory model caching.
    - Voice mappings:
-     - 🇳🇴 Norwegian: `nb-NO-PernilleNeural` (Host 1 / Kari), `nb-NO-FinnNeural` (Host 2 / Ola)
-     - 🇬🇧 English: `en-US-JennyNeural` (Host 1 / Jenny), `en-US-GuyNeural` (Host 2 / Guy)
+     - 🇳🇴 Norwegian: `no_NO-torkil-medium` (Host 1 / Kari & Host 2 / Ola)
+     - 🇬🇧 English: `en_US-lessac-medium` (Host 1 / Jenny), `en_US-ryan-medium` (Host 2 / Guy)
 6. **`core/mp3_stitcher.py`**:
    - Zero-dependency pure Python MP3 frame stitcher.
    - Strips ID3v2 tags and joins MPEG audio frames smoothly without requiring `ffmpeg` binaries.

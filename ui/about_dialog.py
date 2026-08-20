@@ -69,7 +69,7 @@ class AboutDialog(ctk.CTkToplevel):
             x = max(50, px + (pw - w) // 2)
             y = max(50, py + (ph - h) // 2)
             self.geometry(f"{w}x{h}+{x}+{y}")
-        except Exception:
+        except (RuntimeError, AttributeError, ValueError, TypeError):
             pass
 
     # ==========================================================================
@@ -151,8 +151,8 @@ class AboutDialog(ctk.CTkToplevel):
             ),
             (
                 "🗣️ Neural Text-to-Speech (TTS)",
-                "Microsoft Edge-TTS Async Engine",
-                "Provides ultra-natural, multi-speaker neural voice synthesis. Features native Norwegian Bokmål (Kari / Finn & Pernille) and American English (Jenny & Guy) voices with adjustable speaking rates (-10% to +15%).",
+                "Piper TTS Local Neural Engine (ONNX)",
+                "100% offline, privacy-first neural voice synthesis running directly on your CPU. Features native Norwegian Bokmål (Kari & Ola via no_NO-torkil-medium) and American English (Host 1 & Host 2 via en_US-lessac-medium & en_US-ryan-medium) with adjustable speaking rates (-10% to +15%) and zero cloud data sharing.",
                 COLOR_SUCCESS,
             ),
             (

@@ -181,3 +181,109 @@ Integrity mode: development
 ### Code Quality & Test Suite
 - [ ] `pytest tests/` passes with 100% success rate across all new and existing test suites.
 - [ ] `ruff check .` and `ruff format --check .` execute with zero errors or warnings.
+
+## Follow-up — 2026-08-20T21:28:00Z
+
+Perform a comprehensive code audit of **LocalPodcastLLMStudio** — a 100% local, Windows-only, two-host AI podcast generator desktop application written in Python. The codebase uses CustomTkinter (GUI), Ollama LLMs, Piper TTS, zero-FFmpeg binary MP3/WAV stitching, and native Windows MCI audio playback. The audit must produce concrete, actionable findings and fixes across four pillars: **Speed, Reliability, Stability, and Safety**.
+
+Working directory: `c:\Users\torpr\Documents\antigravity\epic-hubble`
+
+Integrity mode: development
+
+---
+
+## Codebase Map
+
+Key source files:
+- `core/ollama.py` — Ollama HTTP client, streaming pull parser, process launcher, Edge-TTS probe (~40 KB)
+- `core/prompts.py` — Prompt templates, GroundingMode enum, anti-hallucination directives (~41 KB)
+- `core/tts.py` — Piper TTS neural voice synthesis (~14 KB)
+- `core/mp3_stitcher.py` — Zero-FFmpeg binary MPEG/WAV frame concatenation (~15 KB)
+- `core/extractor.py` — Document text extraction & normalization (~11 KB)
+- `core/parser.py` — 6-tier resilient JSON/markdown dialogue parser (~13 KB)
+- `core/player.py` — Native Windows MCI audio playback (~9 KB)
+- `ui/main_window.py` — Main application window, queue event poller, background workers (~81 KB)
+- `ui/widgets.py` — StatusBadge, ActionableErrorDialog (~20 KB)
+- `ui/theme.py` — Fluent Dark theme, Tokyo Night palette (~7 KB)
+- `app.py` — Entry point
+- `check_env.py` — Environment prerequisite checker (~19 KB)
+- `tests/` — 27 test files across unit, boundary, combinatorial, E2E, and adversarial tiers
+
+Architecture notes:
+- GUI runs on the main thread; background work is delegated to worker threads communicating via a `queue.Queue` with 50 ms polling
+- Concurrency model: Python `threading`, no `asyncio` in core logic
+- Target platform: Windows only; uses WinAPI (`MCI`, detached process spawning)
+
+---
+
+## Requirements
+
+### R1. Speed Audit
+Identify and fix performance bottlenecks across the full pipeline: LLM call latency management, TTS synthesis throughput, MP3 stitching efficiency, UI responsiveness, and startup time. Measure before/after where feasible (or provide concrete estimates based on code analysis). Look specifically for:
+- Redundant or sequential operations that could be parallelized or pipelined
+- Inefficient data structures, string building loops, or unnecessary copies
+- Blocking calls on the GUI thread
+- Missing streaming / chunked processing opportunities
+- Suboptimal polling intervals or busy-wait patterns
+
+### R2. Reliability Audit
+Identify and fix failure modes that could silently corrupt output or leave the application in a broken state. Look specifically for:
+- Unhandled exceptions or bare `except` clauses that swallow errors
+- Race conditions and thread-safety gaps in shared state
+- Incomplete cleanup on cancellation or early exit
+- Network timeout handling completeness (Ollama HTTP, Edge-TTS socket probe)
+- File I/O error handling (incomplete writes, missing `finally` blocks, no atomic writes)
+- Queue event handling gaps (dropped events, unbounded queue growth)
+
+### R3. Stability Audit
+Identify and fix long-running session issues and resource leaks. Look specifically for:
+- Thread lifecycle management (daemon threads, zombie threads, threads not joined)
+- Memory leaks (accumulating buffers, growing collections, unreleased file handles)
+- Windows MCI resource cleanup in `core/player.py`
+- Tkinter widget lifecycle and after() callback cleanup
+- Log/temp file accumulation in long sessions
+- Missing `__del__` or context-manager patterns where resources are held
+
+### R4. Safety Audit
+Identify and fix security and correctness risks. Look specifically for:
+- Shell injection or unsafe subprocess usage (process spawning for `ollama.exe`)
+- Path traversal or unsafe file operations
+- Untrusted input passed to LLM prompts without sanitization
+- Hardcoded secrets, credentials, or unsafe defaults
+- Bandit static analysis findings (run `bandit -r core/ ui/ app.py` and triage all findings)
+- Dependency vulnerability scan (run `pip-audit` and triage findings)
+- Type safety gaps that could cause runtime AttributeErrors or TypeErrors on malformed data
+
+---
+
+## Acceptance Criteria
+
+### Speed
+- [ ] At least 3 concrete, code-level performance improvements identified and implemented (not just noted)
+- [ ] No blocking I/O or sleep() calls on the main GUI thread remain after fixes
+- [ ] Any identified parallelization opportunities are either implemented or documented with a clear rationale for deferral
+
+### Reliability
+- [ ] Zero bare `except:` or `except Exception: pass` clauses remain in `core/` and `ui/` after fixes
+- [ ] Every network call (Ollama HTTP, socket probe) has explicit timeout handling and communicates failure to the caller
+- [ ] Cancellation paths verified: cancelling a model pull or generation mid-flight leaves no orphaned threads or locked state
+- [ ] All file write operations either use atomic patterns or have `finally` cleanup
+
+### Stability
+- [ ] All threads have documented lifecycle (daemon flag justified, join strategy stated)
+- [ ] `core/player.py` MCI handles are closed in all code paths (verified by inspection or test)
+- [ ] No unbounded collection growth identified without a cap or eviction strategy
+- [ ] `after()` callbacks in the UI are cancelled on window close
+
+### Safety
+- [ ] `bandit -r core/ ui/ app.py` produces zero HIGH severity findings after fixes
+- [ ] `pip-audit` output reviewed; all HIGH/CRITICAL CVEs addressed or explicitly documented as accepted risk with rationale
+- [ ] No shell=True subprocess usage remains unless unavoidable, and any remaining instances are documented
+- [ ] All external inputs (file paths, user text, LLM responses) are validated before use
+
+### Deliverables
+- [ ] `AUDIT_REPORT.md` produced in the working directory summarising all findings (one entry per finding: file, line, category, severity, description, fix applied or deferred)
+- [ ] All fixes applied directly to source files — no "suggested" changes left as comments
+- [ ] Existing test suite still passes after all fixes (`pytest tests/ -x -q`)
+- [ ] `ruff check core/ ui/ app.py` passes with zero errors after all fixes
+

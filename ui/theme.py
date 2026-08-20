@@ -163,7 +163,7 @@ def enable_windows_dark_titlebar(window: ctk.CTk) -> bool:
             )
             if res == 0:
                 return True
-        except Exception:
+        except (AttributeError, OSError):
             pass
 
         # Fallback to attribute 19
@@ -173,10 +173,10 @@ def enable_windows_dark_titlebar(window: ctk.CTk) -> bool:
                 hwnd, 19, ctypes.byref(value), ctypes.sizeof(value)
             )
             return True
-        except Exception:
+        except (AttributeError, OSError):
             pass
 
-    except Exception:
+    except (AttributeError, OSError, TypeError, Exception):
         pass
 
     return False

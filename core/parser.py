@@ -64,6 +64,27 @@ def normalize_speaker(raw_speaker: str) -> str:
     return "Host 1" if "host" in s else raw_speaker.strip()
 
 
+# Precompiled regular expressions for parser performance
+_REGEX_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+_REGEX_TRAILING_COMMA = re.compile(r",\s*([\]}])")
+_REGEX_SINGLE_QUOTE_KEYS = re.compile(r"'(speaker|host|name|role|text|content|dialogue|line)'\s*:")
+_REGEX_SINGLE_QUOTE_VALS = re.compile(r":\s*'([^']*)'")
+_REGEX_CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
+_REGEX_OBJECT_PATTERN_1 = re.compile(
+    r'\{\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*,\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*\}',
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+_REGEX_OBJECT_PATTERN_2 = re.compile(
+    r'\{\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*,\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*\}',
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+_REGEX_TRANSCRIPT_LINE = re.compile(
+    r"^(?:[\*\-\#\_\[\s]*)(Host\s*[12]|Kari|Ola|Jenny|Guy|Speaker\s*[12])(?:[\*\_\]\s]*)\s*:\s*(?:\*{0,2})\s*(.+)$",
+    re.IGNORECASE,
+)
+_REGEX_LINE_STARS = re.compile(r"^\*{1,2}|\*{1,2}$")
+
+
 class DialogueParser:
     """
     6-Tier Resilient Dialogue Parser.
@@ -99,13 +120,13 @@ class DialogueParser:
             turns = cls._validate_and_convert(data)
             if turns:
                 return turns
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
         # ======================================================================
         # Tier 2: Markdown Code Fence Extraction (```json ... ``` or ``` ... ```)
         # ======================================================================
-        fence_matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+        fence_matches = _REGEX_FENCE.findall(cleaned)
         for fence_content in fence_matches:
             fence_content = fence_content.strip()
             try:
@@ -113,7 +134,7 @@ class DialogueParser:
                 turns = cls._validate_and_convert(data)
                 if turns:
                     return turns
-            except Exception:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 # Try bracket trimming on fence content
                 sub_turns = cls._try_bracket_parse(fence_content)
                 if sub_turns:
@@ -139,7 +160,7 @@ class DialogueParser:
             turns = cls._validate_and_convert(data)
             if turns:
                 return turns
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
         # ======================================================================
@@ -170,13 +191,13 @@ class DialogueParser:
             try:
                 data = json.loads(bracket_slice)
                 return cls._validate_and_convert(data)
-            except Exception:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 # Try sanitizing bracket slice
                 sanitized = cls._sanitize_json_string(bracket_slice)
                 try:
                     data = json.loads(sanitized)
                     return cls._validate_and_convert(data)
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     pass
         return None
 
@@ -187,16 +208,15 @@ class DialogueParser:
         s = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
         # Strip trailing commas before closing brackets or braces
-        s = re.sub(r",\s*([\]}])", r"\1", s)
+        s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
 
         # Fix single-quoted keys and values
         # e.g. {'speaker': 'Host 1', 'text': 'Hello'}
-        s = re.sub(r"'(speaker|host|name|role|text|content|dialogue|line)'\s*:", r'"\1":', s)
-        s = re.sub(r":\s*'([^']*)'", r': "\1"', s)
+        s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
+        s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
 
         # Clean unescaped ASCII control characters in strings
-        s = re.sub(
-            r"[\x00-\x1f]",
+        s = _REGEX_CONTROL_CHARS.sub(
             lambda m: f"\\u{ord(m.group(0)):04x}" if m.group(0) not in "\r\n\t" else m.group(0),
             s,
         )
@@ -239,18 +259,9 @@ class DialogueParser:
     @classmethod
     def _regex_object_parser(cls, text: str) -> list[DialogueTurn] | None:
         """Extracts individual dialogue turn objects using regex."""
-        pattern1 = re.compile(
-            r'\{\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*,\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*\}',
-            re.MULTILINE | re.DOTALL | re.IGNORECASE,
-        )
-        pattern2 = re.compile(
-            r'\{\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*,\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*\}',
-            re.MULTILINE | re.DOTALL | re.IGNORECASE,
-        )
-
-        matches = list(pattern1.finditer(text))
+        matches = list(_REGEX_OBJECT_PATTERN_1.finditer(text))
         if not matches:
-            matches = list(pattern2.finditer(text))
+            matches = list(_REGEX_OBJECT_PATTERN_2.finditer(text))
 
         turns: list[DialogueTurn] = []
         for match in matches:
@@ -259,7 +270,7 @@ class DialogueParser:
             try:
                 txt = raw_txt.encode("utf-8").decode("unicode_escape", errors="ignore")
                 txt = txt.replace('\\"', '"').replace("\\'", "'")
-            except Exception:
+            except (UnicodeError, ValueError):
                 txt = raw_txt
             txt = txt.strip()
             if txt:
@@ -274,11 +285,6 @@ class DialogueParser:
         e.g. 'Host 1: Hello everyone!', '**Kari:** Hei!', '- Guy: Great point.'
         Supports multi-line turn continuations.
         """
-        line_pattern = re.compile(
-            r"^(?:[\*\-\#\_\[\s]*)(Host\s*[12]|Kari|Ola|Jenny|Guy|Speaker\s*[12])(?:[\*\_\]\s]*)\s*:\s*(?:\*{0,2})\s*(.+)$",
-            re.IGNORECASE,
-        )
-
         turns: list[DialogueTurn] = []
         current_speaker: str | None = None
         current_lines: list[str] = []
@@ -297,12 +303,12 @@ class DialogueParser:
             if not line:
                 continue
 
-            match = line_pattern.match(line)
+            match = _REGEX_TRANSCRIPT_LINE.match(line)
             if match:
                 flush_current()
                 current_speaker = normalize_speaker(match.group(1))
                 line_content = match.group(2).strip()
-                line_content = re.sub(r"^\*{1,2}|\*{1,2}$", "", line_content).strip()
+                line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
                 if line_content:
                     current_lines.append(line_content)
             elif current_speaker is not None:

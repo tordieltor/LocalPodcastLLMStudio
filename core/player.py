@@ -4,6 +4,8 @@ Provides high-performance, zero-external-dependency audio playback, seeking, vol
 and export control using the Windows Multimedia Media Control Interface (MCI).
 """
 
+import atexit
+import ctypes
 import os
 import shutil
 import sys
@@ -22,16 +24,18 @@ class WindowsAudioPlayer:
         self._is_opened = False
         self._length_ms = 0
         self._volume_percent = 80
+        self._last_error = 0
 
         # Lazy load winmm.dll
         self._winmm = None
         if sys.platform == "win32":
             try:
-                import ctypes
-
                 self._winmm = ctypes.windll.winmm
-            except Exception:
+            except (AttributeError, OSError):
                 self._winmm = None
+
+        # Register exit handler for process cleanup
+        atexit.register(self.close)
 
     @property
     def _is_open(self) -> bool:
@@ -46,11 +50,14 @@ class WindowsAudioPlayer:
         if not self._winmm:
             return ""
 
-        import ctypes
-
         buf = ctypes.create_unicode_buffer(buffer_len)
-        error_code = self._winmm.mciSendStringW(cmd, buf, buffer_len, 0)
-        if error_code != 0:
+        try:
+            error_code = self._winmm.mciSendStringW(cmd, buf, buffer_len, 0)
+            self._last_error = error_code
+            if error_code != 0:
+                return ""
+        except (AttributeError, OSError):
+            self._last_error = -1
             return ""
         return buf.value.strip()
 
@@ -67,8 +74,9 @@ class WindowsAudioPlayer:
         if not file_path or not os.path.exists(file_path):
             return False
 
-        # Close any active device first
+        # Ensure clean close before opening
         self.close()
+        self._send_command(f"close {self.alias}")
 
         abs_path = os.path.abspath(file_path).replace("\\", "/")
         if abs_path.lower().endswith(".wav"):
@@ -77,7 +85,12 @@ class WindowsAudioPlayer:
             cmd = f'open "{abs_path}" type mpegvideo alias {self.alias}'
         else:
             cmd = f'open "{abs_path}" alias {self.alias}'
+
+        self._last_error = 0
         self._send_command(cmd)
+        if self._winmm and self._last_error != 0:
+            self._is_opened = False
+            return False
 
         # Configure time format to milliseconds
         self._send_command(f"set {self.alias} time format milliseconds")
@@ -239,7 +252,7 @@ class WindowsAudioPlayer:
     def __del__(self) -> None:
         try:
             self.close()
-        except Exception:
+        except (AttributeError, OSError):
             pass
 
 

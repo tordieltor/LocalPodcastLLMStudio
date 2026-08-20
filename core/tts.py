@@ -7,15 +7,50 @@ Norwegian and English personas with rate/speed control and zero cloud dependenci
 import asyncio
 import io
 import os
+import shutil
 import sys
 import tempfile
 import threading
 import wave
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from core.parser import DialogueTurn, normalize_speaker
 from core.prompts import normalize_language_code
+
+# Global thread-safe in-memory cache for loaded PiperVoice ONNX instances
+_VOICE_MODEL_CACHE: dict[str, Any] = {}
+_VOICE_CACHE_LOCK = threading.Lock()
+
+
+def get_or_load_piper_voice(voice_name: str) -> Any | None:
+    """
+    Retrieves cached PiperVoice model instance or loads and caches it in a thread-safe manner.
+    """
+    clean_name = voice_name.strip()
+    with _VOICE_CACHE_LOCK:
+        if clean_name in _VOICE_MODEL_CACHE:
+            return _VOICE_MODEL_CACHE[clean_name]
+
+        onnx_path, json_path = find_voice_model_files(clean_name)
+        if onnx_path and json_path:
+            try:
+                from piper.voice import PiperVoice  # type: ignore[import-not-found]
+
+                pv = PiperVoice.load(str(onnx_path), config_path=str(json_path))
+                _VOICE_MODEL_CACHE[clean_name] = pv
+                return pv
+            except (ImportError, OSError, RuntimeError, ValueError):
+                return None
+    return None
+
+
+def clear_voice_model_cache() -> None:
+    """Clears the in-memory Piper voice model cache."""
+    with _VOICE_CACHE_LOCK:
+        _VOICE_MODEL_CACHE.clear()
+
 
 # ==============================================================================
 # Voice Roster & Mapping (100% Local Piper Models)
@@ -160,7 +195,7 @@ async def synthesize_turn(
         rate_val = int(rate_formatted.replace("%", "").replace("+", ""))
         speed_mult = max(0.5, 1.0 + (rate_val / 100.0))
         length_scale = 1.0 / speed_mult
-    except Exception:
+    except (ValueError, TypeError):
         length_scale = 1.0
 
     # Differentiate Host 1 vs Host 2 personas
@@ -174,14 +209,11 @@ async def synthesize_turn(
 
     for attempt in range(1, max_retries + 1):
         try:
-            # 1. Check if piper Python library is available
+            # 1. Check if piper Python library and cached/loaded voice model is available
             audio_bytes: bytes | None = None
-            try:
-                from piper.voice import PiperVoice  # type: ignore[import-not-found]
-
-                onnx_path, json_path = find_voice_model_files(voice)
-                if onnx_path and json_path:
-                    piper_voice = PiperVoice.load(str(onnx_path), config_path=str(json_path))
+            piper_voice = get_or_load_piper_voice(voice)
+            if piper_voice is not None:
+                try:
                     wav_buf = io.BytesIO()
                     with wave.open(wav_buf, "wb") as wav_file:
                         piper_voice.synthesize(
@@ -191,35 +223,43 @@ async def synthesize_turn(
                             noise_scale=noise_scale,
                         )
                     audio_bytes = wav_buf.getvalue()
-            except ImportError:
-                pass
+                except (RuntimeError, OSError, ValueError):
+                    audio_bytes = None
 
             # 2. Check if edge_tts is available as a compatibility fallback (if configured / mocked)
-            if not audio_bytes and "edge_tts" in sys.modules:
-                import edge_tts
+            if not audio_bytes and sys.modules.get("edge_tts") is not None:
+                try:
+                    import edge_tts
+                except ImportError:
+                    edge_tts = None  # type: ignore[assignment]
 
-                # Map local voice names to Edge neural voice IDs if edge-tts is present
-                edge_voice = voice
-                if "torkil" in voice.lower():
-                    edge_voice = (
-                        "nb-NO-FinnNeural"
-                        if spk_norm in ("Host 2", "Ola", "Finn")
-                        else "nb-NO-PernilleNeural"
+                if edge_tts is not None:
+                    # Map local voice names to Edge neural voice IDs if edge-tts is present
+                    edge_voice = voice
+                    if "torkil" in voice.lower():
+                        edge_voice = (
+                            "nb-NO-FinnNeural"
+                            if spk_norm in ("Host 2", "Ola", "Finn")
+                            else "nb-NO-PernilleNeural"
+                        )
+                    elif "lessac" in voice.lower() or "amy" in voice.lower():
+                        edge_voice = "en-US-JennyNeural"
+                    elif "ryan" in voice.lower() or "joe" in voice.lower():
+                        edge_voice = "en-US-GuyNeural"
+
+                    communicate = edge_tts.Communicate(
+                        text=cleaned_text, voice=edge_voice, rate=rate_formatted
                     )
-                elif "lessac" in voice.lower() or "amy" in voice.lower():
-                    edge_voice = "en-US-JennyNeural"
-                elif "ryan" in voice.lower() or "joe" in voice.lower():
-                    edge_voice = "en-US-GuyNeural"
-
-                communicate = edge_tts.Communicate(
-                    text=cleaned_text, voice=edge_voice, rate=rate_formatted
-                )
-                chunks = []
-                async for chunk in communicate.stream():
-                    if isinstance(chunk, dict) and chunk.get("type") == "audio" and "data" in chunk:
-                        chunks.append(chunk["data"])
-                if chunks:
-                    audio_bytes = b"".join(chunks)
+                    chunks = []
+                    async for chunk in communicate.stream():
+                        if (
+                            isinstance(chunk, dict)
+                            and chunk.get("type") == "audio"
+                            and "data" in chunk
+                        ):
+                            chunks.append(chunk["data"])
+                    if chunks:
+                        audio_bytes = b"".join(chunks)
 
             # 3. If offline models are still loading or unavailable in local test env, generate valid PCM WAV
             if not audio_bytes:
@@ -235,7 +275,7 @@ async def synthesize_turn(
 
             return audio_bytes
 
-        except Exception as e:
+        except (RuntimeError, ConnectionError, OSError, ValueError, TypeError) as e:
             if attempt == max_retries:
                 raise RuntimeError(
                     f"Piper TTS synthesis failed for voice '{voice}' after {max_retries} attempts: {e}"
@@ -360,6 +400,7 @@ def synthesize_dialogue_audio(
     if not dialogue:
         return []
 
+    is_temp_dir = output_dir is None
     target_dir = output_dir or tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
     os.makedirs(target_dir, exist_ok=True)
 
@@ -385,11 +426,16 @@ def synthesize_dialogue_audio(
 
         return temp_file_paths
 
-    except Exception:
+    except (RuntimeError, OSError, ValueError, TypeError) as err:
         for p in temp_file_paths:
             if os.path.exists(p):
                 try:
                     os.remove(p)
-                except Exception:
+                except OSError:
                     pass
-        raise
+        if is_temp_dir and os.path.exists(target_dir):
+            try:
+                shutil.rmtree(target_dir, ignore_errors=True)
+            except OSError:
+                pass
+        raise err

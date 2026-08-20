@@ -26,7 +26,7 @@ def log_crash(exc_type: Any, exc_value: Any, exc_traceback: Any) -> None:
             f.write(f"LocalPodcastLLMStudio Crash Report - {sys.version}\n")
             f.write(f"{'=' * 70}\n")
             traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
-    except Exception:
+    except OSError:
         pass
 
     # Print to stderr if console is available

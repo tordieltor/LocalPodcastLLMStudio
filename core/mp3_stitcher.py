@@ -144,7 +144,11 @@ class MP3Stitcher:
         total_len = len(clean_data)
 
         while idx <= total_len - 4:
-            if clean_data[idx] == 0xFF and (clean_data[idx + 1] & 0xE0) == 0xE0:
+            sync_pos = clean_data.find(b"\xff", idx)
+            if sync_pos == -1 or sync_pos > total_len - 4:
+                break
+            idx = sync_pos
+            if (clean_data[idx + 1] & 0xE0) == 0xE0:
                 header_info = cls.parse_frame_header(clean_data[idx : idx + 4])
                 if header_info:
                     frame_len, _, _, _ = header_info
@@ -360,7 +364,7 @@ class WAVStitcher:
                         sampwidth = wf.getsampwidth()
                         framerate = wf.getframerate()
                         frames_list.append(wf.readframes(wf.getnframes()))
-                except Exception:
+                except (wave.Error, EOFError, OSError, ValueError):
                     pass
             else:
                 frames_list.append(raw)
@@ -429,9 +433,21 @@ def stitch_mp3_files(
         raise ValueError("No valid MPEG Layer III audio frames could be extracted from inputs.")
 
     abs_out_path = os.path.abspath(output_file_path)
-    os.makedirs(os.path.dirname(abs_out_path), exist_ok=True)
+    out_dir = os.path.dirname(abs_out_path)
+    os.makedirs(out_dir, exist_ok=True)
 
-    with open(abs_out_path, "wb") as f:
-        f.write(stitched_bytes)
+    temp_out_path = f"{abs_out_path}.tmp.{os.getpid()}"
+    try:
+        with open(temp_out_path, "wb") as f:
+            f.write(stitched_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_out_path, abs_out_path)
+    finally:
+        if os.path.exists(temp_out_path):
+            try:
+                os.remove(temp_out_path)
+            except OSError:
+                pass
 
     return abs_out_path

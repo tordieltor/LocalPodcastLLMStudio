@@ -524,7 +524,7 @@ def pull_model_stream(
         try:
             err_json = json.loads(err_body)
             msg = err_json.get("error", str(http_err))
-        except Exception:
+        except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError):
             msg = f"HTTP {http_err.code}: {http_err.reason}"
         raise RuntimeError(f"Ollama pull failed ({http_err.code}): {msg}") from http_err
     except urllib.error.URLError as url_err:
@@ -552,7 +552,7 @@ def check_edge_tts_reachability(timeout: float = 3.0) -> tuple[bool, str]:
         return False, f"Connection to {host}:{port} timed out after {timeout}s"
     except socket.gaierror as e:
         return False, f"DNS resolution failed for {host}: {e}"
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         return False, f"Reachability probe failed for {host}:{port}: {e}"
 
 
@@ -579,7 +579,7 @@ def check_prerequisites(
     if ollama_online:
         try:
             installed_models = client.list_models(timeout=timeout)
-        except Exception:
+        except (OllamaConnectionError, TimeoutError, OSError):
             installed_models = []
 
     rec_prefix = recommended_model.split(":")[0].lower()
@@ -652,7 +652,7 @@ class OllamaClient:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
                 return bool(response.status == 200)
-        except Exception:
+        except (urllib.error.URLError, TimeoutError, OSError):
             return False
 
     def list_models(self, timeout: float = 5.0) -> list[str]:
@@ -676,7 +676,7 @@ class OllamaClient:
                 f"Cannot connect to Ollama at {self.base_url}. "
                 "Please make sure Ollama is running ('ollama serve' or Windows tray app)."
             ) from e
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
             raise OllamaConnectionError(f"Error fetching Ollama models: {e}") from e
 
     def pull_model(
@@ -1048,7 +1048,7 @@ def generate_podcast_script(
                 if act_turns:
                     for t in act_turns:
                         full_script.append(t)
-            except Exception:
+            except ValueError:
                 if not full_script and act_idx == 1:
                     # Fallback retry on Act 1 if parsing failed
                     pass

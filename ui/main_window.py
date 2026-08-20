@@ -103,6 +103,31 @@ GROUNDING_UI_OPTIONS: list[str] = [
 ]
 
 
+def _atomic_write_file(file_path: str, data: str | bytes, encoding: str | None = "utf-8") -> None:
+    """Writes data atomically to destination using temporary staging file and os.replace."""
+    abs_path = os.path.abspath(file_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    temp_path = f"{abs_path}.tmp.{os.getpid()}_{threading.get_ident()}"
+    try:
+        if isinstance(data, bytes):
+            with open(temp_path, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+        else:
+            with open(temp_path, "w", encoding=encoding) as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+        os.replace(temp_path, abs_path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
 # ==============================================================================
 # Background Generation Worker Thread
 # ==============================================================================
@@ -286,14 +311,12 @@ class GenerationWorker(threading.Thread):
                 self.msg_queue.put(("SCRIPT_READY", dialogue))
                 self.msg_queue.put(("PROGRESS", 0.40))
 
-                # Save script files to output folder (.json and .md)
+                # Save script files to output folder (.json and .md) atomically
                 script_json_path = os.path.join(self.output_dir, f"podcast_script_{timestamp}.json")
-                with open(script_json_path, "w", encoding="utf-8") as f:
-                    f.write(dialogue_to_json(dialogue))
+                _atomic_write_file(script_json_path, dialogue_to_json(dialogue))
 
                 script_md_path = os.path.join(self.output_dir, f"podcast_transcript_{timestamp}.md")
-                with open(script_md_path, "w", encoding="utf-8") as f:
-                    f.write(dialogue_to_markdown(dialogue))
+                _atomic_write_file(script_md_path, dialogue_to_markdown(dialogue))
 
                 if self.mode == "script_only":
                     self.msg_queue.put(("PROGRESS", 1.0))
@@ -318,13 +341,13 @@ class GenerationWorker(threading.Thread):
                 self.msg_queue.put(("PROGRESS", 0.40))
 
             # ------------------------------------------------------------------
-            # Phase 2: Edge-TTS Neural Voice Synthesis
+            # Phase 2: Local Piper TTS Neural Voice Synthesis
             # ------------------------------------------------------------------
             if self.cancel_event.is_set():
                 self.msg_queue.put(("CANCELLED", "Generation cancelled before audio synthesis."))
                 return
 
-            self.msg_queue.put(("STATUS", "Synthesizing neural voices with Edge-TTS..."))
+            self.msg_queue.put(("STATUS", "Synthesizing neural voices with Piper TTS..."))
 
             def tts_progress_cb(curr: int, tot: int):
                 if not self.cancel_event.is_set():
@@ -347,7 +370,7 @@ class GenerationWorker(threading.Thread):
                     progress_cb=tts_progress_cb,
                     cancel_event=self.cancel_event,
                 )
-            except Exception as tts_err:
+            except (RuntimeError, OSError, ValueError, TypeError, Exception) as tts_err:
                 # Clean up temp files
                 self._cleanup_temp_dir(temp_tts_dir)
                 if self.cancel_event.is_set():
@@ -387,7 +410,7 @@ class GenerationWorker(threading.Thread):
                     title=f"Podcast {timestamp}",
                     artist="LocalPodcastLLMStudio",
                 )
-            except Exception as stitch_err:
+            except (RuntimeError, ValueError, OSError, Exception) as stitch_err:
                 self._cleanup_temp_dir(temp_tts_dir)
                 self.msg_queue.put(
                     (
@@ -443,7 +466,7 @@ class GenerationWorker(threading.Thread):
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception:
+            except OSError:
                 pass
 
 
@@ -483,7 +506,7 @@ class OllamaLauncherWorker(threading.Thread):
                 client = OllamaClient(base_url=self.base_url)
                 try:
                     models = client.list_models(timeout=3.0)
-                except Exception:
+                except (OllamaConnectionError, TimeoutError, OSError):
                     models = []
                 self.msg_queue.put(("SERVICE_STARTED", {"status": msg, "models": models}))
             else:
@@ -576,6 +599,21 @@ class MainWindow(ctk.CTk):
     interactive script editing, and native MCI audio playback.
     """
 
+    _queue_poll_id: str | None = None
+    _player_poll_id: str | None = None
+    _is_closing: bool = False
+    current_worker: GenerationWorker | None = None
+    current_pull_worker: ModelPullWorker | None = None
+    current_launcher_worker: OllamaLauncherWorker | None = None
+    cancel_event: threading.Event = None  # type: ignore[assignment]
+    pull_cancel_event: threading.Event = None  # type: ignore[assignment]
+    launcher_cancel_event: threading.Event = None  # type: ignore[assignment]
+    player: WindowsAudioPlayer = None  # type: ignore[assignment]
+    is_busy: bool = False
+    current_dialogue: list[DialogueTurn] = []
+    current_mp3_path: str | None = None
+    current_script_path: str | None = None
+
     def __init__(self):
         super().__init__()
 
@@ -600,6 +638,11 @@ class MainWindow(ctk.CTk):
         self.launcher_cancel_event: threading.Event = threading.Event()
         self.current_pull_worker: ModelPullWorker | None = None
         self.pull_cancel_event: threading.Event = threading.Event()
+
+        # Poller Timer Tracking & Lifecycle Flags
+        self._queue_poll_id: str | None = None
+        self._player_poll_id: str | None = None
+        self._is_closing: bool = False
 
         # Data & Playback State
         self.current_dialogue: list[DialogueTurn] = []
@@ -1359,7 +1402,7 @@ class MainWindow(ctk.CTk):
                     text=f"Selected: {os.path.basename(chosen)} ({size_kb:.1f} KB)",
                     text_color=COLOR_SUCCESS,
                 )
-            except Exception:
+            except OSError:
                 self.file_info_label.configure(text=f"Selected: {os.path.basename(chosen)}")
 
     def _browse_output_dir(self):
@@ -1381,7 +1424,7 @@ class MainWindow(ctk.CTk):
             try:
                 models = client.list_models(timeout=3.0)
                 self.msg_queue.put(("OLLAMA_STATUS", {"connected": True, "models": models}))
-            except Exception as err:
+            except (OllamaConnectionError, TimeoutError, OSError, RuntimeError) as err:
                 self.msg_queue.put(
                     ("OLLAMA_STATUS", {"connected": False, "models": [], "error": str(err)})
                 )
@@ -1627,7 +1670,7 @@ class MainWindow(ctk.CTk):
                     for t in parsed_json
                     if isinstance(t, dict)
                 ]
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
         if not dialogue_turns:
@@ -1672,17 +1715,24 @@ class MainWindow(ctk.CTk):
     # Queue Poller & Event Dispatch Loop
     # ==========================================================================
     def _start_queue_poller(self):
+        if self._is_closing:
+            return
         self._process_queue()
-        self.after(50, self._start_queue_poller)
+        if not self._is_closing:
+            self._queue_poll_id = self.after(50, self._start_queue_poller)
 
     def _process_queue(self):
         while not self.msg_queue.empty():
             try:
                 event_type, payload = self.msg_queue.get_nowait()
-                self._handle_event(event_type, payload)
-                self.msg_queue.task_done()
             except queue.Empty:
                 break
+            try:
+                self._handle_event(event_type, payload)
+            except (RuntimeError, AttributeError, ValueError, TypeError):
+                pass
+            finally:
+                self.msg_queue.task_done()
 
     def _handle_event(self, event_type: str, payload: Any):
         if event_type == "STATUS":
@@ -1888,8 +1938,11 @@ class MainWindow(ctk.CTk):
     # Audio Player & MCI Integration
     # ==========================================================================
     def _start_player_poller(self):
+        if self._is_closing:
+            return
         self._update_player_position()
-        self.after(250, self._start_player_poller)
+        if not self._is_closing:
+            self._player_poll_id = self.after(250, self._start_player_poller)
 
     def _update_player_position(self):
         if self.player and self.player._is_open:
@@ -1935,7 +1988,7 @@ class MainWindow(ctk.CTk):
             try:
                 export_audio_file(self.current_mp3_path, dest)
                 messagebox.showinfo("Export Successful", f"Master podcast exported to:\n{dest}")
-            except Exception as e:
+            except OSError as e:
                 messagebox.showerror("Export Failed", f"Could not export MP3: {e}")
 
     def _open_output_folder(self):
@@ -1944,7 +1997,7 @@ class MainWindow(ctk.CTk):
         if sys.platform == "win32":
             try:
                 os.startfile(out_dir)
-            except Exception:
+            except OSError:
                 pass
 
     # ==========================================================================
@@ -1972,10 +2025,9 @@ class MainWindow(ctk.CTk):
         )
         if dest:
             try:
-                with open(dest, "w", encoding="utf-8") as f:
-                    f.write(text)
+                _atomic_write_file(dest, text)
                 messagebox.showinfo("Saved", f"Script saved to:\n{dest}")
-            except Exception as e:
+            except OSError as e:
                 messagebox.showerror("Save Failed", f"Could not save script: {e}")
 
     def reset_form(self):
@@ -1998,13 +2050,62 @@ class MainWindow(ctk.CTk):
         AboutDialog(self)
 
     def _on_close(self):
-        """Safely cleans up player and background workers on application exit."""
-        if self.player:
-            self.player.close()
-        if self.current_worker and self.current_worker.is_alive():
-            self.cancel_event.set()
-        if self.current_pull_worker and self.current_pull_worker.is_alive():
-            self.pull_cancel_event.set()
-        if self.current_launcher_worker and self.current_launcher_worker.is_alive():
-            self.launcher_cancel_event.set()
+        """Safely cleans up timers, player, and background workers on application exit."""
+        self._is_closing = True
+
+        # Cancel pending poller timers
+        queue_poll_id = getattr(self, "_queue_poll_id", None)
+        if queue_poll_id is not None:
+            try:
+                self.after_cancel(queue_poll_id)
+            except (RuntimeError, AttributeError, ValueError):
+                pass
+            self._queue_poll_id = None
+
+        player_poll_id = getattr(self, "_player_poll_id", None)
+        if player_poll_id is not None:
+            try:
+                self.after_cancel(player_poll_id)
+            except (RuntimeError, AttributeError, ValueError):
+                pass
+            self._player_poll_id = None
+
+        player = getattr(self, "player", None)
+        if player:
+            try:
+                player.close()
+            except (RuntimeError, AttributeError, OSError):
+                pass
+
+        # Signal and gracefully join worker threads
+        current_worker = getattr(self, "current_worker", None)
+        if current_worker and current_worker.is_alive():
+            cancel_event = getattr(self, "cancel_event", None)
+            if cancel_event:
+                cancel_event.set()
+            try:
+                current_worker.join(timeout=0.1)
+            except (RuntimeError, TimeoutError, AttributeError):
+                pass
+
+        current_pull_worker = getattr(self, "current_pull_worker", None)
+        if current_pull_worker and current_pull_worker.is_alive():
+            pull_cancel_event = getattr(self, "pull_cancel_event", None)
+            if pull_cancel_event:
+                pull_cancel_event.set()
+            try:
+                current_pull_worker.join(timeout=0.1)
+            except (RuntimeError, TimeoutError, AttributeError):
+                pass
+
+        current_launcher_worker = getattr(self, "current_launcher_worker", None)
+        if current_launcher_worker and current_launcher_worker.is_alive():
+            launcher_cancel_event = getattr(self, "launcher_cancel_event", None)
+            if launcher_cancel_event:
+                launcher_cancel_event.set()
+            try:
+                current_launcher_worker.join(timeout=0.1)
+            except (RuntimeError, TimeoutError, AttributeError):
+                pass
+
         self.destroy()

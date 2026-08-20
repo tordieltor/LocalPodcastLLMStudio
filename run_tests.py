@@ -7,7 +7,7 @@ Inspired by the NOUgurus empirical test architecture.
 Features:
 - Smart Tier Execution:
     --quick / --mvp : Rapid Tier 1-4 smoke suite (~1.5s)
-    --full / --deep  : Exhaustive 1,238-test matrix including adversarial challenger suites
+    --full / --deep  : Exhaustive 1,649-test matrix including adversarial challenger suites
 - Automatic CPU Acceleration (pytest-xdist detection & -n auto)
 - Windows Resource Resilience (exponential backoff file teardown & handle cleanup)
 - Sandboxed Test Environment Setup & Tear-down
@@ -141,7 +141,7 @@ def main() -> int:
         if xdist_args:
             print(f"--> Mode: [FULL MATRIX] (Multi-core parallel: {' '.join(xdist_args)})")
         else:
-            print("--> Mode: [FULL MATRIX] (Exhaustive 1,238-test multi-tier matrix)")
+            print("--> Mode: [FULL MATRIX] (Exhaustive 1,649-test multi-tier matrix)")
         pytest_args = xdist_args + ["tests", "-v"] + filtered_args
     else:
         print(f"--> Mode: [TARGETED EXECUTION] (Args: {' '.join(filtered_args)})")

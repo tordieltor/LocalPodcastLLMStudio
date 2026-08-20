@@ -70,11 +70,11 @@
                 │                             │
                 ▼                             ▼
 ┌─────────────────────────────┐ ┌─────────────────────────────┐
-│   1. Scriptwriter (Ollama)  │ │   2. Voice Synth (Edge-TTS) │
-│ - Local LLM REST API        │ │ - Free HD Neural Voices     │
-│ - 2-Host Dynamic Dialogue   │ │ - Pernille & Finn (NO)      │
-│ - 6-Tier Resilient Parser   │ │ - Jenny & Guy (EN)          │
-│ - Script Review Panel       │ │ - Async Worker Pool         │
+│   1. Scriptwriter (Ollama)  │ │   2. Voice Synth (Piper TTS)│
+│ - Local LLM REST API        │ │ - 100% Offline ONNX Models  │
+│ - 2-Host Dynamic Dialogue   │ │ - Kari & Ola (NO)           │
+│ - 6-Tier Resilient Parser   │ │ - Host 1 & Host 2 (EN)      │
+│ - Script Review Panel       │ │ - Async Worker Pool & Cache │
 └───────────────┬─────────────┘ └─────────────┬───────────────┘
                 │                             │
                 └──────────────┬──────────────┘
@@ -219,7 +219,7 @@ LocalPodcastLLMStudio/
 │   ├── prompts.py                     # Dynamic prompt engineering & duration presets
 │   ├── parser.py                      # 6-tier resilient dialogue JSON parser
 │   ├── ollama.py                      # Local Ollama REST client & turn generator
-│   ├── tts.py                         # Async Edge-TTS neural speech synthesizer
+│   ├── tts.py                         # 100% Offline Piper TTS neural voice synthesizer
 │   ├── mp3_stitcher.py                # Zero-dependency pure Python MP3 frame stitcher
 │   └── player.py                      # Native Windows MCI audio player & exporter
 │
@@ -235,7 +235,7 @@ LocalPodcastLLMStudio/
 │   ├── test_prompts.py                # Bilingual prompt preset tests
 │   ├── test_parser.py                 # Resilient JSON parser tests
 │   ├── test_ollama.py                 # Ollama REST API mock tests
-│   ├── test_tts.py                    # Edge-TTS synthesizer tests
+│   ├── test_tts.py                    # Piper TTS neural voice synthesizer tests
 │   ├── test_mp3_stitcher.py           # Pure Python MP3 frame stitching tests
 │   ├── test_player.py                 # Audio playback & export tests
 │   ├── test_ui.py                     # CustomTkinter GUI lifecycle tests

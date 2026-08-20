@@ -19,6 +19,13 @@ class DocumentExtractionError(ValueError, FileNotFoundError):
     pass
 
 
+# Precompiled regular expressions for text normalization performance
+_RE_HYPHEN_BREAK = re.compile(r"(\b\w+)-\n(\w+\b)")
+_RE_HORIZONTAL_WHITESPACE = re.compile(r"[ \t]+")
+_RE_LINE_WHITESPACE = re.compile(r" ?\n ?")
+_RE_CONSECUTIVE_NEWLINES = re.compile(r"\n{3,}")
+
+
 def normalize_extracted_text(raw_text: str) -> str:
     """
     Cleans and normalizes extracted text:
@@ -32,7 +39,7 @@ def normalize_extracted_text(raw_text: str) -> str:
         return ""
 
     # Rejoin hyphenated line-breaks
-    text = re.sub(r"(\b\w+)-\n(\w+\b)", r"\1\2", raw_text)
+    text = _RE_HYPHEN_BREAK.sub(r"\1\2", raw_text)
 
     # Normalize line breaks
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -41,11 +48,11 @@ def normalize_extracted_text(raw_text: str) -> str:
     text = text.replace("\xa0", " ").replace("\u200b", "").replace("\ufeff", "")
 
     # Clean multiple horizontal spaces and tabs while preserving newlines
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r" ?\n ?", "\n", text)
+    text = _RE_HORIZONTAL_WHITESPACE.sub(" ", text)
+    text = _RE_LINE_WHITESPACE.sub("\n", text)
 
     # Collapse excessive newlines
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _RE_CONSECUTIVE_NEWLINES.sub("\n\n", text)
 
     return text.strip()
 
@@ -84,6 +91,7 @@ def extract_text_from_pdf(
 
     try:
         from pypdf import PdfReader
+        from pypdf import errors as pypdf_errors
     except ImportError as err:
         raise DocumentExtractionError(
             "pypdf package is not installed. Please install pypdf to extract PDF documents."
@@ -91,7 +99,7 @@ def extract_text_from_pdf(
 
     try:
         reader = PdfReader(pdf_path)
-    except Exception as e:
+    except (pypdf_errors.PdfReadError, OSError, ValueError, KeyError) as e:
         raise DocumentExtractionError(
             f"Failed to open or parse PDF file '{os.path.basename(pdf_path)}': {e}"
         ) from e
@@ -101,7 +109,7 @@ def extract_text_from_pdf(
         try:
             # Attempt blank password decryption (standard for view-only encrypted PDFs)
             reader.decrypt("")
-        except Exception as decrypt_err:
+        except (pypdf_errors.PdfReadError, OSError, ValueError, KeyError) as decrypt_err:
             raise DocumentExtractionError(
                 f"PDF file '{os.path.basename(pdf_path)}' is password protected and cannot be extracted."
             ) from decrypt_err
@@ -122,7 +130,7 @@ def extract_text_from_pdf(
             page_content = page.extract_text()
             if page_content and page_content.strip():
                 page_texts.append(page_content.strip())
-        except Exception:
+        except (ValueError, KeyError, TypeError, OSError):
             # Continue to next page if one page fails
             continue
 
@@ -188,7 +196,7 @@ def extract_text_from_file(
                         break
             except (UnicodeDecodeError, LookupError):
                 continue
-            except Exception as e:
+            except OSError as e:
                 raise DocumentExtractionError(
                     f"Error reading file '{os.path.basename(file_path)}': {e}"
                 ) from e
@@ -197,7 +205,7 @@ def extract_text_from_file(
             try:
                 with open(file_path, encoding="utf-8", errors="replace") as f:
                     content = f.read()
-            except Exception as e:
+            except OSError as e:
                 raise DocumentExtractionError(
                     f"Failed to read file '{os.path.basename(file_path)}': {e}"
                 ) from e

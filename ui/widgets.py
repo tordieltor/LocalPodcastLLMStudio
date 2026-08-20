@@ -446,7 +446,7 @@ class ActionableErrorDialog(ctk.CTkToplevel):
         try:
             self.transient(parent)
             self.grab_set()
-        except Exception:
+        except (RuntimeError, AttributeError, ValueError, TypeError):
             pass
 
         # Center on parent window
@@ -613,8 +613,8 @@ class ActionableErrorDialog(ctk.CTkToplevel):
             x = max(50, px + (pw - width) // 2)
             y = max(50, py + (ph - height) // 2)
             self.geometry(f"{width}x{height}+{x}+{y}")
-        except Exception:
+        except (RuntimeError, AttributeError, ValueError, TypeError):
             try:
                 self.geometry(f"{width}x{height}")
-            except Exception:
+            except (RuntimeError, AttributeError, ValueError, TypeError):
                 pass

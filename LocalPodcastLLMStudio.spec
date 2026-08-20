@@ -2,7 +2,7 @@
 """
 LocalPodcastLLMStudio - PyInstaller Specification File
 Universal 100% Local AI Podcast Desktop Application
-Bundles CustomTkinter Fluent Dark GUI, Edge-TTS Neural Voice Engine,
+Bundles CustomTkinter Fluent Dark GUI, Piper TTS Neural Voice Engine,
 PyPDF Document Parser, Zero-FFmpeg MP3 Stitcher, and Native MCI Audio Player.
 """
 

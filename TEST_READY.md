@@ -1,7 +1,7 @@
 # LocalPodcastLLMStudio - Test Readiness Report (`TEST_READY.md`)
 
-**Document Version**: 2.0.0  
-**Test Suite Status**: READY & VALIDATED (1,238 / 1,238 Passed)  
+**Document Version**: 2.1.0  
+**Test Suite Status**: READY & VALIDATED (1,649 / 1,649 Passed)  
 **Date**: 2026-08-20  
 **Target Project**: LocalPodcastLLMStudio (`epic-hubble`)  
 **Runner Command**: `python run_tests.py --quick` / `python run_tests.py --full`  
@@ -14,23 +14,28 @@ The LocalPodcastLLMStudio comprehensive rational test suite is structured across
 
 | Test Module | Component Under Test | Tiers Covered | Test Cases | Execution Time |
 |---|---|---|:---:|:---:|
-| `tests/test_check_env.py` | Environment Diagnostics & Preflight Checks | Tier 1, Tier 2, Tier 3 | 18 | ~0.15s |
-| `tests/test_extractor.py` | Document Ingestion (.txt, .md, .pdf, Raw, Topic) | Tier 1, Tier 2 | 19 | ~0.12s |
-| `tests/test_prompts.py` | Bilingual Prompts, 4 Formats, 3 Tones, Personas | Tier 1, Tier 3 | 43 | ~0.08s |
+| `tests/test_check_env.py` | Environment Diagnostics & Preflight Checks | Tier 1, Tier 2, Tier 3 | 19 | ~0.15s |
+| `tests/test_extractor.py` | Document Ingestion (.txt, .md, .pdf, Raw, Topic) | Tier 1, Tier 2 | 18 | ~0.12s |
+| `tests/test_prompts.py` | Bilingual Prompts, 4 Formats, 3 Tones, Personas | Tier 1, Tier 3 | 183 | ~0.35s |
 | `tests/test_parser.py` | 6-Tier Resilient JSON & Dialogue Parser | Tier 1, Tier 2 | 23 | ~0.06s |
-| `tests/test_ollama.py` | Local Ollama REST Client & Dialogue Generation | Tier 1, Tier 2 | 11 | ~0.05s |
-| `tests/test_tts.py` | Edge-TTS Voice Synthesis & Speed Control (-10% to +15%) | Tier 1, Tier 2, Tier 3 | 20 | ~0.08s |
+| `tests/test_ollama.py` | Local Ollama REST Client & Dialogue Generation | Tier 1, Tier 2 | 61 | ~0.15s |
+| `tests/test_tts.py` | Piper TTS Neural Voice Synthesis & Speed Control | Tier 1, Tier 2, Tier 3 | 22 | ~0.08s |
 | `tests/test_mp3_stitcher.py` | Zero-FFmpeg MP3 Binary Stitcher & Silence Injection | Tier 1, Tier 2 | 11 | ~0.07s |
-| `tests/test_player.py` | Native Windows MCI Player (`winmm.dll`) & Export | Tier 1, Tier 2 | 15 | ~0.06s |
-| `tests/test_ui.py` | Fluent Dark UI Theme, Widgets & Event Loop | Tier 1, Tier 2 | 15 | ~0.10s |
+| `tests/test_player.py` | Native Windows MCI Player (`winmm.dll`) & Export | Tier 1, Tier 2 | 14 | ~0.06s |
+| `tests/test_ui.py` | Fluent Dark UI Theme, Widgets & Event Loop | Tier 1, Tier 2 | 86 | ~0.40s |
 | `tests/test_e2e_pipeline.py` | End-to-End Workloads (Document, Scratch, Script-Only) | Tier 3, Tier 4 | 35 | ~0.45s |
 | `tests/test_e2e_grounding_prereqs.py` | Prerequisites, Streaming Pull & Grounding Engine | Tiers 1–4 | 290 | ~2.50s |
-| `tests/test_m2_concurrency_robustness.py` | Multi-Thread Worker & Cancellation Resilience | Tier 5 (Adversarial) | 10 | ~0.20s |
-| `tests/test_ollama_adversarial_m2.py` | Ollama Fault Tolerance & Degraded Network Modes | Tier 5 (Adversarial) | 17 | ~0.18s |
-| `tests/test_prompts_adversarial.py` | Combinatorial Prompt Sweeps & Grounding Directives | Tier 5 (Adversarial) | 240 | ~1.80s |
-| `tests/test_prompts_challenge.py` | Act Specifications & Multi-Act Turn Matrices | Tier 5 (Adversarial) | 451 | ~3.20s |
+| `tests/test_m2_concurrency_robustness.py` | Multi-Thread Worker & Cancellation Resilience | Tier 5 (Adversarial) | 101 | ~0.80s |
+| `tests/test_ollama_adversarial_m2.py` | Ollama Fault Tolerance & Degraded Network Modes | Tier 5 (Adversarial) | 43 | ~0.30s |
+| `tests/test_prompts_adversarial.py` | Combinatorial Prompt Sweeps & Grounding Directives | Tier 5 (Adversarial) | 270 | ~1.90s |
+| `tests/test_prompts_challenge.py` | Act Specifications & Multi-Act Turn Matrices | Tier 5 (Adversarial) | 197 | ~1.50s |
 | `tests/test_adversarial_empirical_challenge.py` | Frame Header & Parser Empirical Challenger | Tier 5 (Adversarial) | 40 | ~0.35s |
-| **TOTAL** | **Full Rational Application Suite** | **Tiers 1, 2, 3, 4, 5** | **1,238** | **~11.6s** |
+| `tests/test_adversarial_challenger_m4.py` | Concurrency Stress & Fault Injection Suites | Tier 5 (Adversarial) | 102 | ~0.85s |
+| `tests/test_adversarial_m3_ui.py` | UI Edge Cases & State Transition Challenger | Tier 5 (Adversarial) | 89 | ~0.60s |
+| `tests/test_batch_exit_control_flow.py` | Windows Batch Script Control-Flow & Exit Integrity | Tier 5 (Adversarial) | 5 | ~30.0s |
+| `tests/test_challenger_m3_2.py` | Resource Lifecycle & MCI Handle Stress Suites | Tier 5 (Adversarial) | 81 | ~0.55s |
+| `tests/test_challenger_m4_concurrency.py` | Thread Pool & Rate Limiter Stress Suites | Tier 5 (Adversarial) | 59 | ~0.45s |
+| **TOTAL** | **Full Rational Application Suite** | **Tiers 1, 2, 3, 4, 5** | **1,649** | **~41.8s** |
 
 ---
 
@@ -38,12 +43,12 @@ The LocalPodcastLLMStudio comprehensive rational test suite is structured across
 
 ### Tier 1: Feature Component Verification
 - **Document Extraction**: UTF-8, Markdown parsing, direct pasted raw text, and topic prompt extraction.
-- **Bilingual Personas**: Norwegian Bokmål (Kari & Ola) and English (Jenny & Guy) prompt generation.
+- **Bilingual Personas**: Norwegian Bokmål (Kari & Ola) and English (Jenny & Guy / Host 1 & Host 2) prompt generation.
 - **Episode Format Presets**: Quick Summary (6-8 turns), Standard Episode (12-16 turns), Deep Dive (20-26 turns), Extended In-Depth (45-60 turns).
 - **Tone Presets**: Casual & Lively, Analytical & Educational, Lively Debate.
 - **Parser Tier 1**: Clean, standard JSON dialogue array parsing.
 - **Ollama Client**: Connection check, model tags querying, and dialogue generation dispatch.
-- **Edge-TTS Mapping**: Voice resolution (`nb-NO-PernilleNeural`, `nb-NO-FinnNeural`, `en-US-JennyNeural`, `en-US-GuyNeural`) and rate string normalization (`-10%` to `+15%`).
+- **Piper TTS Mapping**: Local voice resolution (`no_NO-torkil-medium`, `en_US-lessac-medium`, `en_US-ryan-medium`) and rate string normalization (`-10%` to `+15%`).
 - **MPEG Header Engine**: Sync word detection, layer validation, and frame length computation.
 - **MCI Player**: Open, play, pause, resume, stop, volume setting, and time string formatting.
 - **Diagnostics**: Python 3.10+ check, venv detection, dependency imports, and CLI execution (`--json`, `--quiet`).
@@ -60,7 +65,7 @@ The LocalPodcastLLMStudio comprehensive rational test suite is structured across
 - **Event Bus State Transitions**: Thread-safe message queue synchronization between background workers and CustomTkinter GUI.
 
 ### Tier 4: Real-World Application Workloads & E2E Verification
-- **Full E2E Document Generation Workflow**: Ingestion (.md) -> Prompt building -> Mock LLM generation -> 6-tier resilient parser -> Mock Edge-TTS turn synthesis -> Binary MP3 stitching with silence -> Master playable MP3 export across all 24 configurations.
+- **Full E2E Document Generation Workflow**: Ingestion (.md) -> Prompt building -> Mock LLM generation -> 6-tier resilient parser -> Piper TTS turn synthesis -> Binary MP3 stitching with silence -> Master playable MP3 export across all 24 configurations.
 - **Scratch Topic Mode E2E**: Topic input -> Prompt construction -> LLM output with syntax quirks -> Tier 4 parser repair -> Synthesis -> Binary MP3 output.
 - **Script-Only Workflow E2E**: Dialogue script generation -> JSON export -> User script modification -> Parsing -> Synthesis from edited script -> Verified master MP3.
 
@@ -68,6 +73,7 @@ The LocalPodcastLLMStudio comprehensive rational test suite is structured across
 - **Prompt Injection Resilience**: Safeguards against document delimiters and role override attempts.
 - **Malformed Stream Salvaging**: Resilient recovery from truncated JSON and non-standard LLM output formats.
 - **Concurrency & Cancellation Safety**: Worker thread abort handling without deadlocks or leaked file handles.
+- **Batch Script Control Flow**: Deterministic non-zero exit codes on Windows batch build failures.
 
 ---
 
@@ -77,7 +83,7 @@ The LocalPodcastLLMStudio comprehensive rational test suite is structured across
 # Run quick MVP smoke battery (~3s)
 python run_tests.py --quick
 
-# Run full 1,238-test matrix with multi-core parallel acceleration
+# Run full 1,649-test matrix with multi-core parallel acceleration
 python run_tests.py --full
 
 # Run with standard pytest
