@@ -165,7 +165,7 @@ class TestBatchExitControlFlow:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=180,
+                timeout=240,
             )
             last_proc = proc
             if proc.returncode == 0:

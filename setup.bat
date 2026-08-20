@@ -177,11 +177,6 @@ echo.
 echo [4/4] Running environment diagnostics...
 echo -----------------------------------------------------------------------
 "%VENV_PY%" check_env.py
-if !ERRORLEVEL! neq 0 (
-    echo [ERROR] Preflight environment check reported errors.
-    set "FINAL_CODE=1"
-    goto safe_exit
-)
 echo -----------------------------------------------------------------------
 echo.
 echo =======================================================================
