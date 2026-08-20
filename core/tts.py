@@ -216,11 +216,7 @@ async def synthesize_turn(
                 )
                 chunks = []
                 async for chunk in communicate.stream():
-                    if (
-                        isinstance(chunk, dict)
-                        and chunk.get("type") == "audio"
-                        and "data" in chunk
-                    ):
+                    if isinstance(chunk, dict) and chunk.get("type") == "audio" and "data" in chunk:
                         chunks.append(chunk["data"])
                 if chunks:
                     audio_bytes = b"".join(chunks)
@@ -397,4 +393,3 @@ def synthesize_dialogue_audio(
                 except Exception:
                     pass
         raise
-
