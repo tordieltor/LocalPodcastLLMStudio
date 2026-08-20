@@ -416,7 +416,8 @@ class TestOllamaBinaryResolver:
 
     def test_find_binary_in_localappdata(self):
         def mock_isfile(p):
-            return r"AppData\Local\Programs\Ollama\ollama.exe" in p
+            norm = p.replace("\\", "/")
+            return "AppData/Local/Programs/Ollama/ollama.exe" in norm
 
         with (
             patch("shutil.which", return_value=None),
@@ -426,11 +427,13 @@ class TestOllamaBinaryResolver:
         ):
             res = find_ollama_binary()
             assert res is not None
-            assert r"Tester\AppData\Local\Programs\Ollama\ollama.exe" in res
+            norm_res = res.replace("\\", "/")
+            assert "Tester/AppData/Local/Programs/Ollama/ollama.exe" in norm_res
 
     def test_find_binary_in_program_files(self):
         def mock_isfile(p):
-            return r"Program Files\Ollama\ollama.exe" in p
+            norm = p.replace("\\", "/")
+            return "Program Files/Ollama/ollama.exe" in norm
 
         with (
             patch("shutil.which", return_value=None),
@@ -443,11 +446,13 @@ class TestOllamaBinaryResolver:
         ):
             res = find_ollama_binary()
             assert res is not None
-            assert r"Program Files\Ollama\ollama.exe" in res
+            norm_res = res.replace("\\", "/")
+            assert "Program Files/Ollama/ollama.exe" in norm_res
 
     def test_find_binary_in_program_files_x86(self):
         def mock_isfile(p):
-            return r"Program Files (x86)\Ollama\ollama.exe" in p
+            norm = p.replace("\\", "/")
+            return "Program Files (x86)/Ollama/ollama.exe" in norm
 
         with (
             patch("shutil.which", return_value=None),
@@ -464,11 +469,13 @@ class TestOllamaBinaryResolver:
         ):
             res = find_ollama_binary()
             assert res is not None
-            assert r"Program Files (x86)\Ollama\ollama.exe" in res
+            norm_res = res.replace("\\", "/")
+            assert "Program Files (x86)/Ollama/ollama.exe" in norm_res
 
     def test_find_binary_in_program_w6432(self):
         def mock_isfile(p):
-            return r"C:\ProgramW6432\Ollama\ollama.exe" in p
+            norm = p.replace("\\", "/")
+            return "ProgramW6432/Ollama/ollama.exe" in norm
 
         with (
             patch("shutil.which", return_value=None),
@@ -486,7 +493,8 @@ class TestOllamaBinaryResolver:
         ):
             res = find_ollama_binary()
             assert res is not None
-            assert r"C:\ProgramW6432\Ollama\ollama.exe" in res
+            norm_res = res.replace("\\", "/")
+            assert "ProgramW6432/Ollama/ollama.exe" in norm_res
 
     def test_find_binary_posix_fallbacks(self):
         def mock_isfile(p):

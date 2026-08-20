@@ -48,4 +48,20 @@
 - **Tier 3 (Cross-Feature Combinations)**: Full combinatorial prompt matrices (2 Languages × 4 Lengths × 3 Tones × 3 Grounding Modes).
 - **Tier 4 (Workloads & E2E Pipelines)**: Real-world document, scratch, and script-only pipeline journeys.
 - **Tier 5 (Adversarial Challenger)**: Concurrency stress, prompt injection resistance, malformed stream salvaging.
-- **Total Test Cases**: 1,238 passing tests.
+- **Total Test Cases**: 1,647 passing tests across full empirical test suite.
+
+## Cross-Platform Testing & Shell Invariants (Learnings & Guardrails)
+1. **Windows Batch Scripting Invariant**:
+   - Never nest unquoted/unescaped parentheses (such as `(.venv)` or `(build, dist)`) inside parenthesized `if ( ... )` or `for ( ... )` blocks in `.bat` scripts.
+   - `cmd.exe` immediately parses the closing parenthesis `)` as the end of the `if` block, leaving subsequent tokens dangling (causing `... was unexpected at this time.` syntax errors).
+   - Use plain descriptions (e.g. `in .venv`) or escape with caret `^( ... ^)`.
+
+2. **Cross-Platform CTypes Mocking Invariant**:
+   - `ctypes.windll` is only available on native Windows runtimes and does not exist in Python on Linux/macOS.
+   - Never write `patch("ctypes.windll.dwmapi...")` as module resolution fails at import/patch time on POSIX runners.
+   - Always instantiate a mock object and use `patch.object(ctypes, "windll", mock_windll, create=True)` with `patch("sys.platform", "win32")`.
+
+3. **Cross-Platform Path Mocking Invariant**:
+   - On Linux/macOS CI runners, `os.path.join` and `os.path.abspath` resolve using POSIX separators (`/`).
+   - Mock predicates (such as `mock_isfile`) that test Windows paths must normalize separators before matching (`p.replace("\\", "/")`), avoiding hardcoded backslash comparisons that fail on POSIX runners.
+   - Always explicitly patch `sys.platform == "win32"` in Windows-specific platform branch tests.

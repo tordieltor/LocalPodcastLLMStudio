@@ -123,7 +123,7 @@ echo.
 :: 3. Create Virtual Environment (.venv)
 :: ---------------------------------------------------------------------------
 if not exist "%VENV_PY%" (
-    echo [1/4] Creating virtual environment (.venv)...
+    echo [1/4] Creating virtual environment in .venv...
     "%FOUND_BASE_PY%" %FOUND_BASE_ARGS% -m venv "%VENV_DIR%"
     if !ERRORLEVEL! neq 0 (
         echo [ERROR] Failed to create virtual environment in .venv.
@@ -134,7 +134,7 @@ if not exist "%VENV_PY%" (
     )
     echo [OK] Virtual environment created.
 ) else (
-    echo [OK] Virtual environment (.venv) already exists.
+    echo [OK] Virtual environment in .venv already exists.
 )
 echo.
 

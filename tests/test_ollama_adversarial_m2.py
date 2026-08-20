@@ -465,10 +465,9 @@ class TestBinaryResolverAndServiceLauncherStress:
 
     def test_find_binary_in_nested_windows_appdata_fallback(self):
         """Finds ollama.exe in LOCALAPPDATA\\Programs\\Ollama when not in PATH."""
-        target_path = os.path.abspath(r"C:\Users\test\AppData\Local\Programs\Ollama\ollama.exe")
-
         def mock_isfile(p):
-            return os.path.abspath(p) == target_path
+            norm = p.replace("\\", "/")
+            return "test/AppData/Local/Programs/Ollama/ollama.exe" in norm
 
         fake_env = {
             "PATH": "",
@@ -478,10 +477,13 @@ class TestBinaryResolverAndServiceLauncherStress:
         with (
             patch.dict(os.environ, fake_env, clear=True),
             patch("shutil.which", return_value=None),
+            patch("sys.platform", "win32"),
             patch("os.path.isfile", side_effect=mock_isfile),
         ):
             result = find_ollama_binary()
-            assert result == target_path
+            assert result is not None
+            norm_result = result.replace("\\", "/")
+            assert "test/AppData/Local/Programs/Ollama/ollama.exe" in norm_result
 
     def test_start_service_immediate_exit_non_zero_code(self):
         """Process crashes immediately with non-zero exit code (e.g. exit code 1 or 255)."""

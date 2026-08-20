@@ -8,6 +8,7 @@ modality auto-synchronization, thread-safe queue event bus dispatching, and asyn
 background worker threads (GenerationWorker, ModelPullWorker, OllamaLauncherWorker).
 """
 
+import ctypes
 import json
 import queue
 import sys
@@ -242,28 +243,38 @@ class TestUITheme:
             assert theme.enable_windows_dark_titlebar(mock_win) is False
 
         # 2. Windows platform with successful primary attribute (20)
+        mock_windll_success = MagicMock()
+        mock_windll_success.user32.GetParent.return_value = 12345
+        mock_windll_success.dwmapi.DwmSetWindowAttribute.return_value = 0
+
         with (
             patch("sys.platform", "win32"),
-            patch("ctypes.windll.user32.GetParent", return_value=12345),
-            patch("ctypes.windll.dwmapi.DwmSetWindowAttribute", return_value=0) as mock_dwm,
+            patch.object(ctypes, "windll", mock_windll_success, create=True),
         ):
             res = theme.enable_windows_dark_titlebar(mock_win)
             assert res is True
-            assert mock_dwm.call_count >= 1
+            assert mock_windll_success.dwmapi.DwmSetWindowAttribute.call_count >= 1
 
         # 3. Windows platform fallback attribute (19)
+        mock_windll_fallback = MagicMock()
+        mock_windll_fallback.user32.GetParent.return_value = 12345
+        mock_windll_fallback.dwmapi.DwmSetWindowAttribute.side_effect = [-1, 0]
+
         with (
             patch("sys.platform", "win32"),
-            patch("ctypes.windll.user32.GetParent", return_value=12345),
-            patch("ctypes.windll.dwmapi.DwmSetWindowAttribute", side_effect=[-1, 0]),
+            patch.object(ctypes, "windll", mock_windll_fallback, create=True),
         ):
             res = theme.enable_windows_dark_titlebar(mock_win)
             assert res is True
 
         # 4. Windows platform error/exception handling
+        mock_windll_error = MagicMock()
+        mock_windll_error.user32.GetParent.return_value = 12345
+        mock_windll_error.dwmapi.DwmSetWindowAttribute.side_effect = OSError("DWM Error")
+
         with (
             patch("sys.platform", "win32"),
-            patch("ctypes.windll.dwmapi.DwmSetWindowAttribute", side_effect=OSError("DWM Error")),
+            patch.object(ctypes, "windll", mock_windll_error, create=True),
         ):
             res = theme.enable_windows_dark_titlebar(mock_win)
             assert res is False
