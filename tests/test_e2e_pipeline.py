@@ -31,8 +31,8 @@ class TestFullE2EPipeline:
     @pytest.mark.parametrize(
         "language,host1_name,host2_name,voice1,voice2",
         [
-            ("nb-NO", "Kari", "Ola", "nb-NO-PernilleNeural", "nb-NO-FinnNeural"),
-            ("en-US", "Jenny", "Guy", "en-US-JennyNeural", "en-US-GuyNeural"),
+            ("nb-NO", "Kari", "Ola", "no_NO-torkil-medium", "no_NO-torkil-medium"),
+            ("en-US", "Jenny", "Guy", "en_US-lessac-medium", "en_US-ryan-medium"),
         ],
     )
     @pytest.mark.parametrize(
@@ -433,9 +433,9 @@ class TestPipelineFaultToleranceAndRecovery:
         from core.tts import TTSEngine
 
         engine_nb = TTSEngine(language="nb-NO", rate="+10%")
-        assert engine_nb.get_voice_for_speaker("Host 1") == "nb-NO-PernilleNeural"
-        assert engine_nb.get_voice_for_speaker("Host 2") == "nb-NO-FinnNeural"
+        assert engine_nb.get_voice_for_speaker("Host 1") == "no_NO-torkil-medium"
+        assert engine_nb.get_voice_for_speaker("Host 2") == "no_NO-torkil-medium"
 
         engine_en = TTSEngine(language="en-US", rate="-5%")
-        assert engine_en.get_voice_for_speaker("Host 1") == "en-US-JennyNeural"
-        assert engine_en.get_voice_for_speaker("Host 2") == "en-US-GuyNeural"
+        assert engine_en.get_voice_for_speaker("Host 1") == "en_US-lessac-medium"
+        assert engine_en.get_voice_for_speaker("Host 2") == "en_US-ryan-medium"

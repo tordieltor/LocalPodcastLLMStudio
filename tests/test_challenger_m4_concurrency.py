@@ -715,10 +715,10 @@ class TestCoreSubsystemsConcurrencyStress:
             v_nb2 = get_voice_for_speaker("Host 2", "nb-NO")
             v_en1 = get_voice_for_speaker("Host 1", "en-US")
             v_en2 = get_voice_for_speaker("Host 2", "en-US")
-            assert "Pernille" in v_nb1
-            assert "Finn" in v_nb2
-            assert "Jenny" in v_en1
-            assert "Guy" in v_en2
+            assert "torkil" in v_nb1.lower()
+            assert "torkil" in v_nb2.lower()
+            assert "lessac" in v_en1.lower()
+            assert "ryan" in v_en2.lower()
 
         threads = [
             threading.Thread(target=worker, args=(i,), daemon=True) for i in range(num_threads)

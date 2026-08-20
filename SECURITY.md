@@ -1,7 +1,7 @@
 # Security Policy — LocalPodcastLLMStudio
 
-**LocalPodcastLLMStudio** is designed from the ground up as a **100% local, privacy-first desktop application**.
-All document processing, LLM dialogue generation, and speech synthesis pipelines operate locally or via direct transient encrypted protocols with zero server-side retention.
+**LocalPodcastLLMStudio** is designed from the ground up as a **100% local, air-gapped, privacy-first desktop application**.
+All document processing, LLM dialogue generation, neural voice synthesis (Piper TTS), and audio assembly operate locally on your machine with zero data transmitted to the cloud or third parties.
 
 ---
 
@@ -62,9 +62,10 @@ We support and appreciate good-faith security research:
 
 LocalPodcastLLMStudio incorporates defense-in-depth security principles:
 
-1. **100% Local Inference**:
+1. **100% Local Inference & Offline Voice Synthesis**:
    - Dialogue generation is executed against locally hosted Ollama instances (`http://127.0.0.1:11434`).
    - Source documents, prompt templates, and generated transcripts are processed strictly in local workstation memory and are never transmitted to third-party cloud LLM APIs.
+   - Voice synthesis runs 100% offline via local Piper ONNX neural voice models. Zero dialogue text or audio data is ever transmitted to Microsoft, Bing, or any cloud endpoints.
 
 2. **Strict URL Scheme Validation**:
    - All network connections to the Ollama REST API strictly enforce `http://` or `https://` schemes and valid hostnames, mitigating Server-Side Request Forgery (SSRF) and local file access (`file://`) vectors.
@@ -73,9 +74,8 @@ LocalPodcastLLMStudio incorporates defense-in-depth security principles:
    - Ingestion bounds are enforced on all imported documents (max **50 MB** file size and max **200 pages** for PDF documents).
    - Safe dehyphenation and multi-encoding fallbacks (`utf-8-sig`, `utf-8`, `cp1252`, `latin-1`, `iso-8859-1`) prevent parser crashes on corrupted byte sequences.
 
-4. **Transient Voice Synthesis & Temporary Storage**:
-   - Edge-TTS voice synthesis uses direct outbound TLS/HTTPS connections (`speech.platform.bing.com:443`).
-   - Audio segments are generated in isolated temporary folders (`tempfile.mkdtemp`) and are deterministically deleted upon stitching completion.
+4. **100% Local Storage & Ephemeral Lifecycle**:
+   - Audio segments are generated in isolated temporary folders (`tempfile.mkdtemp`) and are deterministically deleted upon stitching completion. Zero telemetry, tracking, or cloud sync.
 
 5. **Safe Process Execution**:
    - Zero invocation of `subprocess` with `shell=True`.

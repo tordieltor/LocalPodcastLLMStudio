@@ -33,11 +33,11 @@
 
 ## 🌟 Key Highlights
 
-- **Zero Cloud API Costs**: Runs 100% locally on your machine utilizing local Ollama LLMs and Microsoft Edge-TTS neural voice synthesis.
+- **100% Offline & Private (Zero Cloud Data Sharing)**: Runs entirely on your local workstation utilizing local Ollama LLMs and local Piper TTS ONNX neural speech synthesis. Zero data is shared with the cloud or Microsoft.
 - **Document-Agnostic Ingestion**: Ingests `.pdf`, `.md`, and `.txt` documents, clipboard text, or generates directly from a prompt with "Generate from Scratch".
 - **Bilingual Two-Host Dialogue**:
-  - 🇳🇴 **Norsk (Bokmål)**: **Kari** (`nb-NO-PernilleNeural`) & **Ola** (`nb-NO-FinnNeural`)
-  - 🇬🇧 **English**: **Jenny** (`en-US-JennyNeural`) & **Guy** (`en-US-GuyNeural`)
+  - 🇳🇴 **Norsk (Bokmål)**: **Kari** & **Ola** (`no_NO-torkil-medium` neural personas)
+  - 🇬🇧 **English**: **Host 1** (`en_US-lessac-medium`) & **Host 2** (`en_US-ryan-medium`)
 - **4 Episode Duration Presets**:
   - ⚡ **Quick Summary**: ~2–3 mins (6–8 dialogue turns)
   - 🎙️ **Standard Episode**: ~5–7 mins (12–16 dialogue turns)

@@ -2,7 +2,7 @@
 
 ## Architecture
 
-LocalPodcastLLMStudio is a 100% local, two-host AI podcast generator desktop application built with Python 3.10+, CustomTkinter (Fluent Dark theme), Ollama LLMs, Microsoft Edge-TTS neural speech synthesis, zero-FFmpeg binary MP3 stitching, and native Windows MCI audio playback.
+LocalPodcastLLMStudio is a 100% local, air-gapped, two-host AI podcast generator desktop application built with Python 3.10+, CustomTkinter (Fluent Dark theme), Ollama LLMs, local Piper TTS neural speech synthesis, zero-FFmpeg binary MP3/WAV stitching, and native Windows MCI audio playback.
 
 ```
 +---------------------------------------------------------------------------------------------------------+
@@ -23,11 +23,11 @@ LocalPodcastLLMStudio is a 100% local, two-host AI podcast generator desktop app
 |                                                                                                         |
 |  [Core Domain Subsystems]                                                                               |
 |  ├── core/prompts.py       (GroundingMode enum, nb-NO/en-US directives, negative constraints, acts)     |
-|  ├── core/ollama.py        (OllamaClient, streaming pull, process launcher, socket Edge-TTS probe)     |
+|  ├── core/ollama.py        (OllamaClient, streaming pull, process launcher, local TTS preflight probe)  |
 |  ├── core/extractor.py     (Document & topic extraction, validation, format normalization)              |
 |  ├── core/parser.py        (6-tier resilient JSON/markdown dialogue parser)                             |
-|  ├── core/tts.py           (Edge-TTS neural voice synthesis with rate & pitch controls)                 |
-|  ├── core/mp3_stitcher.py  (Zero-FFmpeg binary MPEG frame concatenation)                                |
+|  ├── core/tts.py           (100% offline Piper TTS neural voice synthesis with persona rate controls)   |
+|  ├── core/mp3_stitcher.py  (Zero-FFmpeg binary MPEG/WAV frame concatenation)                             |
 |  └── core/player.py        (Native Windows MCI audio playback with timeline tracking)                   |
 |                                                                                                         |
 |  [Verification & Quality Gate]                                                                          |

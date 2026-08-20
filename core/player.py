@@ -71,7 +71,12 @@ class WindowsAudioPlayer:
         self.close()
 
         abs_path = os.path.abspath(file_path).replace("\\", "/")
-        cmd = f'open "{abs_path}" type mpegvideo alias {self.alias}'
+        if abs_path.lower().endswith(".wav"):
+            cmd = f'open "{abs_path}" type waveaudio alias {self.alias}'
+        elif abs_path.lower().endswith(".mp3"):
+            cmd = f'open "{abs_path}" type mpegvideo alias {self.alias}'
+        else:
+            cmd = f'open "{abs_path}" alias {self.alias}'
         self._send_command(cmd)
 
         # Configure time format to milliseconds

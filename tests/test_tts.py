@@ -27,14 +27,14 @@ class TestTTSVoiceMappingAndRates:
     @pytest.mark.parametrize(
         "speaker,language,expected_voice",
         [
-            ("Host 1", "nb-NO", "nb-NO-PernilleNeural"),
-            ("Kari", "nb-NO", "nb-NO-PernilleNeural"),
-            ("Host 2", "nb-NO", "nb-NO-FinnNeural"),
-            ("Ola", "nb-NO", "nb-NO-FinnNeural"),
-            ("Host 1", "en-US", "en-US-JennyNeural"),
-            ("Jenny", "en-US", "en-US-JennyNeural"),
-            ("Host 2", "en-US", "en-US-GuyNeural"),
-            ("Guy", "en-US", "en-US-GuyNeural"),
+            ("Host 1", "nb-NO", "no_NO-torkil-medium"),
+            ("Kari", "nb-NO", "no_NO-torkil-medium"),
+            ("Host 2", "nb-NO", "no_NO-torkil-medium"),
+            ("Ola", "nb-NO", "no_NO-torkil-medium"),
+            ("Host 1", "en-US", "en_US-lessac-medium"),
+            ("Jenny", "en-US", "en_US-lessac-medium"),
+            ("Host 2", "en-US", "en_US-ryan-medium"),
+            ("Guy", "en-US", "en_US-ryan-medium"),
         ],
     )
     def test_voice_selection(self, speaker, language, expected_voice):

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "LocalPodcastLLMStudio"
 version = "1.0.0"
-description = "Universal 100% Local Two-Host Audio Podcast Generator using Ollama and Edge-TTS with Zero FFmpeg Dependencies"
+description = "Universal 100% Local Two-Host Audio Podcast Generator using Ollama and Piper TTS with Zero Cloud Dependencies"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -15,14 +15,15 @@ authors = [
 keywords = [
     "podcast",
     "ollama",
-    "edge-tts",
+    "piper-tts",
     "customtkinter",
     "tts",
     "ai",
     "windows",
     "audio",
     "mp3",
-    "local-llm"
+    "local-llm",
+    "offline"
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -38,7 +39,6 @@ classifiers = [
 ]
 dependencies = [
     "customtkinter>=5.2.0",
-    "edge-tts>=6.1.0",
     "pypdf>=4.0.0",
     "requests>=2.31.0",
 ]

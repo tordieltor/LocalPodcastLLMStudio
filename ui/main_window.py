@@ -358,9 +358,9 @@ class GenerationWorker(threading.Thread):
                         "ERROR",
                         {
                             "title": "Voice Synthesis Error",
-                            "message": f"Edge-TTS synthesis encountered an error: {tts_err}",
+                            "message": f"Piper TTS synthesis encountered an error: {tts_err}",
                             "details": str(tts_err),
-                            "remedy": "Please check your internet connection for Microsoft Edge-TTS voice generation.",
+                            "remedy": "Please verify Piper TTS local neural voice models in models/voices/ directory.",
                         },
                     )
                 )

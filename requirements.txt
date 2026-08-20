@@ -4,8 +4,8 @@
 # Core Desktop GUI Framework (Windows 11 Fluent Dark UI)
 customtkinter>=5.2.0
 
-# Neural Voice Synthesis Engine (High-Fidelity Edge-TTS, Zero Cloud Cost)
-edge-tts>=6.1.0
+# Local Neural Voice Synthesis (Piper TTS / Local ONNX, Zero Cloud Data Sharing)
+# Piper runs locally; edge-tts can be installed optionally if needed
 
 # Pure Python Document Parsing (.pdf document ingestion)
 pypdf>=4.0.0

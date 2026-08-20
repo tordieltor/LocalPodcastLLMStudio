@@ -23,7 +23,7 @@ datas = []
 binaries = []
 hiddenimports = []
 
-for pkg in ['customtkinter', 'edge_tts', 'pypdf', 'certifi', 'requests']:
+for pkg in ['customtkinter', 'pypdf', 'certifi', 'requests']:
     try:
         t_datas, t_binaries, t_hidden = collect_all(pkg)
         datas += t_datas
@@ -33,9 +33,11 @@ for pkg in ['customtkinter', 'edge_tts', 'pypdf', 'certifi', 'requests']:
         datas += collect_data_files(pkg)
         hiddenimports += collect_submodules(pkg)
 
-# Include local application assets folder if present
+# Include local application assets and voice models if present
 if os.path.exists('assets'):
     datas.append(('assets', 'assets'))
+if os.path.exists('models'):
+    datas.append(('models', 'models'))
 
 # Core application modules
 hiddenimports += [

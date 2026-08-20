@@ -8,6 +8,7 @@ Zero external ffmpeg binary dependencies.
 import io
 import os
 import struct
+import wave
 from collections.abc import Sequence
 
 
@@ -326,6 +327,63 @@ class MP3Stitcher:
         return out.getvalue()
 
 
+class WAVStitcher:
+    """
+    Pure Python WAV Audio Stitcher using standard library wave module.
+    Extracts raw PCM frames, normalizes channel/sample rates, and injects
+    silence audio frames between turns. Zero external dependencies.
+    """
+
+    @classmethod
+    def stitch(
+        cls,
+        segments: Sequence[bytes | bytearray],
+        pause_ms: int = 350,
+    ) -> bytes:
+        """Stitches multiple WAV byte buffers in-memory into a single WAV byte buffer."""
+        if not segments:
+            return b""
+
+        frames_list: list[bytes] = []
+        nchannels = 1
+        sampwidth = 2
+        framerate = 22050
+
+        for seg in segments:
+            raw = bytes(seg)
+            if not raw:
+                continue
+            if raw.startswith(b"RIFF"):
+                try:
+                    with wave.open(io.BytesIO(raw), "rb") as wf:
+                        nchannels = wf.getnchannels()
+                        sampwidth = wf.getsampwidth()
+                        framerate = wf.getframerate()
+                        frames_list.append(wf.readframes(wf.getnframes()))
+                except Exception:
+                    pass
+            else:
+                frames_list.append(raw)
+
+        if not frames_list:
+            return b""
+
+        silence_frames_count = int((pause_ms / 1000.0) * framerate)
+        silence_bytes = b"\x00" * (silence_frames_count * nchannels * sampwidth)
+
+        out_buf = io.BytesIO()
+        with wave.open(out_buf, "wb") as out_wf:
+            out_wf.setnchannels(nchannels)
+            out_wf.setsampwidth(sampwidth)
+            out_wf.setframerate(framerate)
+            for idx, f in enumerate(frames_list):
+                if idx > 0 and silence_bytes:
+                    out_wf.writeframes(silence_bytes)
+                out_wf.writeframes(f)
+
+        return out_buf.getvalue()
+
+
 def stitch_mp3_files(
     input_files_or_bytes: Sequence[str | bytes | bytearray],
     output_file_path: str,
@@ -335,13 +393,14 @@ def stitch_mp3_files(
     album: str = "LocalPodcastLLMStudio AI Podcast",
 ) -> str:
     """
-    Stitches multiple MP3 audio files or byte buffers into a single master MP3 file.
+    Stitches multiple audio files or byte buffers into a single master audio file.
+    Supports pure MPEG Layer III (MP3) and PCM (WAV) formats.
 
     Returns:
-        Absolute path to the created master MP3 file.
+        Absolute path to the created master audio file.
     """
     if not input_files_or_bytes:
-        raise ValueError("Cannot stitch empty list of MP3 inputs.")
+        raise ValueError("Cannot stitch empty list of audio inputs.")
 
     byte_segments: list[bytes] = []
     for item in input_files_or_bytes:
@@ -353,13 +412,18 @@ def stitch_mp3_files(
         elif isinstance(item, (bytes, bytearray)):
             byte_segments.append(bytes(item))
 
-    stitched_bytes = MP3Stitcher.stitch(
-        segments=byte_segments,
-        title=title,
-        artist=artist,
-        album=album,
-        pause_ms=silence_duration_ms,
-    )
+    # Check if inputs are WAV or MP3
+    is_wav = any(seg.startswith(b"RIFF") for seg in byte_segments if seg)
+    if is_wav:
+        stitched_bytes = WAVStitcher.stitch(segments=byte_segments, pause_ms=silence_duration_ms)
+    else:
+        stitched_bytes = MP3Stitcher.stitch(
+            segments=byte_segments,
+            title=title,
+            artist=artist,
+            album=album,
+            pause_ms=silence_duration_ms,
+        )
 
     if not stitched_bytes:
         raise ValueError("No valid MPEG Layer III audio frames could be extracted from inputs.")

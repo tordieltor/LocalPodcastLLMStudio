@@ -240,13 +240,13 @@ class AboutDialog(ctk.CTkToplevel):
                 "⚙️",
             ),
             (
-                "4. Neural Voice Audio Synthesis",
-                "Each dialogue turn is individually synthesized into an MP3 audio segment via Edge-TTS neural voices, streaming async chunks in parallel to ensure rapid generation.",
+                "4. Local Neural Voice Audio Synthesis",
+                "Each dialogue turn is individually synthesized into high-quality speech using Piper TTS local neural ONNX models (Torkil for Norwegian, Lessac/Ryan for English), operating 100% offline with zero cloud dependencies.",
                 "🎙️",
             ),
             (
                 "5. Zero-FFmpeg Audio Frame Assembly",
-                "Individual dialogue MP3 segments are parsed at the binary MPEG frame level, stripped of header tags, aligned to frame boundaries, stitched with natural conversational pauses (350ms), and saved as a master podcast MP3.",
+                "Individual dialogue audio segments are parsed at the binary frame level, stripped of header tags, aligned to frame boundaries, stitched with natural conversational pauses (350ms), and saved as a master podcast episode.",
                 "🎧",
             ),
             (
@@ -302,10 +302,10 @@ class AboutDialog(ctk.CTkToplevel):
                 COLOR_WARNING,
             ),
             (
-                "Internet Connection for Voice Synthesis",
-                "While LLM dialogue generation and MP3 stitching are 100% local, Microsoft Edge-TTS requires an active internet connection to communicate with the neural voice synthesis endpoint.",
-                "🌐",
-                COLOR_INFO,
+                "100% Offline & Private Voice Synthesis",
+                "LLM dialogue generation, neural voice synthesis (Piper TTS), and audio stitching run 100% locally on your machine. Zero data is shared with the cloud or Microsoft.",
+                "🔒",
+                COLOR_SUCCESS,
             ),
             (
                 "PDF Text Layer Required",
