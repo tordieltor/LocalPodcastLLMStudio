@@ -1,0 +1,14 @@
+# PodcastStudio - Runtime Dependencies
+# Universal 100% Local Two-Host Podcast Generator
+
+# Core Desktop GUI Framework (Windows 11 Fluent Dark UI)
+customtkinter>=5.2.0
+
+# Neural Voice Synthesis Engine (High-Fidelity Edge-TTS, Zero Cloud Cost)
+edge-tts>=6.1.0
+
+# Pure Python Document Parsing (.pdf document ingestion)
+pypdf>=4.0.0
+
+# HTTP Client for Local Ollama REST API Communication
+requests>=2.31.0

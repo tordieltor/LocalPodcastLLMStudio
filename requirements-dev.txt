@@ -1,0 +1,10 @@
+# PodcastStudio - Development, Build, and Testing Dependencies
+
+-r requirements.txt
+
+# Executable Packaging & Freezing Pipeline (One-Click Windows .exe)
+pyinstaller>=6.3.0
+
+# Unit and Integration Testing Framework
+pytest>=7.4.0
+pytest-mock>=3.12.0
