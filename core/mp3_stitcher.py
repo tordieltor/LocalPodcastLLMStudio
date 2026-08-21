@@ -24,14 +24,14 @@ class MP3Stitcher:
     # MPEG Sampling Rates (Hz): [version_id][sampling_rate_index]
     # Version ID: 3=MPEG-1, 2=MPEG-2 (ISO/IEC 13818-3), 0=MPEG-2.5
     SAMPLING_RATES = {
-        3: [44100, 48000, 32000],
-        2: [22050, 24000, 16000],
-        0: [11025, 12000, 8000],
+        3: (44100, 48000, 32000),
+        2: (22050, 24000, 16000),
+        0: (11025, 12000, 8000),
     }
 
     # MPEG Layer III Bitrate Tables (kbps) indexed by bitrate_index (0..15)
-    MPEG1_L3_BITRATES = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
-    MPEG2_L3_BITRATES = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0]
+    MPEG1_L3_BITRATES = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0)
+    MPEG2_L3_BITRATES = (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0)
 
     # Samples per frame: 1152 for MPEG-1 Layer III, 576 for MPEG-2/2.5 Layer III
     SAMPLES_PER_FRAME = {
@@ -44,6 +44,7 @@ class MP3Stitcher:
     def strip_id3(cls, mp3_data: bytes) -> bytes:
         """
         Strips ID3v2 metadata header from the beginning and ID3v1 from the end of MP3 data.
+        Uses zero-copy `startswith` to avoid slicing allocations.
         """
         if not mp3_data:
             return b""
@@ -52,7 +53,7 @@ class MP3Stitcher:
         total_len = len(mp3_data)
 
         # 1. Strip ID3v2 Header(s) at start
-        while pos + 10 <= total_len and mp3_data[pos : pos + 3] == b"ID3":
+        while pos + 10 <= total_len and mp3_data.startswith(b"ID3", pos):
             flags = mp3_data[pos + 5]
             has_footer = bool(flags & 0x10)  # Bit 4 in ID3v2.4
 
@@ -69,11 +70,11 @@ class MP3Stitcher:
         end_pos = total_len
 
         # 2. Strip trailing ID3v1 Tag (128 bytes starting with 'TAG')
-        if end_pos - pos >= 128 and mp3_data[end_pos - 128 : end_pos - 125] == b"TAG":
+        if end_pos - pos >= 128 and mp3_data.startswith(b"TAG", end_pos - 128):
             end_pos -= 128
 
         # 3. Strip trailing Enhanced ID3v1 Tag ('TAG+' 227 bytes)
-        if end_pos - pos >= 227 and mp3_data[end_pos - 227 : end_pos - 223] == b"TAG+":
+        if end_pos - pos >= 227 and mp3_data.startswith(b"TAG+", end_pos - 227):
             end_pos -= 227
 
         if pos >= end_pos:
@@ -82,18 +83,23 @@ class MP3Stitcher:
         return mp3_data[pos:end_pos]
 
     @classmethod
-    def parse_frame_header(cls, header_bytes: bytes) -> tuple[int, int, int, int] | None:
+    def parse_frame_header(
+        cls, header_bytes: bytes, offset: int = 0
+    ) -> tuple[int, int, int, int] | None:
         """
-        Parses a 4-byte MPEG Audio header.
+        Parses a 4-byte MPEG Audio header at optional byte offset.
+
+        Performance optimization: supports in-place offset inspection to avoid 4-byte buffer slicing.
 
         Returns:
             (frame_length_bytes, version_id, bitrate_kbps, sample_rate_hz)
             or None if header is invalid or not Layer III.
         """
-        if len(header_bytes) < 4:
+        if len(header_bytes) - offset < 4:
             return None
 
-        b0, b1, b2, _b3 = header_bytes[0], header_bytes[1], header_bytes[2], header_bytes[3]
+        b0 = header_bytes[offset]
+        b1 = header_bytes[offset + 1]
 
         # Check sync word (11 bits = 0xFF followed by 0xE0 mask in byte 1)
         if b0 != 0xFF or (b1 & 0xE0) != 0xE0:
@@ -105,6 +111,7 @@ class MP3Stitcher:
         if version_id == 1 or layer != 1:
             return None
 
+        b2 = header_bytes[offset + 2]
         bitrate_idx = (b2 >> 4) & 0x0F
         sr_idx = (b2 >> 2) & 0x03
         padding = (b2 >> 1) & 0x01
@@ -112,8 +119,9 @@ class MP3Stitcher:
         if bitrate_idx == 0 or bitrate_idx == 15 or sr_idx == 3:
             return None
 
-        version_key = version_id if version_id in (3, 2, 0) else 2
-        sample_rates = cls.SAMPLING_RATES.get(version_key, [24000, 24000, 24000])
+        sample_rates = cls.SAMPLING_RATES.get(version_id)
+        if sample_rates is None:
+            sample_rates = (24000, 24000, 24000)
         sample_rate = sample_rates[sr_idx]
 
         if version_id == 3:
@@ -133,6 +141,9 @@ class MP3Stitcher:
         """
         Scans binary MP3 data, strips ID3 tags, and extracts contiguous valid MPEG Layer III frames.
 
+        Performance optimization: Uses fast-path direct header check before falling back
+        to byte search scan, and collects chunks into list before b''.join().
+
         Returns:
             Pure MPEG audio frames as bytes.
         """
@@ -140,26 +151,28 @@ class MP3Stitcher:
         if not clean_data:
             return b""
 
-        out = io.BytesIO()
+        chunks: list[bytes] = []
         idx = 0
         total_len = len(clean_data)
 
         while idx <= total_len - 4:
-            sync_pos = clean_data.find(b"\xff", idx)
+            # Fast-path: check if sync header is directly at idx (true for contiguous audio streams)
+            if clean_data[idx] == 0xFF and (clean_data[idx + 1] & 0xE0) == 0xE0:
+                header_info = cls.parse_frame_header(clean_data, offset=idx)
+                if header_info:
+                    frame_len = header_info[0]
+                    if idx + frame_len <= total_len:
+                        chunks.append(clean_data[idx : idx + frame_len])
+                        idx += frame_len
+                        continue
+
+            # Slow-path fallback: scan for next potential sync byte 0xFF
+            sync_pos = clean_data.find(b"\xff", idx + 1)
             if sync_pos == -1 or sync_pos > total_len - 4:
                 break
             idx = sync_pos
-            if (clean_data[idx + 1] & 0xE0) == 0xE0:
-                header_info = cls.parse_frame_header(clean_data[idx : idx + 4])
-                if header_info:
-                    frame_len, _, _, _ = header_info
-                    if idx + frame_len <= total_len:
-                        out.write(clean_data[idx : idx + frame_len])
-                        idx += frame_len
-                        continue
-            idx += 1
 
-        return out.getvalue()
+        return b"".join(chunks)
 
     @classmethod
     def generate_silence_frame(
@@ -300,7 +313,7 @@ class MP3Stitcher:
             if pure_frames:
                 extracted_frames.append(pure_frames)
                 if stream_info is None and len(pure_frames) >= 4:
-                    stream_info = cls.parse_frame_header(pure_frames[:4])
+                    stream_info = cls.parse_frame_header(pure_frames, offset=0)
 
         if not extracted_frames:
             return b""
@@ -320,16 +333,15 @@ class MP3Stitcher:
             channel_mode=3,
         )
 
-        out = io.BytesIO()
         id3_tag = cls.build_id3v23_tag(title=title, artist=artist, album=album)
-        out.write(id3_tag)
+        out_chunks = [id3_tag]
 
         for idx, turn_bytes in enumerate(extracted_frames):
             if idx > 0 and silence_bytes:
-                out.write(silence_bytes)
-            out.write(turn_bytes)
+                out_chunks.append(silence_bytes)
+            out_chunks.append(turn_bytes)
 
-        return out.getvalue()
+        return b"".join(out_chunks)
 
 
 class WAVStitcher:
