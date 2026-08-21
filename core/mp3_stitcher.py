@@ -8,6 +8,7 @@ Zero external ffmpeg binary dependencies.
 import io
 import os
 import struct
+import threading
 import wave
 from collections.abc import Sequence
 
@@ -436,7 +437,7 @@ def stitch_mp3_files(
     out_dir = os.path.dirname(abs_out_path)
     os.makedirs(out_dir, exist_ok=True)
 
-    temp_out_path = f"{abs_out_path}.tmp.{os.getpid()}"
+    temp_out_path = f"{abs_out_path}.tmp.{os.getpid()}.{threading.get_ident()}"
     try:
         with open(temp_out_path, "wb") as f:
             f.write(stitched_bytes)

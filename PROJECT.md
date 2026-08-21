@@ -34,11 +34,11 @@
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Speed Optimization (R1) | TTS ONNX cache, fast MP3 frame scanning, precompiled regexes, player ctypes | none | COMPLETED |
-| M2 | Reliability & Atomic I/O (R2) | Specific exception narrowing (31 sites), atomic file writes, queue error handling | M1 | COMPLETED |
-| M3 | Stability & Resource Lifecycle (R3) | Tkinter `after_cancel` timers, MCI open status verification, temp dir cleanup | M2 | COMPLETED |
-| M4 | Safety Triage & AUDIT_REPORT (R4) | Bandit triage, input validation checks, AUDIT_REPORT.md synthesis | M3 | COMPLETED |
-| M5 | Test Matrix & Integrity Gate | Full 1,649-test suite pass, zero ruff errors, multi-agent adversarial gate | M4 | COMPLETED |
+| M1 | Speed Optimization (R1) | TTS ONNX cache, fast MP3 frame scanning, precompiled regexes, player ctypes | none | DONE |
+| M2 | Reliability & Atomic I/O (R2) | Specific exception narrowing (31 sites), atomic file writes, queue error handling | M1 | DONE |
+| M3 | Stability & Resource Lifecycle (R3) | Tkinter `after_cancel` timers, MCI open status verification, temp dir cleanup | M2 | DONE |
+| M4 | Safety Triage & AUDIT_REPORT (R4) | Bandit triage, input validation checks, AUDIT_REPORT.md synthesis | M3 | DONE |
+| M5 | Test Matrix & Integrity Gate | Full 1,687-test suite pass, zero ruff errors, multi-agent adversarial gate | M4 | DONE |
 
 ## Interface Contracts
 ### `core.tts` ↔ `ui.main_window`
