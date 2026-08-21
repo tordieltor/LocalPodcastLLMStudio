@@ -159,22 +159,23 @@ class TestConcurrencyAndThreadSafety:
         results = [None] * num_threads
 
         def worker(idx):
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            with (
-                patch("core.ollama.OllamaClient.check_connection", side_effect=[False, True]),
-                patch("core.ollama.find_ollama_binary", return_value=r"C:\Ollama\ollama.exe"),
-                patch("subprocess.Popen", return_value=mock_proc),
-                patch("time.sleep"),
-            ):
-                success, msg = start_ollama_service(timeout=5.0)
-                results[idx] = (success, msg)
+            success, msg = start_ollama_service(timeout=5.0)
+            results[idx] = (success, msg)
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5.0)
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        with (
+            patch("core.ollama.OllamaClient.check_connection", side_effect=lambda *a, **k: True),
+            patch("core.ollama.find_ollama_binary", return_value=r"C:\Ollama\ollama.exe"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("time.sleep"),
+        ):
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5.0)
 
         for idx, (success, msg) in enumerate(results):
             assert success is True, f"Thread {idx} failed to start service"
