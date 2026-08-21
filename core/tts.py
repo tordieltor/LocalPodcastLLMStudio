@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.mp3_stitcher import validate_safe_output_path
 from core.parser import DialogueTurn, normalize_speaker
 from core.prompts import normalize_language_code
 
@@ -401,7 +402,11 @@ def synthesize_dialogue_audio(
         return []
 
     is_temp_dir = output_dir is None
-    target_dir = output_dir or tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
+    if output_dir:
+        # Security: Validate and resolve output directory path to prevent path traversal/null bytes
+        target_dir = validate_safe_output_path(output_dir)
+    else:
+        target_dir = tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
     os.makedirs(target_dir, exist_ok=True)
 
     engine = TTSEngine(language=language, rate=rate)

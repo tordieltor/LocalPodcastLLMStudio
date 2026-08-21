@@ -389,6 +389,23 @@ class WAVStitcher:
         return out_buf.getvalue()
 
 
+def validate_safe_output_path(path: str) -> str:
+    """
+    Validates and resolves output path/directory string to mitigate path injection and null byte risks.
+
+    Security:
+        Prevents null-byte truncation attacks and ensures paths are expanded and resolved.
+
+    Raises:
+        ValueError: If path is empty, non-string, or contains null bytes.
+    """
+    if not path or not isinstance(path, str) or not path.strip():
+        raise ValueError("Output path must be a non-empty string.")
+    if "\x00" in path:
+        raise ValueError("Path traversal error: null byte found in output path.")
+    return os.path.abspath(os.path.expanduser(path.strip()))
+
+
 def stitch_mp3_files(
     input_files_or_bytes: Sequence[str | bytes | bytearray],
     output_file_path: str,
@@ -404,6 +421,9 @@ def stitch_mp3_files(
     Returns:
         Absolute path to the created master audio file.
     """
+    # Security: Validate and resolve output file path before file system operations
+    clean_out_path = validate_safe_output_path(output_file_path)
+
     if not input_files_or_bytes:
         raise ValueError("Cannot stitch empty list of audio inputs.")
 
@@ -433,7 +453,7 @@ def stitch_mp3_files(
     if not stitched_bytes:
         raise ValueError("No valid MPEG Layer III audio frames could be extracted from inputs.")
 
-    abs_out_path = os.path.abspath(output_file_path)
+    abs_out_path = clean_out_path
     out_dir = os.path.dirname(abs_out_path)
     os.makedirs(out_dir, exist_ok=True)
 

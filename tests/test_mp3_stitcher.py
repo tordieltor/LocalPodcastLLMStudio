@@ -124,6 +124,18 @@ class TestMP3StitcherAssemblyAndExport:
             assert data[:3] == b"ID3"
             assert b"TIT2" in data
 
+    def test_stitch_mp3_files_invalid_path_rejection(self, synthetic_mp3_factory):
+
+        b1 = synthetic_mp3_factory(num_frames=2, include_id3v2=True)
+
+        # Test null byte path rejection
+        with pytest.raises(ValueError, match="null byte"):
+            stitch_mp3_files([b1], "output_\x00_podcast.mp3")
+
+        # Test empty path rejection
+        with pytest.raises(ValueError, match="non-empty string"):
+            stitch_mp3_files([b1], "")
+
     def test_stitch_mp3_bytes_inputs(self, tmp_path, synthetic_mp3_factory):
 
         b1 = synthetic_mp3_factory(num_frames=2, include_id3v2=True)
