@@ -8,6 +8,7 @@ regex object extraction, and plain text transcripts.
 import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -40,11 +41,14 @@ class DialogueTurn:
         return cls(speaker=normalize_speaker(str(speaker)), text=str(text).strip())
 
 
+@lru_cache(maxsize=128)
 def normalize_speaker(raw_speaker: str) -> str:
     """
     Normalizes speaker names across Norwegian and English personas:
     Host 1 / Kari / Jenny / Speaker 1 -> 'Host 1'
     Host 2 / Ola / Guy / Speaker 2 -> 'Host 2'
+
+    Memoized with LRU cache (maxsize=128) for high-throughput string parsing loops.
     """
     if not raw_speaker:
         return "Host 1"

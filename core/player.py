@@ -88,7 +88,7 @@ class WindowsAudioPlayer:
 
         self._last_error = 0
         self._send_command(cmd)
-        if self._winmm and self._last_error != 0:
+        if self._last_error != 0:
             self._is_opened = False
             return False
 

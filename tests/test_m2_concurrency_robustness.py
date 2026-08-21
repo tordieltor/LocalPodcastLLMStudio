@@ -162,7 +162,10 @@ class TestConcurrencyAndThreadSafety:
             mock_proc = MagicMock()
             mock_proc.poll.return_value = None
             with (
-                patch("core.ollama.OllamaClient.check_connection", side_effect=[False, True]),
+                patch(
+                    "core.ollama.OllamaClient.check_connection",
+                    side_effect=lambda *a, **k: True,
+                ),
                 patch("core.ollama.find_ollama_binary", return_value=r"C:\Ollama\ollama.exe"),
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("time.sleep"),
@@ -428,6 +431,7 @@ class TestPublicApiRobustness:
             patch(
                 "core.ollama.find_ollama_binary", return_value=r"C:\Program Files\Ollama\ollama.exe"
             ),
+            patch("core.ollama.OllamaClient.check_connection", return_value=True),
             patch("urllib.request.urlopen", return_value=mock_resp),
             patch("core.ollama.check_edge_tts_reachability", return_value=(True, "Connected")),
         ):

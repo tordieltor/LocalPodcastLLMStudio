@@ -287,3 +287,47 @@ Identify and fix security and correctness risks. Look specifically for:
 - [ ] Existing test suite still passes after all fixes (`pytest tests/ -x -q`)
 - [ ] `ruff check core/ ui/ app.py` passes with zero errors after all fixes
 
+## Follow-up — 2026-08-21T18:15:46Z
+
+Audit the GitHub reports and Jules' open pull requests (PR #1: output path sanitization, PR #2: speaker normalization memoization, PR #3: zero-copy MP3 parsing optimization). Integrate and reconcile these enhancements locally on main, resolve the mock/test failure in PR #2, and stabilize the codebase until all CI quality gates, security scans, and test batteries pass 100%.
+
+Working directory: `c:\Users\torpr\Documents\antigravity\epic-hubble`
+
+Integrity mode: development
+
+## Requirements
+
+### R1. Audit and Reconcile Jules Pull Requests
+- Audit the three open pull requests created by Jules:
+  - **PR #1**: Output path validation (`validate_safe_output_path` in `core/mp3_stitcher.py` and `core/tts.py`).
+  - **PR #2**: Speaker normalization memoization (`@lru_cache` on `normalize_speaker` in `core/parser.py`) and fix the test harness failure in `tests/test_m2_concurrency_robustness.py`.
+  - **PR #3**: High-performance zero-copy MP3 frame parsing with offset parameters, tuple lookups, and buffer joining.
+- Ensure all valid enhancements are seamlessly integrated into the codebase without merge conflicts or regressions.
+
+### R2. Quality Gate & Static Analysis Compliance
+- Run and satisfy all quality gates matching project rules (`GEMINI.md`) and CI (`.github/workflows/ci.yml`):
+  - **Linter**: `.venv/Scripts/python.exe -m ruff check .` (0 errors)
+  - **Formatter**: `.venv/Scripts/python.exe -m ruff format --check .` (0 formatting differences)
+  - **Type Checker**: `.venv/Scripts/python.exe -m mypy core ui app.py check_env.py` (0 errors)
+  - **Security AST**: `.venv/Scripts/python.exe -m bandit -r core ui` (0 High / 0 Medium issues)
+
+### R3. Empirical Test Suite & Concurrency Stability
+- Run the full automated test suite: `.venv/Scripts/python.exe -m pytest tests -v`.
+- Ensure all 1,649+ tests across unit, integration, adversarial, and concurrency categories pass cleanly with zero failures and zero unhandled thread exceptions.
+
+## Acceptance Criteria
+
+### PR Integration & Functional Quality
+- [ ] Path validation rejects empty strings, non-string types, and null bytes (`\x00`) with `ValueError`.
+- [ ] Zero-copy offset header inspection correctly parses MPEG Layer III frames without memory leaks or buffer corruption.
+- [ ] Speaker normalization is memoized with `@lru_cache` and passes all persona normalization tests.
+- [ ] Concurrency test suite (`tests/test_m2_concurrency_robustness.py`) passes without mock exhaustion (`StopIteration`) or thread synchronization errors.
+
+### Verification Battery
+- [ ] `ruff check .` passes with 0 violations.
+- [ ] `ruff format --check .` passes with 0 modifications needed.
+- [ ] `mypy core ui app.py check_env.py` passes with 0 type errors.
+- [ ] `bandit -r core ui` reports 0 High / Medium issues.
+- [ ] `pytest tests -v` passes 100% (1,649+ tests passing, 0 failed, 0 errors).
+
+

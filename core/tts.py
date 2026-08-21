@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.mp3_stitcher import validate_safe_output_path
 from core.parser import DialogueTurn, normalize_speaker
 from core.prompts import normalize_language_code
 
@@ -184,6 +185,10 @@ async def synthesize_turn(
     Raises:
         RuntimeError: If synthesis fails after all retry attempts.
     """
+    safe_out_path: str | None = None
+    if output_path is not None:
+        safe_out_path = validate_safe_output_path(output_path, param_name="output_path")
+
     if not text or not text.strip():
         return b""
 
@@ -228,12 +233,13 @@ async def synthesize_turn(
 
             # 2. Check if edge_tts is available as a compatibility fallback (if configured / mocked)
             if not audio_bytes and sys.modules.get("edge_tts") is not None:
+                edge_tts_mod: Any = None
                 try:
-                    import edge_tts
+                    import edge_tts as edge_tts_mod
                 except ImportError:
-                    edge_tts = None  # type: ignore[assignment]
+                    edge_tts_mod = None
 
-                if edge_tts is not None:
+                if edge_tts_mod is not None:
                     # Map local voice names to Edge neural voice IDs if edge-tts is present
                     edge_voice = voice
                     if "torkil" in voice.lower():
@@ -247,7 +253,7 @@ async def synthesize_turn(
                     elif "ryan" in voice.lower() or "joe" in voice.lower():
                         edge_voice = "en-US-GuyNeural"
 
-                    communicate = edge_tts.Communicate(
+                    communicate = edge_tts_mod.Communicate(
                         text=cleaned_text, voice=edge_voice, rate=rate_formatted
                     )
                     chunks = []
@@ -268,9 +274,9 @@ async def synthesize_turn(
                 est_sec = max(0.5, (words / 2.5) * length_scale)
                 audio_bytes = _generate_fallback_wav_pcm(duration_sec=est_sec)
 
-            if output_path:
-                os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-                with open(output_path, "wb") as f:
+            if safe_out_path:
+                os.makedirs(os.path.dirname(os.path.abspath(safe_out_path)), exist_ok=True)
+                with open(safe_out_path, "wb") as f:
                     f.write(audio_bytes)
 
             return audio_bytes
@@ -401,7 +407,10 @@ def synthesize_dialogue_audio(
         return []
 
     is_temp_dir = output_dir is None
-    target_dir = output_dir or tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
+    if output_dir is not None:
+        target_dir = validate_safe_output_path(output_dir, param_name="output_dir")
+    else:
+        target_dir = tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
     os.makedirs(target_dir, exist_ok=True)
 
     engine = TTSEngine(language=language, rate=rate)

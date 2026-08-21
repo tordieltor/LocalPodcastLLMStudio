@@ -13,6 +13,7 @@ from core.extractor import (
 from core.mp3_stitcher import (
     MP3Stitcher,
     stitch_mp3_files,
+    validate_safe_output_path,
 )
 from core.ollama import (
     OllamaClient,
@@ -110,6 +111,7 @@ __all__ = [
     # MP3 Stitcher
     "MP3Stitcher",
     "stitch_mp3_files",
+    "validate_safe_output_path",
     # Player
     "WindowsAudioPlayer",
     "WindowsMCIPlayer",

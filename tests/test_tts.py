@@ -18,6 +18,8 @@ from core.parser import DialogueTurn
 from core.tts import (
     TTSEngine,
     format_rate_str,
+    synthesize_dialogue_audio,
+    synthesize_turn,
 )
 
 
@@ -236,8 +238,6 @@ class TestTTSSynthesisExecution:
         assert len(_VOICE_MODEL_CACHE) == 0
 
     def test_synthesize_dialogue_audio_cleanup_on_error(self, sample_norwegian_turns):
-        from core.tts import synthesize_dialogue_audio
-
         with (
             patch(
                 "core.tts.TTSEngine.run_synthesis_sync",
@@ -246,3 +246,20 @@ class TestTTSSynthesisExecution:
             pytest.raises(RuntimeError, match="Synthesis exploded"),
         ):
             synthesize_dialogue_audio(sample_norwegian_turns)
+
+    @pytest.mark.parametrize("bad_dir", ["", "   ", 12345, ["dir"], "bad\x00dir"])
+    def test_synthesize_dialogue_audio_rejects_invalid_output_dir(
+        self, bad_dir, sample_norwegian_turns
+    ):
+        with pytest.raises(ValueError):
+            synthesize_dialogue_audio(sample_norwegian_turns, output_dir=bad_dir)  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_path", ["", "   ", 12345, ["path"], "bad\x00path.wav"])
+    async def test_synthesize_turn_rejects_invalid_output_path(self, bad_path):
+        with pytest.raises(ValueError):
+            await synthesize_turn(
+                text="Hei fra test",
+                voice="no_NO-torkil-medium",
+                output_path=bad_path,  # type: ignore[arg-type]
+            )

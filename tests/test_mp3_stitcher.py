@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from core.mp3_stitcher import MP3Stitcher, stitch_mp3_files
+from core.mp3_stitcher import MP3Stitcher, stitch_mp3_files, validate_safe_output_path
 
 
 class TestMP3StitcherHeadersAndFrames:
@@ -134,3 +134,41 @@ class TestMP3StitcherAssemblyAndExport:
 
         assert os.path.exists(result_path)
         assert os.path.getsize(result_path) > 0
+
+
+class TestValidateSafeOutputPath:
+    """Unit tests verifying path validation behavior across all edge cases."""
+
+    @pytest.mark.parametrize(
+        "invalid_path",
+        [
+            "",
+            "   ",
+            "\t\n",
+            None,
+            123,
+            45.6,
+            ["out.mp3"],
+            {"path": "out.mp3"},
+            b"out.mp3",
+            "out.mp3\x00",
+            "folder\x00/test.mp3",
+            "\x00test.mp3",
+        ],
+    )
+    def test_validate_safe_output_path_rejections(self, invalid_path):
+        with pytest.raises(ValueError):
+            validate_safe_output_path(invalid_path)
+
+    def test_validate_safe_output_path_allow_none(self):
+        assert validate_safe_output_path(None, allow_none=True) == ""
+
+    def test_validate_safe_output_path_valid_stripping(self):
+        assert validate_safe_output_path("  podcast.mp3  ") == "podcast.mp3"
+        assert validate_safe_output_path("output/test.mp3") == "output/test.mp3"
+
+    @pytest.mark.parametrize("bad_out", ["", "   ", None, 12345, "bad\x00path.mp3"])
+    def test_stitch_mp3_files_rejects_invalid_output_path(self, bad_out, synthetic_mp3_factory):
+        b1 = synthetic_mp3_factory(num_frames=2)
+        with pytest.raises(ValueError):
+            stitch_mp3_files([b1], bad_out)  # type: ignore[arg-type]
