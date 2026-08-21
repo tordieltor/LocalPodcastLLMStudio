@@ -232,7 +232,7 @@ async def synthesize_turn(
                 try:
                     import edge_tts
                 except ImportError:
-                    edge_tts = None  # type: ignore[assignment]
+                    edge_tts = None
 
                 if edge_tts is not None:
                     # Map local voice names to Edge neural voice IDs if edge-tts is present
