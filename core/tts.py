@@ -232,40 +232,30 @@ async def synthesize_turn(
                     audio_bytes = None
 
             # 2. Check if edge_tts is available as a compatibility fallback (if configured / mocked)
-            if not audio_bytes and sys.modules.get("edge_tts") is not None:
-                edge_tts_mod: Any = None
-                try:
-                    import edge_tts as edge_tts_mod
-                except ImportError:
-                    edge_tts_mod = None
-
-                if edge_tts_mod is not None:
-                    # Map local voice names to Edge neural voice IDs if edge-tts is present
-                    edge_voice = voice
-                    if "torkil" in voice.lower():
-                        edge_voice = (
-                            "nb-NO-FinnNeural"
-                            if spk_norm in ("Host 2", "Ola", "Finn")
-                            else "nb-NO-PernilleNeural"
-                        )
-                    elif "lessac" in voice.lower() or "amy" in voice.lower():
-                        edge_voice = "en-US-JennyNeural"
-                    elif "ryan" in voice.lower() or "joe" in voice.lower():
-                        edge_voice = "en-US-GuyNeural"
-
-                    communicate = edge_tts_mod.Communicate(
-                        text=cleaned_text, voice=edge_voice, rate=rate_formatted
+            edge_tts_mod: Any = sys.modules.get("edge_tts")
+            if not audio_bytes and edge_tts_mod is not None:
+                # Map local voice names to Edge neural voice IDs if edge-tts is present
+                edge_voice = voice
+                if "torkil" in voice.lower():
+                    edge_voice = (
+                        "nb-NO-FinnNeural"
+                        if spk_norm in ("Host 2", "Ola", "Finn")
+                        else "nb-NO-PernilleNeural"
                     )
-                    chunks = []
-                    async for chunk in communicate.stream():
-                        if (
-                            isinstance(chunk, dict)
-                            and chunk.get("type") == "audio"
-                            and "data" in chunk
-                        ):
-                            chunks.append(chunk["data"])
-                    if chunks:
-                        audio_bytes = b"".join(chunks)
+                elif "lessac" in voice.lower() or "amy" in voice.lower():
+                    edge_voice = "en-US-JennyNeural"
+                elif "ryan" in voice.lower() or "joe" in voice.lower():
+                    edge_voice = "en-US-GuyNeural"
+
+                communicate = edge_tts_mod.Communicate(
+                    text=cleaned_text, voice=edge_voice, rate=rate_formatted
+                )
+                chunks = []
+                async for chunk in communicate.stream():
+                    if isinstance(chunk, dict) and chunk.get("type") == "audio" and "data" in chunk:
+                        chunks.append(chunk["data"])
+                if chunks:
+                    audio_bytes = b"".join(chunks)
 
             # 3. If offline models are still loading or unavailable in local test env, generate valid PCM WAV
             if not audio_bytes:
