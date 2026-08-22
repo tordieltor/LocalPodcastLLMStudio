@@ -226,6 +226,10 @@ echo LocalPodcastLLMStudio.exe is ready for distribution and local execution
 echo To launch the application, run:
 echo   dist\LocalPodcastLLMStudio.exe
 echo.
+:: Automatically update Desktop shortcuts
+if exist "create_desktop_shortcut.ps1" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0create_desktop_shortcut.ps1" >nul 2>nul
+)
 set "FINAL_CODE=0"
 goto safe_exit
 

@@ -1616,6 +1616,28 @@ class TestMainWindowHighwayNavigation:
         assert "8 min" in text_arg
         assert "llama3.1" in text_arg
 
+    def test_main_window_full_layout_instantiation(self, monkeypatch):
+        """Regression test ensuring MainWindow builds all layout views and panels without AttributeError."""
+        monkeypatch.setattr(MainWindow, "refresh_ollama_models", lambda self: None)
+        monkeypatch.setattr(MainWindow, "_start_queue_poller", lambda self: None)
+        monkeypatch.setattr(MainWindow, "_start_player_poller", lambda self: None)
+
+        app = MainWindow()
+        try:
+            assert hasattr(app, "view_studio")
+            assert hasattr(app, "view_script_studio")
+            assert hasattr(app, "view_settings")
+            assert hasattr(app, "view_about")
+            assert hasattr(app, "status_label")
+            assert hasattr(app, "progress_bar")
+            assert hasattr(app, "formatted_scroll")
+            assert hasattr(app, "editable_script_box")
+            assert hasattr(app, "time_slider")
+            assert hasattr(app, "btn_play")
+            assert hasattr(app, "btn_synth_from_script")
+        finally:
+            app.destroy()
+
 
 # ==============================================================================
 # 9. App Bootstrap & Crash Logger Tests

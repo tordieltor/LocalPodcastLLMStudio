@@ -80,6 +80,7 @@ from ui.theme import (
     get_font_body_bold,
     get_font_caption,
     get_font_caption_bold,
+    get_font_code,
     get_font_code_small,
     get_font_subtitle,
     get_font_title,
@@ -93,6 +94,7 @@ from ui.widgets import (
     LiveStreamingCard,
     SectionHeader,
     StatusBadge,
+    TimeSlider,
 )
 
 logger = get_logger("ui.main_window")
@@ -1022,6 +1024,225 @@ class MainWindow(ctk.CTk):
             command=self.reset_form,
         )
         self.btn_reset.pack(side="right", fill="x", expand=True)
+
+    def _build_highway_right_panel(self, parent: CardFrame):
+        """Builds the right column of the Highway view: Live Status, Dialogue Preview & Native Audio Player."""
+        container = ctk.CTkFrame(parent, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=12, pady=12)
+
+        # --- Section 1: Generation Progress & Live Status ---
+        status_box = CardFrame(container, fg_color="#1a1c29", corner_radius=8, border_width=1)
+        status_box.pack(fill="x", pady=(0, 10))
+
+        status_top = ctk.CTkFrame(status_box, fg_color="transparent")
+        status_top.pack(fill="x", padx=12, pady=(10, 4))
+
+        self.status_label = ctk.CTkLabel(
+            status_top,
+            text="Ready to generate your podcast.",
+            font=get_font_body_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        )
+        self.status_label.pack(side="left", fill="x", expand=True)
+
+        self.progress_pct_label = ctk.CTkLabel(
+            status_top, text="0%", font=get_font_caption(), text_color=COLOR_TEXT_SECONDARY
+        )
+        self.progress_pct_label.pack(side="right")
+
+        self.progress_bar = ctk.CTkProgressBar(
+            status_box, height=10, progress_color=COLOR_ACCENT, fg_color="#24283b"
+        )
+        self.progress_bar.set(0.0)
+        self.progress_bar.pack(fill="x", padx=12, pady=(0, 10))
+
+        # --- Section 2: Live Dialogue Preview Container ---
+        preview_header_row = ctk.CTkFrame(container, fg_color="transparent")
+        preview_header_row.pack(fill="x", pady=(0, 4))
+
+        SectionHeader(
+            preview_header_row,
+            title="Live Dialogue & Episode Turns",
+            subtitle="Real-time multi-act script streaming and turn previews",
+            icon="💬",
+        ).pack(side="left", fill="x", expand=True)
+
+        self.formatted_scroll = ctk.CTkScrollableFrame(
+            container, fg_color="#1a1c29", corner_radius=8
+        )
+        self.formatted_scroll.pack(fill="both", expand=True, pady=(0, 10))
+
+        self.empty_script_placeholder = ctk.CTkLabel(
+            self.formatted_scroll,
+            text="No dialogue script generated yet.\nGenerate a podcast to preview turns here.",
+            font=get_font_body(),
+            text_color=COLOR_TEXT_MUTED,
+        )
+        self.empty_script_placeholder.pack(pady=40)
+
+        # --- Section 3: Audio Player Studio ---
+        player_card = CardFrame(container, fg_color="#1a1c29", corner_radius=8, border_width=1)
+        player_card.pack(fill="x", pady=(0, 0))
+
+        # Audio File Info
+        player_top = ctk.CTkFrame(player_card, fg_color="transparent")
+        player_top.pack(fill="x", padx=12, pady=(10, 4))
+
+        self.player_title_label = ctk.CTkLabel(
+            player_top,
+            text="Audio Player: No audio loaded",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        )
+        self.player_title_label.pack(side="left", fill="x", expand=True)
+
+        # Native Timeline Scrubber
+        self.time_slider = TimeSlider(player_card, on_seek=self._on_seek_audio)
+        self.time_slider.pack(fill="x", padx=12, pady=(0, 6))
+
+        # Controls & Volume Row
+        ctrl_bar = ctk.CTkFrame(player_card, fg_color="transparent")
+        ctrl_bar.pack(fill="x", padx=12, pady=(0, 10))
+
+        self.btn_play = ctk.CTkButton(
+            ctrl_bar,
+            text="▶ Play",
+            width=70,
+            state="disabled",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            command=self._play_audio,
+        )
+        self.btn_play.pack(side="left", padx=(0, 4))
+
+        self.btn_pause = ctk.CTkButton(
+            ctrl_bar,
+            text="⏸ Pause",
+            width=70,
+            state="disabled",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            command=self._pause_audio,
+        )
+        self.btn_pause.pack(side="left", padx=(0, 4))
+
+        self.btn_stop = ctk.CTkButton(
+            ctrl_bar,
+            text="⏹ Stop",
+            width=70,
+            state="disabled",
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            command=self._stop_audio,
+        )
+        self.btn_stop.pack(side="left", padx=(0, 10))
+
+        # Volume Slider
+        ctk.CTkLabel(
+            ctrl_bar, text="Vol:", font=get_font_caption(), text_color=COLOR_TEXT_SECONDARY
+        ).pack(side="left", padx=(0, 4))
+        self.volume_slider = ctk.CTkSlider(
+            ctrl_bar,
+            from_=0,
+            to=100,
+            width=90,
+            button_color=COLOR_ACCENT,
+            command=self._on_volume_changed,
+        )
+        self.volume_slider.set(80)
+        self.volume_slider.pack(side="left", padx=(0, 10))
+
+        # Export & Folder buttons
+        self.btn_export_mp3 = ctk.CTkButton(
+            ctrl_bar,
+            text="💾 Save MP3 As...",
+            width=110,
+            state="disabled",
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
+            font=get_font_caption(),
+            command=self._save_mp3_as,
+        )
+        self.btn_export_mp3.pack(side="right", padx=(4, 0))
+
+        self.btn_open_folder = ctk.CTkButton(
+            ctrl_bar,
+            text="📁 Open Folder",
+            width=100,
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
+            font=get_font_caption(),
+            command=self._open_output_folder,
+        )
+        self.btn_open_folder.pack(side="right")
+
+    # ==========================================================================
+    # 2. Script Studio View
+    # ==========================================================================
+    def _build_script_studio_view(self, parent: ctk.CTkFrame):
+        """Builds the dedicated Script Studio view for inspecting and editing raw dialogue scripts."""
+        card = CardFrame(parent)
+        card.pack(fill="both", expand=True)
+
+        container = ctk.CTkFrame(card, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=16, pady=16)
+
+        SectionHeader(
+            container,
+            title="Interactive Script Studio & Synthesizer",
+            subtitle="Directly inspect, edit, or paste structured JSON/dialogue scripts and synthesize podcast audio",
+            icon="📜",
+        ).pack(fill="x", pady=(0, 10))
+
+        # Editable Script Textbox
+        self.editable_script_box = ctk.CTkTextbox(
+            container,
+            font=get_font_code(),
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+            border_width=1,
+            text_color=COLOR_TEXT_PRIMARY,
+        )
+        self.editable_script_box.pack(fill="both", expand=True, pady=(0, 12))
+
+        # Action bar
+        script_bar = ctk.CTkFrame(container, fg_color="transparent")
+        script_bar.pack(fill="x")
+
+        self.btn_copy_script = ctk.CTkButton(
+            script_bar,
+            text="📋 Copy Script",
+            width=110,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            font=get_font_body(),
+            command=self._copy_script_to_clipboard,
+        )
+        self.btn_copy_script.pack(side="left", padx=(0, 8))
+
+        self.btn_save_script_as = ctk.CTkButton(
+            script_bar,
+            text="💾 Save Script As...",
+            width=130,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            font=get_font_body(),
+            command=self._save_script_as,
+        )
+        self.btn_save_script_as.pack(side="left", padx=(0, 8))
+
+        self.btn_synth_from_script = ctk.CTkButton(
+            script_bar,
+            text="🔊 Synthesize Audio from Script",
+            height=36,
+            fg_color=COLOR_ACCENT,
+            hover_color=COLOR_ACCENT_HOVER,
+            font=get_font_body_bold(),
+            command=self._synthesize_from_edited_script,
+        )
+        self.btn_synth_from_script.pack(side="right")
 
     def _update_highway_preset_label(self):
         """Dynamically synchronizes the highway profile badge label with active Settings."""

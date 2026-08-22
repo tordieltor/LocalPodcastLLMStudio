@@ -186,6 +186,10 @@ echo   1. Activate virtual environment:  .venv\Scripts\activate
 echo   2. Start application:             python app.py
 echo =======================================================================
 echo.
+:: Automatically update Desktop shortcuts
+if exist "create_desktop_shortcut.ps1" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0create_desktop_shortcut.ps1" >nul 2>nul
+)
 set "FINAL_CODE=0"
 goto safe_exit
 
