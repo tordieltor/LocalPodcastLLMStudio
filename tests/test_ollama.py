@@ -84,6 +84,23 @@ class TestOllamaClientUnit:
         with pytest.raises(ValueError):
             _validate_url("http://")
 
+    def test_client_init_crlf_and_control_chars(self):
+        with pytest.raises(ValueError) as exc1:
+            OllamaClient("http://localhost:11434\r\nX-Injected: Header")
+        assert "forbidden control characters" in str(exc1.value)
+
+        with pytest.raises(ValueError) as exc2:
+            _validate_url("http://localhost:11434\nHost: evil.com")
+        assert "forbidden control characters" in str(exc2.value)
+
+        with pytest.raises(ValueError) as exc3:
+            _validate_url("http://localhost:11434\x00")
+        assert "forbidden control characters" in str(exc3.value)
+
+        with pytest.raises(ValueError) as exc4:
+            _validate_url("http://localhost:11434 /api")
+        assert "forbidden control characters" in str(exc4.value)
+
     def test_check_connection_success(self):
         mock_resp = MagicMock()
         mock_resp.status = 200

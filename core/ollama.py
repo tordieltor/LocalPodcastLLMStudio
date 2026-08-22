@@ -47,6 +47,13 @@ def _validate_url(url: str) -> str:
     if not clean:
         raise ValueError("Ollama URL must be a non-empty string.")
 
+    if any(ord(c) < 32 or ord(c) == 127 for c in clean) or any(
+        c in clean for c in (" ", "\t", "\r", "\n", "\x00")
+    ):
+        raise ValueError(
+            f"Invalid Ollama URL '{url}': contains forbidden control characters or whitespace."
+        )
+
     if "://" in clean:
         scheme = clean.split("://", 1)[0].lower()
         if scheme not in ("http", "https"):
