@@ -7,12 +7,16 @@ and the primary application window.
 import os
 import sys
 import tempfile
+import threading
 import traceback
 from typing import Any
 
 import customtkinter as ctk
 
+from core.logger import get_log_file_path, get_logger, setup_logging
 from ui.main_window import MainWindow
+
+logger = get_logger("bootstrap")
 
 
 def _resolve_crash_log_path() -> str:
@@ -40,8 +44,13 @@ def _resolve_crash_log_path() -> str:
 def log_crash(exc_type: Any, exc_value: Any, exc_traceback: Any) -> None:
     """
     Top-level unhandled exception hook.
-    Writes full traceback to crash_dump.log so errors are captured even in --noconsole mode.
+    Writes full traceback to crash_dump.log and application log.
     """
+    logger.critical(
+        "Unhandled exception encountered: %s",
+        exc_value,
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
     log_path = _resolve_crash_log_path()
     try:
         with open(log_path, "a", encoding="utf-8") as f:
@@ -58,8 +67,17 @@ def log_crash(exc_type: Any, exc_value: Any, exc_traceback: Any) -> None:
 
 def main() -> None:
     """Main application bootstrap routine."""
-    # Register crash hook
+    # Initialize unified local logging
+    setup_logging()
+    logger.info("Starting LocalPodcastLLMStudio desktop application...")
+    logger.info("Application log file: %s", get_log_file_path())
+
+    # Register crash hooks for main thread and background worker threads
     sys.excepthook = log_crash
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = lambda args: log_crash(
+            args.exc_type, args.exc_value, args.exc_traceback
+        )
 
     # Initialize CustomTkinter appearance & theme
     ctk.set_appearance_mode("dark")
@@ -67,6 +85,7 @@ def main() -> None:
 
     # Instantiate and run main window
     app = MainWindow()
+    app.report_callback_exception = lambda exc, val, tb: log_crash(exc, val, tb)
     app.mainloop()
 
 

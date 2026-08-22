@@ -117,7 +117,7 @@ class TestTTSSynthesisExecution:
 
         mock_piper_voice = MagicMock()
 
-        def fake_synthesize(text, wav_file, length_scale=1.0, noise_scale=0.667):
+        def fake_synthesize(text, wav_file, length_scale=1.0, noise_scale=0.667, **kwargs):
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(22050)
@@ -151,7 +151,10 @@ class TestTTSSynthesisExecution:
         mock_edge = MagicMock()
         mock_edge.Communicate.return_value = mock_comm
 
-        with patch.dict(sys.modules, {"edge_tts": mock_edge}):
+        with (
+            patch("core.tts.get_or_load_piper_voice", return_value=None),
+            patch.dict(sys.modules, {"edge_tts": mock_edge}),
+        ):
             results = await engine.synthesize_dialogue_async(
                 sample_norwegian_turns, progress_cb=progress_cb
             )
@@ -193,6 +196,7 @@ class TestTTSSynthesisExecution:
         mock_edge.Communicate.side_effect = create_mock_comm
 
         with (
+            patch("core.tts.get_or_load_piper_voice", return_value=None),
             patch.dict(sys.modules, {"edge_tts": mock_edge}),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):

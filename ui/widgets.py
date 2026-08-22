@@ -55,6 +55,7 @@ __all__ = [
     "CardFrame",
     "DialogueTurnCard",
     "LabeledSlider",
+    "LiveStreamingCard",
     "SectionHeader",
     "StatusBadge",
     "TimeSlider",
@@ -410,6 +411,106 @@ class DialogueTurnCard(ctk.CTkFrame):
             anchor="w",
         )
         body_label.pack(fill="x", padx=10, pady=(0, 10))
+
+
+class LiveStreamingCard(ctk.CTkFrame):
+    """
+    Real-time dynamic streaming dialogue card showing active token generation,
+    animated typing indicator, and live token count from local Ollama LLM.
+    """
+
+    def __init__(
+        self,
+        master: Any,
+        title: str = "Generating dialogue with Ollama...",
+        model_name: str = "",
+        **kwargs,
+    ):
+        super().__init__(
+            master=master,
+            fg_color="#1a1c29",
+            corner_radius=8,
+            border_color=COLOR_ACCENT,
+            border_width=1,
+            **kwargs,
+        )
+
+        self.accumulated_text: str = ""
+        self.token_count: int = 0
+
+        # Header Row
+        top_row = ctk.CTkFrame(self, fg_color="transparent")
+        top_row.pack(fill="x", padx=10, pady=(8, 4))
+
+        title_display = f"⚡ {title}"
+        self.title_label = ctk.CTkLabel(
+            top_row,
+            text=title_display,
+            font=get_font_body_bold(),
+            text_color=COLOR_ACCENT,
+            anchor="w",
+        )
+        self.title_label.pack(side="left", fill="x", expand=True)
+
+        self.token_label = ctk.CTkLabel(
+            top_row,
+            text="0 chunks",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
+        )
+        self.token_label.pack(side="right")
+
+        # Monospace live stream text box
+        self.textbox = ctk.CTkTextbox(
+            self,
+            height=130,
+            font=get_font_code(),
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+            border_width=1,
+            text_color=COLOR_TEXT_PRIMARY,
+            wrap="word",
+        )
+        self.textbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.textbox.insert("1.0", "Waiting for first token...\n")
+        self.textbox.configure(state="disabled")
+
+    def set_status(self, title: str):
+        """Updates the status title shown at the top of the live streaming card."""
+        self.title_label.configure(text=f"⚡ {title}")
+
+    def append_chunk(self, chunk: str):
+        """Appends a streamed token chunk and auto-scrolls to the bottom."""
+        if not self.accumulated_text:
+            # Clear initial placeholder message
+            self.textbox.configure(state="normal")
+            self.textbox.delete("1.0", "end")
+            self.textbox.configure(state="disabled")
+
+        self.accumulated_text += chunk
+        self.token_count += 1
+
+        self.textbox.configure(state="normal")
+        self.textbox.insert("end", chunk)
+        self.textbox.see("end")
+        self.textbox.configure(state="disabled")
+
+        self.token_label.configure(text=f"~{self.token_count} chunks")
+
+    def get_text(self) -> str:
+        """Returns the full accumulated raw text streamed so far."""
+        return self.accumulated_text
+
+    def reset(self, title: str = "Generating dialogue with Ollama..."):
+        """Resets the live streaming card for a new act or generation cycle."""
+        self.accumulated_text = ""
+        self.token_count = 0
+        self.set_status(title)
+        self.token_label.configure(text="0 chunks")
+        self.textbox.configure(state="normal")
+        self.textbox.delete("1.0", "end")
+        self.textbox.insert("1.0", "Waiting for first token...\n")
+        self.textbox.configure(state="disabled")
 
 
 class ActionableErrorDialog(ctk.CTkToplevel):

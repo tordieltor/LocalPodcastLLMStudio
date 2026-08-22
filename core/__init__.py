@@ -10,6 +10,12 @@ from core.extractor import (
     extract_text_from_pdf,
     normalize_extracted_text,
 )
+from core.logger import (
+    get_log_file_path,
+    get_logger,
+    resolve_log_directory,
+    setup_logging,
+)
 from core.mp3_stitcher import (
     MP3Stitcher,
     stitch_mp3_files,
@@ -118,4 +124,9 @@ __all__ = [
     "export_audio_file",
     "format_ms",
     "parse_time_str",
+    # Logging
+    "setup_logging",
+    "get_logger",
+    "get_log_file_path",
+    "resolve_log_directory",
 ]

@@ -303,6 +303,44 @@ class TestOllamaGenerationAndErrors:
             assert any("Act 1" in m or "Akt 1" in m for m in progress_messages)
             assert any("Act 5" in m or "Akt 5" in m for m in progress_messages)
 
+    def test_generate_podcast_script_streaming_callbacks(self):
+        act_turns = [
+            {"speaker": "Host 1", "text": "Hei verden"},
+            {"speaker": "Host 2", "text": "Hei tilbake"},
+        ]
+        dialogue_json = json.dumps(act_turns)
+        lines = [
+            json.dumps({"message": {"role": "assistant", "content": "Hei "}}).encode("utf-8"),
+            json.dumps({"message": {"role": "assistant", "content": "verden\n"}}).encode("utf-8"),
+            json.dumps(
+                {"message": {"role": "assistant", "content": dialogue_json}, "done": True}
+            ).encode("utf-8"),
+        ]
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__iter__.return_value = lines
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            streamed_chunks = []
+            act_updates = []
+
+            turns = generate_podcast_script(
+                content="Tema for episode",
+                language="nb-NO",
+                format_type="quick",
+                model="llama3.1:8b",
+                stream_callback=lambda chunk: streamed_chunks.append(chunk),
+                act_callback=lambda act_idx, tot, turns: act_updates.append(
+                    (act_idx, tot, len(turns))
+                ),
+            )
+            assert len(turns) == 2
+            assert len(streamed_chunks) >= 2
+            assert len(act_updates) == 1
+            assert act_updates[0] == (1, 1, 2)
+
 
 class TestModelPullProgressDataclass:
     """Validation of ModelPullProgress dataclass."""

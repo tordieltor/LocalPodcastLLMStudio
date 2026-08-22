@@ -44,6 +44,7 @@ from ui.widgets import (
     CardFrame,
     DialogueTurnCard,
     LabeledSlider,
+    LiveStreamingCard,
     SectionHeader,
     StatusBadge,
     TimeSlider,
@@ -85,6 +86,11 @@ def mock_main_window():
     win.current_launcher_worker = None
     win.player = MagicMock()
     win.is_busy = False
+    win.current_dialogue = []
+    win._live_stream_card = None
+    win._streaming_raw_text = ""
+    win._streaming_chunks_count = 0
+    win._rendered_turns_count = 0
 
     # Widgets
     win.status_label = MagicMock()
@@ -93,6 +99,8 @@ def mock_main_window():
     win.speed_label = MagicMock()
     win.ollama_badge = MagicMock(spec=StatusBadge)
     win.btn_refresh_models = MagicMock()
+    win.btn_logs = MagicMock()
+    win.btn_about = MagicMock()
     win.btn_start_ollama_header = MagicMock()
     win.btn_start_ollama = MagicMock()
     win.btn_download_model = MagicMock()
@@ -129,6 +137,13 @@ def mock_main_window():
     win.formatted_scroll = MagicMock()
     win.file_container = MagicMock()
     win.text_container = MagicMock()
+    win.highway_preset_label = MagicMock()
+    win.nav_segmented = MagicMock()
+    win.view_studio = MagicMock()
+    win.view_script_studio = MagicMock()
+    win.view_settings = MagicMock()
+    win.view_about = MagicMock()
+    win._update_highway_preset_label = MagicMock()
 
     # Delegate helper methods to real implementation
     win.get_selected_grounding_mode.side_effect = lambda: MainWindow.get_selected_grounding_mode(
@@ -666,6 +681,47 @@ class TestOtherUIWidgets:
             dialog = AboutDialog(parent=MagicMock())
             assert dialog is not None
 
+    def test_live_streaming_card_widget(self):
+        with (
+            patch("customtkinter.CTkFrame.__init__", return_value=None),
+            patch("customtkinter.CTkFrame.pack"),
+            patch("customtkinter.CTkLabel") as mock_label,
+            patch("customtkinter.CTkTextbox") as mock_textbox,
+            patch("ui.widgets.get_font_body_bold", return_value=MagicMock()),
+            patch("ui.widgets.get_font_caption", return_value=MagicMock()),
+            patch("ui.widgets.get_font_code", return_value=MagicMock()),
+        ):
+            mock_box_inst = MagicMock()
+            mock_textbox.return_value = mock_box_inst
+
+            mock_title = MagicMock()
+            mock_token = MagicMock()
+            mock_label.side_effect = [mock_title, mock_token]
+
+            card = LiveStreamingCard(master=MagicMock(), title="Writing Act 1/2...")
+            assert card is not None
+            assert card.token_count == 0
+            assert card.get_text() == ""
+
+            # Test appending chunks
+            card.append_chunk("Hei ")
+            card.append_chunk("verden!")
+            assert card.get_text() == "Hei verden!"
+            assert card.token_count == 2
+            mock_box_inst.insert.assert_called_with("end", "verden!")
+            mock_box_inst.see.assert_called_with("end")
+
+            # Test set status
+            card.set_status("Writing Act 2/2...")
+            mock_title.configure.assert_called_with(text="⚡ Writing Act 2/2...")
+
+            # Test reset
+            card.reset("Starting over...")
+            assert card.token_count == 0
+            assert card.get_text() == ""
+            mock_title.configure.assert_called_with(text="⚡ Starting over...")
+            mock_token.configure.assert_called_with(text="0 chunks")
+
 
 # ==============================================================================
 # 4. MainWindow Grounding Mode & Modality Synchronization Tests
@@ -792,6 +848,20 @@ class TestMainWindowQueueEventHandling:
 
         MainWindow._handle_event(mock_main_window, "SCRIPT_ONLY_DONE", {"script_path": "/out.json"})
         mock_main_window._on_script_only_done.assert_called_once_with({"script_path": "/out.json"})
+
+    def test_handle_stream_chunk_and_act_done_events(self, mock_main_window):
+        # STREAM_CHUNK
+        MainWindow._handle_event(mock_main_window, "STREAM_CHUNK", "Hei på deg")
+        mock_main_window._handle_stream_chunk.assert_called_once_with("Hei på deg")
+
+        # ACT_DONE
+        act_data = {
+            "act_idx": 1,
+            "total_acts": 2,
+            "turns": [DialogueTurn(speaker="Host 1", text="Hei")],
+        }
+        MainWindow._handle_event(mock_main_window, "ACT_DONE", act_data)
+        mock_main_window._handle_act_done.assert_called_once_with(act_data)
 
     def test_handle_ollama_service_events(self, mock_main_window):
         # SERVICE_LAUNCHING
@@ -1502,7 +1572,53 @@ class TestMainWindowUIInteraction:
 
 
 # ==============================================================================
-# 8. App Bootstrap & Crash Logger Tests
+# 8. MainWindow Highway Navigation & Multi-View Architecture Tests
+# ==============================================================================
+class TestMainWindowHighwayNavigation:
+    """Verifies tab switching between Studio Highway, Script Studio, Settings, and Diagnostics."""
+
+    def test_switch_tab_and_nav_changed(self, mock_main_window):
+        # 1. Switch to Script Studio
+        MainWindow._on_nav_tab_changed(mock_main_window, "📜 Script Studio")
+        mock_main_window.view_studio.pack_forget.assert_called()
+        mock_main_window.view_script_studio.pack.assert_called()
+
+        # 2. Switch to Settings & Personas
+        mock_main_window.view_settings.pack.reset_mock()
+        MainWindow._on_nav_tab_changed(mock_main_window, "⚙️ Settings & Personas")
+        mock_main_window.view_settings.pack.assert_called()
+
+        # 3. Switch to Diagnostics & About
+        mock_main_window.view_about.pack.reset_mock()
+        MainWindow._on_nav_tab_changed(mock_main_window, "ℹ️ Diagnostics & About")
+        mock_main_window.view_about.pack.assert_called()
+
+        # 4. Switch back to Studio Highway
+        mock_main_window.view_studio.pack.reset_mock()
+        MainWindow._on_nav_tab_changed(mock_main_window, "🎙️ Studio (The Highway)")
+        mock_main_window.view_studio.pack.assert_called()
+
+        # 5. Programmatic switch_tab helper
+        mock_main_window._on_nav_tab_changed.reset_mock()
+        MainWindow.switch_tab(mock_main_window, "⚙️ Settings & Personas")
+        mock_main_window.nav_segmented.set.assert_called_with("⚙️ Settings & Personas")
+
+    def test_update_highway_preset_label(self, mock_main_window):
+        # English + Standard 8 min + llama3.1:8b
+        mock_main_window.lang_menu.get.return_value = "English (Jenny & Guy)"
+        mock_main_window.length_menu.get.return_value = "Standard Episode (12-16 turns, ~5-8 min)"
+        mock_main_window.model_menu.get.return_value = "llama3.1:8b"
+
+        MainWindow._update_highway_preset_label(mock_main_window)
+        mock_main_window.highway_preset_label.configure.assert_called_once()
+        text_arg = mock_main_window.highway_preset_label.configure.call_args[1]["text"]
+        assert "English" in text_arg
+        assert "8 min" in text_arg
+        assert "llama3.1" in text_arg
+
+
+# ==============================================================================
+# 9. App Bootstrap & Crash Logger Tests
 # ==============================================================================
 class TestAppBootstrap:
     """Verifies crash logging hook and app initialization."""

@@ -95,9 +95,27 @@ class WindowsAudioPlayer:
         self._send_command(f"close {self.alias}")
 
         abs_path = os.path.abspath(file_path).replace("\\", "/")
-        if abs_path.lower().endswith(".wav"):
+
+        # Inspect file binary magic bytes to determine exact MCI driver
+        is_wav = False
+        is_mp3 = False
+        try:
+            with open(file_path, "rb") as f:
+                header_bytes = f.read(4)
+                if header_bytes.startswith(b"RIFF"):
+                    is_wav = True
+                elif header_bytes.startswith(b"ID3") or (
+                    len(header_bytes) >= 2
+                    and header_bytes[0] == 0xFF
+                    and (header_bytes[1] & 0xE0) == 0xE0
+                ):
+                    is_mp3 = True
+        except (OSError, ValueError):
+            pass
+
+        if is_wav or abs_path.lower().endswith(".wav"):
             cmd = f'open "{abs_path}" type waveaudio alias {self.alias}'
-        elif abs_path.lower().endswith(".mp3"):
+        elif is_mp3 or abs_path.lower().endswith(".mp3"):
             cmd = f'open "{abs_path}" type mpegvideo alias {self.alias}'
         else:
             cmd = f'open "{abs_path}" alias {self.alias}'
@@ -105,8 +123,12 @@ class WindowsAudioPlayer:
         self._last_error = 0
         self._send_command(cmd)
         if self._last_error != 0:
-            self._is_opened = False
-            return False
+            # Fallback: attempt opening without explicit type parameter
+            fallback_cmd = f'open "{abs_path}" alias {self.alias}'
+            self._send_command(fallback_cmd)
+            if self._last_error != 0:
+                self._is_opened = False
+                return False
 
         # Configure time format to milliseconds
         self._send_command(f"set {self.alias} time format milliseconds")

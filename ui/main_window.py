@@ -18,9 +18,9 @@ from typing import Any
 
 import customtkinter as ctk
 
-# Core Subsystem Imports
 from core.extractor import DocumentExtractionError, extract_text
 from core.io_utils import atomic_write_file
+from core.logger import get_log_file_path, get_logger, resolve_log_directory
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import (
     ModelPullProgress,
@@ -80,9 +80,7 @@ from ui.theme import (
     get_font_body_bold,
     get_font_caption,
     get_font_caption_bold,
-    get_font_code,
     get_font_code_small,
-    get_font_heading,
     get_font_subtitle,
     get_font_title,
 )
@@ -92,10 +90,12 @@ from ui.widgets import (
     CardFrame,
     DialogueTurnCard,
     LabeledSlider,
+    LiveStreamingCard,
     SectionHeader,
     StatusBadge,
-    TimeSlider,
 )
+
+logger = get_logger("ui.main_window")
 
 GROUNDING_UI_OPTIONS: list[str] = [
     "Strict Source-Only (100% Document Fidelity)",
@@ -228,6 +228,19 @@ class GenerationWorker(threading.Thread):
                         elif "Act 5/" in msg or "Akt 5/" in msg:
                             self.msg_queue.put(("PROGRESS", 0.36))
 
+                def stream_chunk_cb(chunk: str):
+                    if not self.cancel_event.is_set():
+                        self.msg_queue.put(("STREAM_CHUNK", chunk))
+
+                def act_done_cb(act_idx: int, total_acts: int, turns: list[DialogueTurn]):
+                    if not self.cancel_event.is_set():
+                        self.msg_queue.put(
+                            (
+                                "ACT_DONE",
+                                {"act_idx": act_idx, "total_acts": total_acts, "turns": turns},
+                            )
+                        )
+
                 try:
                     dialogue = generate_podcast_script(
                         content=extracted_text,
@@ -240,6 +253,8 @@ class GenerationWorker(threading.Thread):
                         is_topic=is_topic,
                         cancel_event=self.cancel_event,
                         progress_callback=progress_cb,
+                        stream_callback=stream_chunk_cb,
+                        act_callback=act_done_cb,
                     )
                 except OllamaModelNotFoundError as mnf_err:
                     self.msg_queue.put(
@@ -318,6 +333,12 @@ class GenerationWorker(threading.Thread):
                 # Mode: audio_from_script
                 dialogue = self.input_data
                 self.msg_queue.put(("PROGRESS", 0.40))
+                # Save script files to output folder (.json and .md) atomically
+                script_json_path = os.path.join(self.output_dir, f"podcast_script_{timestamp}.json")
+                atomic_write_file(script_json_path, dialogue_to_json(dialogue))
+
+                script_md_path = os.path.join(self.output_dir, f"podcast_transcript_{timestamp}.md")
+                atomic_write_file(script_md_path, dialogue_to_markdown(dialogue))
 
             # ------------------------------------------------------------------
             # Phase 2: Local Piper TTS Neural Voice Synthesis
@@ -578,20 +599,24 @@ class MainWindow(ctk.CTk):
     interactive script editing, and native MCI audio playback.
     """
 
-    _queue_poll_id: str | None
-    _player_poll_id: str | None
-    _is_closing: bool
-    current_worker: GenerationWorker | None
-    current_pull_worker: ModelPullWorker | None
-    current_launcher_worker: OllamaLauncherWorker | None
+    _queue_poll_id: str | None = None
+    _player_poll_id: str | None = None
+    _is_closing: bool = False
+    current_worker: GenerationWorker | None = None
+    current_pull_worker: ModelPullWorker | None = None
+    current_launcher_worker: OllamaLauncherWorker | None = None
     cancel_event: threading.Event
     pull_cancel_event: threading.Event
     launcher_cancel_event: threading.Event
     player: WindowsAudioPlayer
-    is_busy: bool
+    is_busy: bool = False
     current_dialogue: list[DialogueTurn]
-    current_mp3_path: str | None
-    current_script_path: str | None
+    current_mp3_path: str | None = None
+    current_script_path: str | None = None
+    _live_stream_card: LiveStreamingCard | None = None
+    _streaming_raw_text: str = ""
+    _streaming_chunks_count: int = 0
+    _rendered_turns_count: int = 0
 
     def __init__(self):
         super().__init__()
@@ -629,6 +654,12 @@ class MainWindow(ctk.CTk):
         self.current_script_path: str | None = None
         self.player: WindowsAudioPlayer = WindowsAudioPlayer()
         self.is_busy: bool = False
+
+        # Live Streaming Generation State
+        self._live_stream_card: LiveStreamingCard | None = None
+        self._streaming_raw_text: str = ""
+        self._streaming_chunks_count: int = 0
+        self._rendered_turns_count: int = 0
 
         # Build UI Architecture
         self._build_header()
@@ -710,6 +741,18 @@ class MainWindow(ctk.CTk):
         )
         self.btn_refresh_models.pack(side="left")
 
+        self.btn_logs = ctk.CTkButton(
+            status_group,
+            text="📋 Logs",
+            width=75,
+            height=30,
+            font=get_font_caption(),
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            command=self._open_logs,
+        )
+        self.btn_logs.pack(side="left", padx=(8, 0))
+
         self.btn_about = ctk.CTkButton(
             status_group,
             text="ℹ️ About",
@@ -725,38 +768,108 @@ class MainWindow(ctk.CTk):
     # ==========================================================================
     # Main 2-Column Responsive Layout
     # ==========================================================================
-    def _build_main_layout(self):
-        main_grid = ctk.CTkFrame(self, fg_color="transparent")
-        main_grid.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+    # ==========================================================================
+    # Navigation & Multi-View Layout Architecture ("The Highway")
+    # ==========================================================================
+    def _build_nav_bar(self):
+        """Builds the top navigation bar to toggle between Highway Studio, Script Studio, Settings, and Diagnostics."""
+        nav_container = ctk.CTkFrame(self, fg_color="transparent")
+        nav_container.pack(fill="x", padx=20, pady=(0, 10))
 
-        main_grid.grid_columnconfigure(0, weight=4, minsize=480)
-        main_grid.grid_columnconfigure(1, weight=6, minsize=560)
+        self.nav_segmented = ctk.CTkSegmentedButton(
+            nav_container,
+            values=[
+                "🎙️ Studio (The Highway)",
+                "📜 Script Studio",
+                "⚙️ Settings & Personas",
+                "ℹ️ Diagnostics & About",
+            ],
+            font=get_font_body_bold(),
+            selected_color=COLOR_ACCENT,
+            selected_hover_color=COLOR_ACCENT_HOVER,
+            command=self._on_nav_tab_changed,
+        )
+        self.nav_segmented.set("🎙️ Studio (The Highway)")
+        self.nav_segmented.pack(fill="x")
+
+    def switch_tab(self, tab_name: str):
+        """Programmatically switches the active view tab."""
+        self.nav_segmented.set(tab_name)
+        self._on_nav_tab_changed(tab_name)
+
+    def _on_nav_tab_changed(self, selected_tab: str):
+        """Switches active view container based on navigation selection."""
+        self.view_studio.pack_forget()
+        self.view_script_studio.pack_forget()
+        self.view_settings.pack_forget()
+        self.view_about.pack_forget()
+
+        if "Script" in selected_tab:
+            self.view_script_studio.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        elif "Settings" in selected_tab:
+            self.view_settings.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        elif "About" in selected_tab or "Diag" in selected_tab:
+            self.view_about.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        else:
+            self.view_studio.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+
+    def _build_main_layout(self):
+        """Builds the main container and initializes all four views."""
+        self._build_nav_bar()
+
+        # View 1: Studio Highway
+        self.view_studio = ctk.CTkFrame(self, fg_color="transparent")
+        self._build_highway_view(self.view_studio)
+
+        # View 2: Dedicated Script Studio
+        self.view_script_studio = ctk.CTkFrame(self, fg_color="transparent")
+        self._build_script_studio_view(self.view_script_studio)
+
+        # View 3: Settings & Personas
+        self.view_settings = ctk.CTkFrame(self, fg_color="transparent")
+        self._build_settings_view(self.view_settings)
+
+        # View 4: Diagnostics & About
+        self.view_about = ctk.CTkFrame(self, fg_color="transparent")
+        self._build_about_view(self.view_about)
+
+        # Default visible view: The Highway Studio
+        self.view_studio.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+
+    # ==========================================================================
+    # 1. Studio ("The Highway") View
+    # ==========================================================================
+    def _build_highway_view(self, parent: ctk.CTkFrame):
+        """Builds the clean, 1-page end-to-end Highway creation and playback experience."""
+        main_grid = ctk.CTkFrame(parent, fg_color="transparent")
+        main_grid.pack(fill="both", expand=True)
+
+        main_grid.grid_columnconfigure(0, weight=5, minsize=480)
+        main_grid.grid_columnconfigure(1, weight=5, minsize=480)
         main_grid.grid_rowconfigure(0, weight=1)
 
-        # Left Column: Input & Configuration Card
+        # Left Column: Ingestion & 1-Click Action
         self.left_panel = CardFrame(main_grid)
         self.left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
-        self._build_left_panel(self.left_panel)
+        self._build_highway_left_panel(self.left_panel)
 
-        # Right Column: Progress, Script Studio, and Audio Player Card
+        # Right Column: Live Status & Native Audio Player
         self.right_panel = CardFrame(main_grid)
         self.right_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=0)
-        self._build_right_panel(self.right_panel)
+        self._build_highway_right_panel(self.right_panel)
 
-    # ==========================================================================
-    # Left Column: Input & Configuration Controls
-    # ==========================================================================
-    def _build_left_panel(self, parent: CardFrame):
+    def _build_highway_left_panel(self, parent: CardFrame):
+        """Builds the left column of the Highway view: Streamlined Ingestion & 1-Click Highway."""
         scroll_container = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         scroll_container.pack(fill="both", expand=True, padx=12, pady=12)
 
-        # --- Section 1: Ingestion Source ---
+        # --- Step 1: Content Ingestion ---
         SectionHeader(
             scroll_container,
-            title="Ingestion Source",
-            subtitle="Choose source document, paste text, or write a topic prompt",
+            title="1. Source Content Ingestion",
+            subtitle="Pick a document, enter a prompt topic, or paste raw text",
             icon="📄",
-        ).pack(fill="x", pady=(0, 10))
+        ).pack(fill="x", pady=(0, 8))
 
         self.input_modality_var = ctk.StringVar(value="file")
         self.modality_segmented = ctk.CTkSegmentedButton(
@@ -769,7 +882,7 @@ class MainWindow(ctk.CTk):
 
         # File Input Container
         self.file_container = ctk.CTkFrame(scroll_container, fg_color="transparent")
-        self.file_container.pack(fill="x", pady=(0, 12))
+        self.file_container.pack(fill="x", pady=(0, 10))
 
         file_row = ctk.CTkFrame(self.file_container, fg_color="transparent")
         file_row.pack(fill="x")
@@ -803,7 +916,7 @@ class MainWindow(ctk.CTk):
         self.text_container = ctk.CTkFrame(scroll_container, fg_color="transparent")
         self.text_input_box = ctk.CTkTextbox(
             self.text_container,
-            height=120,
+            height=130,
             font=get_font_body(),
             fg_color=COLOR_INPUT_BG,
             border_color=COLOR_INPUT_BORDER,
@@ -811,40 +924,225 @@ class MainWindow(ctk.CTk):
         )
         self.text_input_box.pack(fill="both", expand=True)
 
-        # --- Section 2: Podcast & Voice Configuration ---
+        # --- Step 2: 1-Click Podcast Highway ---
         SectionHeader(
             scroll_container,
-            title="Podcast & Voice Configuration",
-            subtitle="Target language, personas, Ollama model, length, tone and rate",
-            icon="⚙️",
-        ).pack(fill="x", pady=(14, 10))
+            title="2. 1-Click Podcast Highway",
+            subtitle="Fast-lane generation directly into studio audio player",
+            icon="🚀",
+        ).pack(fill="x", pady=(14, 8))
 
-        cfg_grid = ctk.CTkFrame(scroll_container, fg_color="transparent")
-        cfg_grid.pack(fill="x", pady=(0, 10))
-        cfg_grid.grid_columnconfigure(1, weight=1)
+        # Highway Preset Summary Box
+        preset_box = CardFrame(
+            scroll_container, fg_color="#1a1c29", corner_radius=8, border_width=1
+        )
+        preset_box.pack(fill="x", pady=(0, 10))
 
-        # Row 0: Language Selector
+        p_inner = ctk.CTkFrame(preset_box, fg_color="transparent")
+        p_inner.pack(fill="x", padx=12, pady=10)
+
+        p_top = ctk.CTkFrame(p_inner, fg_color="transparent")
+        p_top.pack(fill="x")
+
         ctk.CTkLabel(
-            cfg_grid, text="Language:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=0, column=0, sticky="w", pady=6)
+            p_top,
+            text="⚡ Highway Profile:",
+            font=get_font_body_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(side="left")
+
+        btn_edit_profile = ctk.CTkButton(
+            p_top,
+            text="⚙️ Edit in Settings →",
+            width=130,
+            height=24,
+            font=get_font_caption_bold(),
+            fg_color="transparent",
+            text_color=COLOR_ACCENT,
+            hover_color="#24283b",
+            command=lambda: self.switch_tab("⚙️ Settings & Personas"),
+        )
+        btn_edit_profile.pack(side="right")
+
+        self.highway_preset_label = ctk.CTkLabel(
+            p_inner,
+            text="🇺🇸 English (Jenny & Guy) • ⏱️ ~8 min (Standard) • 🤖 Auto Ollama",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        )
+        self.highway_preset_label.pack(fill="x", pady=(4, 0))
+
+        # Primary Action: Big 1-Click Generate Podcast Button
+        self.btn_generate_full = ctk.CTkButton(
+            scroll_container,
+            text="🎙️ Generate Podcast (1-Click)",
+            height=48,
+            font=get_font_body_bold(),
+            fg_color=COLOR_ACCENT,
+            hover_color=COLOR_ACCENT_HOVER,
+            command=lambda: self.start_generation(mode="full"),
+        )
+        self.btn_generate_full.pack(fill="x", pady=(4, 8))
+
+        # Secondary Actions Row
+        action_row = ctk.CTkFrame(scroll_container, fg_color="transparent")
+        action_row.pack(fill="x", pady=(0, 6))
+
+        self.btn_generate_script = ctk.CTkButton(
+            action_row,
+            text="📝 Script Only",
+            height=34,
+            font=get_font_body(),
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            command=lambda: self.start_generation(mode="script_only"),
+        )
+        self.btn_generate_script.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        self.btn_cancel = ctk.CTkButton(
+            action_row,
+            text="⏹️ Cancel",
+            height=34,
+            font=get_font_body(),
+            fg_color=COLOR_ERROR,
+            hover_color="#db4b4b",
+            state="disabled",
+            command=self.cancel_generation,
+        )
+        self.btn_cancel.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        self.btn_reset = ctk.CTkButton(
+            action_row,
+            text="🔄 Reset",
+            height=34,
+            font=get_font_body(),
+            fg_color=COLOR_BUTTON_CLOSE,
+            hover_color=COLOR_BUTTON_CLOSE_HOVER,
+            command=self.reset_form,
+        )
+        self.btn_reset.pack(side="right", fill="x", expand=True)
+
+    def _update_highway_preset_label(self):
+        """Dynamically synchronizes the highway profile badge label with active Settings."""
+        if not hasattr(self, "highway_preset_label"):
+            return
+        lang_str = "🇺🇸 English" if "English" in self.lang_menu.get() else "🇳🇴 Norwegian"
+        len_raw = self.length_menu.get()
+        if "Quick" in len_raw:
+            len_str = "⏱️ ~2-3 min (Quick)"
+        elif "Deep" in len_raw:
+            len_str = "⏱️ ~10-15 min (Deep Dive)"
+        elif "Extended" in len_raw:
+            len_str = "⏱️ ~25-30 min (Extended)"
+        else:
+            len_str = "⏱️ ~8 min (Standard)"
+
+        model_str = (
+            self.model_menu.get().split(":")[0] if hasattr(self, "model_menu") else "Auto Ollama"
+        )
+        if not model_str or "Checking" in model_str or "Offline" in model_str:
+            model_str = "Auto Ollama"
+
+        self.highway_preset_label.configure(text=f"{lang_str} • {len_str} • 🤖 {model_str}")
+
+    def _build_settings_view(self, parent: ctk.CTkFrame):
+        """Builds the comprehensive settings and persona configuration view."""
+        card = CardFrame(parent)
+        card.pack(fill="both", expand=True)
+
+        scroll_settings = ctk.CTkScrollableFrame(card, fg_color="transparent")
+        scroll_settings.pack(fill="both", expand=True, padx=16, pady=16)
+
+        # --- Section 1: Language, Personas & Episode Length ---
+        SectionHeader(
+            scroll_settings,
+            title="Language, Voices & Episode Length",
+            subtitle="Configure target language, neural voices, and podcast episode duration",
+            icon="🎙️",
+        ).pack(fill="x", pady=(0, 8))
+
+        lang_box = CardFrame(scroll_settings, fg_color="#1a1c29", corner_radius=8, border_width=1)
+        lang_box.pack(fill="x", pady=(0, 14))
+
+        l_inner = ctk.CTkFrame(lang_box, fg_color="transparent")
+        l_inner.pack(fill="x", padx=14, pady=12)
+
+        # Language Selector (Default English)
+        ctk.CTkLabel(
+            l_inner,
+            text="Target Language & Host Personas:",
+            font=get_font_body_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(anchor="w", pady=(0, 4))
         self.lang_menu = ctk.CTkOptionMenu(
-            cfg_grid,
-            values=["Norwegian Bokmål (Kari & Ola)", "English (Jenny & Guy)"],
+            l_inner,
+            values=["English (Jenny & Guy)", "Norwegian Bokmål (Kari & Ola)"],
             fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
             command=self._on_language_changed,
         )
-        self.lang_menu.set("Norwegian Bokmål (Kari & Ola)")
-        self.lang_menu.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
+        self.lang_menu.set("English (Jenny & Guy)")
+        self.lang_menu.pack(fill="x", pady=(0, 8))
 
-        # Row 1: Ollama Model + 1-Click Action Buttons
+        # Episode Length Preset (Default Standard Episode ~8 min)
         ctk.CTkLabel(
-            cfg_grid, text="Ollama Model:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=1, column=0, sticky="w", pady=6)
+            l_inner,
+            text="Episode Length Preset:",
+            font=get_font_body_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(anchor="w", pady=(4, 4))
+        self.length_menu = ctk.CTkOptionMenu(
+            l_inner,
+            values=[
+                "Standard Episode (12-16 turns, ~5-8 min)",
+                "Quick Summary (6-8 turns, ~2-3 min)",
+                "Deep Dive (20-26 turns, ~10-15 min)",
+                "Extended In-Depth (45-60 turns, ~25-30 min)",
+            ],
+            fg_color=COLOR_BUTTON_SECONDARY,
+            button_color=COLOR_ACCENT,
+            button_hover_color=COLOR_ACCENT_HOVER,
+            command=lambda _: self._update_highway_preset_label(),
+        )
+        self.length_menu.set("Standard Episode (12-16 turns, ~5-8 min)")
+        self.length_menu.pack(fill="x", pady=(0, 8))
 
-        model_row = ctk.CTkFrame(cfg_grid, fg_color="transparent")
-        model_row.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
+        # Speaking Speed Slider
+        self.speed_slider = LabeledSlider(
+            l_inner,
+            label="Speaking Speed:",
+            from_=-10.0,
+            to=15.0,
+            number_of_steps=5,
+            default_value=0.0,
+        )
+        self.speed_slider.pack(fill="x", pady=(4, 0))
+
+        # --- Section 2: Ollama Model Management & Downloader ---
+        SectionHeader(
+            scroll_settings,
+            title="Ollama LLM Engine & Model Hub",
+            subtitle="Select installed local LLM, start daemon, or download new models",
+            icon="🤖",
+        ).pack(fill="x", pady=(6, 8))
+
+        model_box = CardFrame(scroll_settings, fg_color="#1a1c29", corner_radius=8, border_width=1)
+        model_box.pack(fill="x", pady=(0, 14))
+
+        m_inner = ctk.CTkFrame(model_box, fg_color="transparent")
+        m_inner.pack(fill="x", padx=14, pady=12)
+
+        ctk.CTkLabel(
+            m_inner,
+            text="Active Ollama Model:",
+            font=get_font_body_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(anchor="w", pady=(0, 4))
+
+        model_row = ctk.CTkFrame(m_inner, fg_color="transparent")
+        model_row.pack(fill="x", pady=(0, 8))
         model_row.grid_columnconfigure(0, weight=1)
 
         self.model_menu = ctk.CTkOptionMenu(
@@ -853,6 +1151,7 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
+            command=lambda _: self._update_highway_preset_label(),
         )
         self.model_menu.grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
@@ -879,71 +1178,9 @@ class MainWindow(ctk.CTk):
         )
         self.btn_download_model.grid(row=0, column=2)
 
-        # Row 2: Episode Length Preset
-        ctk.CTkLabel(
-            cfg_grid, text="Episode Length:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=2, column=0, sticky="w", pady=6)
-        self.length_menu = ctk.CTkOptionMenu(
-            cfg_grid,
-            values=[
-                "Quick Summary (6-8 turns, ~2-3 min)",
-                "Standard Episode (12-16 turns, ~5-7 min)",
-                "Deep Dive (20-26 turns, ~10-15 min)",
-                "Extended In-Depth (45-60 turns, ~25-30 min)",
-            ],
-            fg_color=COLOR_BUTTON_SECONDARY,
-            button_color=COLOR_ACCENT,
-            button_hover_color=COLOR_ACCENT_HOVER,
-        )
-        self.length_menu.set("Standard Episode (12-16 turns, ~5-7 min)")
-        self.length_menu.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=6)
-
-        # Row 3: Tone / Style Preset
-        ctk.CTkLabel(
-            cfg_grid, text="Tone / Style:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=3, column=0, sticky="w", pady=6)
-        self.tone_menu = ctk.CTkOptionMenu(
-            cfg_grid,
-            values=["Casual & Lively", "Analytical & Educational", "Lively Debate"],
-            fg_color=COLOR_BUTTON_SECONDARY,
-            button_color=COLOR_ACCENT,
-            button_hover_color=COLOR_ACCENT_HOVER,
-        )
-        self.tone_menu.set("Casual & Lively")
-        self.tone_menu.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=6)
-
-        # Row 4: Grounding Mode UI Selector
-        ctk.CTkLabel(
-            cfg_grid, text="Grounding Mode:", font=get_font_body(), text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=4, column=0, sticky="w", pady=6)
-
-        self.grounding_menu = ctk.CTkOptionMenu(
-            cfg_grid,
-            values=GROUNDING_UI_OPTIONS,
-            fg_color=COLOR_BUTTON_SECONDARY,
-            button_color=COLOR_ACCENT,
-            button_hover_color=COLOR_ACCENT_HOVER,
-            command=self._on_grounding_mode_changed,
-        )
-        self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
-        self.grounding_menu.grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=6)
-
-        # Dynamic Grounding Helper Caption Label
-        self.grounding_desc_label = ctk.CTkLabel(
-            scroll_container,
-            text="",
-            font=get_font_caption(),
-            text_color=COLOR_TEXT_SECONDARY,
-            wraplength=420,
-            justify="left",
-            anchor="w",
-        )
-        self.grounding_desc_label.pack(fill="x", padx=4, pady=(0, 10))
-        self._update_grounding_description()
-
         # Dynamic Streaming Model Pull Progress Container (Hidden by default)
         self.pull_frame = CardFrame(
-            scroll_container, fg_color=COLOR_PROGRESS_BG, corner_radius=8, border_width=1
+            m_inner, fg_color=COLOR_PROGRESS_BG, corner_radius=8, border_width=1
         )
         pull_top_row = ctk.CTkFrame(self.pull_frame, fg_color="transparent")
         pull_top_row.pack(fill="x", padx=10, pady=(8, 2))
@@ -1000,29 +1237,83 @@ class MainWindow(ctk.CTk):
         self.btn_cancel_pull.pack(side="right")
         self.pull_frame.pack_forget()
 
-        # Voice Speaking Rate Slider (-10% to +15%)
-        self.speed_slider = LabeledSlider(
-            scroll_container,
-            label="Speaking Speed:",
-            from_=-10.0,
-            to=15.0,
-            number_of_steps=5,
-            default_value=0.0,
+        # --- Section 3: Grounding & Anti-Hallucination ---
+        SectionHeader(
+            scroll_settings,
+            title="Grounding Mode & Anti-Hallucination",
+            subtitle="Choose how strictly the scriptwriter adheres to provided source documents",
+            icon="🎯",
+        ).pack(fill="x", pady=(6, 8))
+
+        grounding_box = CardFrame(
+            scroll_settings, fg_color="#1a1c29", corner_radius=8, border_width=1
         )
-        self.speed_slider.pack(fill="x", pady=(4, 10))
+        grounding_box.pack(fill="x", pady=(0, 14))
 
-        # Output Folder Selector
-        out_header = ctk.CTkFrame(scroll_container, fg_color="transparent")
-        out_header.pack(fill="x", pady=(4, 4))
+        g_inner = ctk.CTkFrame(grounding_box, fg_color="transparent")
+        g_inner.pack(fill="x", padx=14, pady=12)
+
         ctk.CTkLabel(
-            out_header,
-            text="Output Directory:",
-            font=get_font_body(),
+            g_inner,
+            text="Grounding Mode:",
+            font=get_font_body_bold(),
             text_color=COLOR_TEXT_PRIMARY,
-        ).pack(side="left")
+        ).pack(anchor="w", pady=(0, 4))
+        self.grounding_menu = ctk.CTkOptionMenu(
+            g_inner,
+            values=GROUNDING_UI_OPTIONS,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            button_color=COLOR_ACCENT,
+            button_hover_color=COLOR_ACCENT_HOVER,
+            command=self._on_grounding_mode_changed,
+        )
+        self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
+        self.grounding_menu.pack(fill="x", pady=(0, 6))
 
-        out_row = ctk.CTkFrame(scroll_container, fg_color="transparent")
-        out_row.pack(fill="x", pady=(0, 14))
+        self.grounding_desc_label = ctk.CTkLabel(
+            g_inner,
+            text="",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
+            wraplength=700,
+            justify="left",
+            anchor="w",
+        )
+        self.grounding_desc_label.pack(fill="x", pady=(0, 8))
+        self._update_grounding_description()
+
+        ctk.CTkLabel(
+            g_inner,
+            text="Conversation Tone / Style:",
+            font=get_font_body_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(anchor="w", pady=(6, 4))
+        self.tone_menu = ctk.CTkOptionMenu(
+            g_inner,
+            values=["Casual & Lively", "Analytical & Educational", "Lively Debate"],
+            fg_color=COLOR_BUTTON_SECONDARY,
+            button_color=COLOR_ACCENT,
+            button_hover_color=COLOR_ACCENT_HOVER,
+        )
+        self.tone_menu.set("Casual & Lively")
+        self.tone_menu.pack(fill="x")
+
+        # --- Section 4: Output Storage ---
+        SectionHeader(
+            scroll_settings,
+            title="Storage & Destination Directory",
+            subtitle="Location where generated audio and transcript artifacts are saved",
+            icon="📁",
+        ).pack(fill="x", pady=(6, 8))
+
+        out_box = CardFrame(scroll_settings, fg_color="#1a1c29", corner_radius=8, border_width=1)
+        out_box.pack(fill="x", pady=(0, 14))
+
+        out_inner = ctk.CTkFrame(out_box, fg_color="transparent")
+        out_inner.pack(fill="x", padx=14, pady=12)
+
+        out_row = ctk.CTkFrame(out_inner, fg_color="transparent")
+        out_row.pack(fill="x")
         self.output_entry = ctk.CTkEntry(
             out_row, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER
         )
@@ -1040,270 +1331,67 @@ class MainWindow(ctk.CTk):
         )
         self.btn_browse_output.pack(side="right")
 
-        # --- Section 3: Action Buttons ---
-        SectionHeader(scroll_container, title="Generate & Actions", icon="🚀").pack(
-            fill="x", pady=(6, 10)
-        )
-
-        # Primary Action: Generate Full Podcast
-        self.btn_generate_full = ctk.CTkButton(
-            scroll_container,
-            text="🎙️ Generate Full Podcast (Script + Audio)",
-            height=44,
-            font=get_font_body_bold(),
-            fg_color=COLOR_ACCENT,
-            hover_color=COLOR_ACCENT_HOVER,
-            command=lambda: self.start_generation(mode="full"),
-        )
-        self.btn_generate_full.pack(fill="x", pady=(0, 8))
-
-        # Secondary Action: Generate Script Only
-        self.btn_generate_script = ctk.CTkButton(
-            scroll_container,
-            text="📝 Generate Script Only",
-            height=36,
-            font=get_font_body(),
-            fg_color=COLOR_BUTTON_SECONDARY,
-            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            command=lambda: self.start_generation(mode="script_only"),
-        )
-        self.btn_generate_script.pack(fill="x", pady=(0, 8))
-
-        # Control Row: Cancel and Reset
-        ctrl_row = ctk.CTkFrame(scroll_container, fg_color="transparent")
-        ctrl_row.pack(fill="x", pady=(0, 8))
-
-        self.btn_cancel = ctk.CTkButton(
-            ctrl_row,
-            text="⏹️ Cancel",
-            font=get_font_body(),
-            fg_color=COLOR_ERROR,
-            hover_color="#db4b4b",
-            state="disabled",
-            command=self.cancel_generation,
-        )
-        self.btn_cancel.pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-        self.btn_reset = ctk.CTkButton(
-            ctrl_row,
-            text="🔄 Reset",
-            font=get_font_body(),
-            fg_color=COLOR_BUTTON_CLOSE,
-            hover_color=COLOR_BUTTON_CLOSE_HOVER,
-            command=self.reset_form,
-        )
-        self.btn_reset.pack(side="right", fill="x", expand=True, padx=(4, 0))
-
     # ==========================================================================
-    # Right Column: Progress, Interactive Script Studio & Audio Player
+    # 4. Diagnostics & About View
     # ==========================================================================
-    def _build_right_panel(self, parent: CardFrame):
-        container = ctk.CTkFrame(parent, fg_color="transparent")
-        container.pack(fill="both", expand=True, padx=14, pady=14)
+    def _build_about_view(self, parent: ctk.CTkFrame):
+        """Builds the Diagnostics and system metadata view."""
+        card = CardFrame(parent)
+        card.pack(fill="both", expand=True)
 
-        # --- Section 1: Generation Progress & Live Status ---
-        status_box = CardFrame(container, fg_color="#1a1c29", corner_radius=8, border_width=1)
-        status_box.pack(fill="x", pady=(0, 10))
+        scroll_about = ctk.CTkScrollableFrame(card, fg_color="transparent")
+        scroll_about.pack(fill="both", expand=True, padx=20, pady=20)
 
-        status_top = ctk.CTkFrame(status_box, fg_color="transparent")
-        status_top.pack(fill="x", padx=12, pady=(10, 4))
+        SectionHeader(
+            scroll_about,
+            title="System Diagnostics & Offline Privacy Guarantee",
+            subtitle="Universal 100% Local AI Studio — Zero cloud dependencies, zero telemetry",
+            icon="ℹ️",
+        ).pack(fill="x", pady=(0, 14))
 
-        self.status_label = ctk.CTkLabel(
-            status_top,
-            text="Ready to generate your podcast.",
+        diag_box = CardFrame(scroll_about, fg_color="#1a1c29", corner_radius=8, border_width=1)
+        diag_box.pack(fill="x", pady=(0, 14))
+
+        d_inner = ctk.CTkFrame(diag_box, fg_color="transparent")
+        d_inner.pack(fill="x", padx=16, pady=14)
+
+        info_lines = [
+            ("Application", "LocalPodcastLLMStudio v1.0.0"),
+            ("License", "MIT License (Free for personal and commercial use)"),
+            ("Inference Engine", "Local Ollama HTTP REST API (http://localhost:11434)"),
+            ("Voice Synthesizer", "Piper Neural TTS (ONNX Runtime, 100% Offline)"),
+            ("Audio Stitcher", "Pure-Python MPEG Frame Assembler (Zero FFmpeg needed)"),
+            ("Audio Player Engine", "Native Windows Multimedia MCI Controller"),
+            (
+                "Privacy Standard",
+                "100% Local. Zero telemetry, zero analytics, zero external network traffic.",
+            ),
+        ]
+
+        for label, val in info_lines:
+            row = ctk.CTkFrame(d_inner, fg_color="transparent")
+            row.pack(fill="x", pady=3)
+            ctk.CTkLabel(
+                row,
+                text=f"{label}:",
+                font=get_font_body_bold(),
+                text_color=COLOR_TEXT_PRIMARY,
+                width=160,
+                anchor="w",
+            ).pack(side="left")
+            ctk.CTkLabel(
+                row, text=val, font=get_font_body(), text_color=COLOR_TEXT_SECONDARY, anchor="w"
+            ).pack(side="left", fill="x", expand=True)
+
+        btn_run_env = ctk.CTkButton(
+            d_inner,
+            text="🔍 Run Preflight Diagnostic Health Check",
             font=get_font_body_bold(),
-            text_color=COLOR_TEXT_PRIMARY,
-            anchor="w",
-        )
-        self.status_label.pack(side="left", fill="x", expand=True)
-
-        self.progress_pct_label = ctk.CTkLabel(
-            status_top, text="0%", font=get_font_caption(), text_color=COLOR_TEXT_SECONDARY
-        )
-        self.progress_pct_label.pack(side="right")
-
-        self.progress_bar = ctk.CTkProgressBar(
-            status_box, height=10, progress_color=COLOR_ACCENT, fg_color="#24283b"
-        )
-        self.progress_bar.set(0.0)
-        self.progress_bar.pack(fill="x", padx=12, pady=(0, 10))
-
-        # --- Section 2: Interactive Script Studio ---
-        studio_header_row = ctk.CTkFrame(container, fg_color="transparent")
-        studio_header_row.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(
-            studio_header_row,
-            text="Interactive Script Studio",
-            font=get_font_heading(),
-            text_color=COLOR_TEXT_PRIMARY,
-        ).pack(side="left")
-
-        # Tabview for Formatted Dialogue vs. Editable Script
-        self.script_tabs = ctk.CTkTabview(
-            container,
-            fg_color="#1a1c29",
-            segmented_button_selected_color=COLOR_ACCENT,
-            segmented_button_selected_hover_color=COLOR_ACCENT_HOVER,
-        )
-        self.script_tabs.pack(fill="both", expand=True, pady=(0, 8))
-        self.tab_formatted = self.script_tabs.add("Formatted Dialogue")
-        self.tab_editable = self.script_tabs.add("Editable Script")
-
-        # Formatted Dialogue Tab
-        self.formatted_scroll = ctk.CTkScrollableFrame(self.tab_formatted, fg_color="transparent")
-        self.formatted_scroll.pack(fill="both", expand=True, padx=4, pady=4)
-
-        self.empty_script_placeholder = ctk.CTkLabel(
-            self.formatted_scroll,
-            text="No dialogue script generated yet.\nGenerate a script to preview turns here.",
-            font=get_font_body(),
-            text_color=COLOR_TEXT_MUTED,
-        )
-        self.empty_script_placeholder.pack(pady=40)
-
-        # Editable Script Tab
-        self.editable_script_box = ctk.CTkTextbox(
-            self.tab_editable,
-            font=get_font_code(),
-            fg_color=COLOR_INPUT_BG,
-            border_color=COLOR_INPUT_BORDER,
-            border_width=1,
-            text_color=COLOR_TEXT_PRIMARY,
-        )
-        self.editable_script_box.pack(fill="both", expand=True, padx=4, pady=4)
-
-        # Script Action Bar
-        script_bar = ctk.CTkFrame(container, fg_color="transparent")
-        script_bar.pack(fill="x", pady=(0, 10))
-
-        self.btn_copy_script = ctk.CTkButton(
-            script_bar,
-            text="📋 Copy Script",
-            width=100,
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            font=get_font_caption(),
-            command=self._copy_script_to_clipboard,
+            command=self.refresh_ollama_models,
         )
-        self.btn_copy_script.pack(side="left", padx=(0, 6))
-
-        self.btn_save_script_as = ctk.CTkButton(
-            script_bar,
-            text="💾 Save Script As...",
-            width=120,
-            fg_color=COLOR_BUTTON_SECONDARY,
-            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            font=get_font_caption(),
-            command=self._save_script_as,
-        )
-        self.btn_save_script_as.pack(side="left", padx=(0, 6))
-
-        self.btn_synth_from_script = ctk.CTkButton(
-            script_bar,
-            text="🔊 Synthesize Audio from Script",
-            fg_color=COLOR_ACCENT,
-            hover_color=COLOR_ACCENT_HOVER,
-            font=get_font_body_bold(),
-            command=self._synthesize_from_edited_script,
-        )
-        self.btn_synth_from_script.pack(side="right")
-
-        # --- Section 3: Audio Player Studio ---
-        player_card = CardFrame(container, fg_color="#1a1c29", corner_radius=8, border_width=1)
-        player_card.pack(fill="x", pady=(0, 0))
-
-        # Audio File Info
-        player_top = ctk.CTkFrame(player_card, fg_color="transparent")
-        player_top.pack(fill="x", padx=12, pady=(10, 4))
-
-        self.player_title_label = ctk.CTkLabel(
-            player_top,
-            text="Audio Player: No audio loaded",
-            font=get_font_caption(),
-            text_color=COLOR_TEXT_SECONDARY,
-            anchor="w",
-        )
-        self.player_title_label.pack(side="left", fill="x", expand=True)
-
-        # Native Timeline Scrubber
-        self.time_slider = TimeSlider(player_card, on_seek=self._on_seek_audio)
-        self.time_slider.pack(fill="x", padx=12, pady=(0, 6))
-
-        # Controls & Volume Row
-        ctrl_bar = ctk.CTkFrame(player_card, fg_color="transparent")
-        ctrl_bar.pack(fill="x", padx=12, pady=(0, 10))
-
-        self.btn_play = ctk.CTkButton(
-            ctrl_bar,
-            text="▶ Play",
-            width=70,
-            state="disabled",
-            fg_color=COLOR_BUTTON_SECONDARY,
-            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            command=self._play_audio,
-        )
-        self.btn_play.pack(side="left", padx=(0, 4))
-
-        self.btn_pause = ctk.CTkButton(
-            ctrl_bar,
-            text="⏸ Pause",
-            width=70,
-            state="disabled",
-            fg_color=COLOR_BUTTON_SECONDARY,
-            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            command=self._pause_audio,
-        )
-        self.btn_pause.pack(side="left", padx=(0, 4))
-
-        self.btn_stop = ctk.CTkButton(
-            ctrl_bar,
-            text="⏹ Stop",
-            width=70,
-            state="disabled",
-            fg_color=COLOR_BUTTON_SECONDARY,
-            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            command=self._stop_audio,
-        )
-        self.btn_stop.pack(side="left", padx=(0, 10))
-
-        # Volume Slider
-        ctk.CTkLabel(
-            ctrl_bar, text="Vol:", font=get_font_caption(), text_color=COLOR_TEXT_SECONDARY
-        ).pack(side="left", padx=(0, 4))
-        self.volume_slider = ctk.CTkSlider(
-            ctrl_bar,
-            from_=0,
-            to=100,
-            width=90,
-            button_color=COLOR_ACCENT,
-            command=self._on_volume_changed,
-        )
-        self.volume_slider.set(80)
-        self.volume_slider.pack(side="left", padx=(0, 10))
-
-        # Export & Folder buttons
-        self.btn_export_mp3 = ctk.CTkButton(
-            ctrl_bar,
-            text="💾 Save MP3 As...",
-            width=110,
-            state="disabled",
-            fg_color=COLOR_BUTTON_CLOSE,
-            hover_color=COLOR_BUTTON_CLOSE_HOVER,
-            font=get_font_caption(),
-            command=self._save_mp3_as,
-        )
-        self.btn_export_mp3.pack(side="right", padx=(4, 0))
-
-        self.btn_open_folder = ctk.CTkButton(
-            ctrl_bar,
-            text="📁 Open Folder",
-            width=100,
-            fg_color=COLOR_BUTTON_CLOSE,
-            hover_color=COLOR_BUTTON_CLOSE_HOVER,
-            font=get_font_caption(),
-            command=self._open_output_folder,
-        )
-        self.btn_open_folder.pack(side="right")
+        btn_run_env.pack(anchor="w", pady=(14, 0))
 
     # ==========================================================================
     # Grounding Mode & Modality Synchronization Handlers
@@ -1326,6 +1414,7 @@ class MainWindow(ctk.CTk):
     def _on_language_changed(self, choice: str):
         """Callback when user selects a different language."""
         self._update_grounding_description()
+        self._update_highway_preset_label()
 
     def _update_grounding_description(self):
         """Updates the caption helper text based on selected mode and language."""
@@ -1502,6 +1591,8 @@ class MainWindow(ctk.CTk):
             self.model_menu.set("Ollama Offline (No models)")
             self.ollama_badge.set_status("offline", "Ollama Offline")
 
+        self._update_highway_preset_label()
+
     # ==========================================================================
     # Workflow Execution: Start Generation
     # ==========================================================================
@@ -1599,11 +1690,12 @@ class MainWindow(ctk.CTk):
         out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
         grounding_mode = self.get_selected_grounding_mode()
 
-        # Prepare Worker
+        # Prepare Worker & Live Streaming UI
         self.cancel_event.clear()
         self._set_busy_state(True)
         self.progress_bar.set(0.02)
-        self.status_label.configure(text="Initializing generation pipeline...")
+        self.status_label.configure(text=f"Connecting to Ollama ({selected_model})...")
+        self._init_live_streaming_ui(selected_model)
 
         self.current_worker = GenerationWorker(
             mode=mode,
@@ -1630,65 +1722,77 @@ class MainWindow(ctk.CTk):
 
     def _synthesize_from_edited_script(self):
         """Synthesizes audio directly from the user-edited script tab."""
-        raw_text = self.editable_script_box.get("1.0", "end-1c").strip()
-        if not raw_text:
-            ActionableErrorDialog(
-                self,
-                title="Empty Script",
-                message="No dialogue script content found in the editor to synthesize.",
-            )
+        if getattr(self, "is_busy", False):
             return
 
-        dialogue_turns: list[DialogueTurn] = []
-        # Attempt JSON parsing first, then fallback to multi-tier dialogue parsing
         try:
-            parsed_json = json.loads(raw_text)
-            if isinstance(parsed_json, list):
-                dialogue_turns = [
-                    DialogueTurn(speaker=t.get("speaker", "Host 1"), text=t.get("text", ""))
-                    for t in parsed_json
-                    if isinstance(t, dict)
-                ]
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
+            raw_text = self.editable_script_box.get("1.0", "end-1c").strip()
+            if not raw_text:
+                ActionableErrorDialog(
+                    self,
+                    title="Empty Script",
+                    message="No dialogue script content found in the editor to synthesize.",
+                )
+                return
 
-        if not dialogue_turns:
-            dialogue_turns = DialogueParser.parse(raw_text)
+            dialogue_turns: list[DialogueTurn] = []
+            # Attempt JSON parsing first, then fallback to multi-tier dialogue parsing
+            try:
+                parsed_json = json.loads(raw_text)
+                if isinstance(parsed_json, list):
+                    dialogue_turns = [
+                        DialogueTurn(speaker=t.get("speaker", "Host 1"), text=t.get("text", ""))
+                        for t in parsed_json
+                        if isinstance(t, dict)
+                    ]
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
 
-        if not dialogue_turns:
+            if not dialogue_turns:
+                dialogue_turns = DialogueParser.parse(raw_text)
+
+            if not dialogue_turns:
+                ActionableErrorDialog(
+                    self,
+                    title="Invalid Script Format",
+                    message="Could not parse dialogue turns from the script box.",
+                    details="Please ensure dialogue turns follow JSON or 'Host 1: ...' format.",
+                )
+                return
+
+            lang = "nb-NO" if "Norwegian" in self.lang_menu.get() else "en-US"
+            speed_val = self.speed_slider.get()
+            speed_rate = format_rate_str(speed_val)
+            out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
+
+            self.cancel_event.clear()
+            self._set_busy_state(True)
+            self.progress_bar.set(0.40)
+            self.status_label.configure(text="Synthesizing audio from edited script...")
+
+            self.current_worker = GenerationWorker(
+                mode="audio_from_script",
+                input_type="dialogue",
+                input_data=dialogue_turns,
+                language=lang,
+                model=self.model_menu.get(),
+                format_type="custom",
+                tone="custom",
+                speed_rate=speed_rate,
+                output_dir=out_dir,
+                msg_queue=self.msg_queue,
+                cancel_event=self.cancel_event,
+                grounding_mode=self.get_selected_grounding_mode(),
+            )
+            self.current_worker.start()
+        except Exception as e:
+            self._set_busy_state(False)
             ActionableErrorDialog(
                 self,
-                title="Invalid Script Format",
-                message="Could not parse dialogue turns from the script box.",
-                details="Please ensure dialogue turns follow JSON or 'Host 1: ...' format.",
+                title="Synthesis Initialization Error",
+                message=f"Failed to start audio synthesis: {e}",
+                details=str(e),
             )
-            return
-
-        lang = "nb-NO" if "Norwegian" in self.lang_menu.get() else "en-US"
-        speed_val = self.speed_slider.get()
-        speed_rate = format_rate_str(speed_val)
-        out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
-
-        self.cancel_event.clear()
-        self._set_busy_state(True)
-        self.progress_bar.set(0.40)
-        self.status_label.configure(text="Synthesizing audio from edited script...")
-
-        self.current_worker = GenerationWorker(
-            mode="audio_from_script",
-            input_type="dialogue",
-            input_data=dialogue_turns,
-            language=lang,
-            model=self.model_menu.get(),
-            format_type="custom",
-            tone="custom",
-            speed_rate=speed_rate,
-            output_dir=out_dir,
-            msg_queue=self.msg_queue,
-            cancel_event=self.cancel_event,
-            grounding_mode=self.get_selected_grounding_mode(),
-        )
-        self.current_worker.start()
 
     # ==========================================================================
     # Queue Poller & Event Dispatch Loop
@@ -1724,8 +1828,21 @@ class MainWindow(ctk.CTk):
             pct = float(payload)
             self.progress_bar.set(pct)
             self.progress_pct_label.configure(text=f"{int(pct * 100)}%")
+        elif event_type == "STREAM_CHUNK":
+            self._handle_stream_chunk(str(payload))
+        elif event_type in ("ACT_DONE", "ACT_READY"):
+            if isinstance(payload, dict):
+                self._handle_act_done(payload)
         elif event_type == "SCRIPT_READY":
-            self._render_transcript(payload)
+            live_card = getattr(self, "_live_stream_card", None)
+            if live_card is not None:
+                try:
+                    live_card.destroy()
+                except (RuntimeError, AttributeError):
+                    pass
+                self._live_stream_card = None
+            if hasattr(self, "_render_transcript"):
+                self._render_transcript(payload)
         elif event_type == "GENERATION_DONE":
             self._on_generation_done(payload)
         elif event_type == "SCRIPT_ONLY_DONE":
@@ -1830,25 +1947,147 @@ class MainWindow(ctk.CTk):
             self.status_label.configure(text="Model download cancelled.")
             self.refresh_ollama_models()
         elif event_type == "CANCELLED":
-            self._set_busy_state(False)
-            self.status_label.configure(text=str(payload))
-            self.progress_bar.set(0.0)
-            self.progress_pct_label.configure(text="0%")
+            live_card = getattr(self, "_live_stream_card", None)
+            if live_card is not None:
+                try:
+                    live_card.destroy()
+                except (RuntimeError, AttributeError):
+                    pass
+                self._live_stream_card = None
+            if hasattr(self, "_set_busy_state"):
+                self._set_busy_state(False)
+            if hasattr(self, "status_label"):
+                self.status_label.configure(text=str(payload))
+            if hasattr(self, "progress_bar"):
+                self.progress_bar.set(0.0)
+            if hasattr(self, "progress_pct_label"):
+                self.progress_pct_label.configure(text="0%")
+            curr_diag = getattr(self, "current_dialogue", None)
+            if not curr_diag and hasattr(self, "_render_transcript"):
+                self._render_transcript([])
         elif event_type == "ERROR":
-            self._set_busy_state(False)
-            self.status_label.configure(text="Error encountered.")
+            live_card = getattr(self, "_live_stream_card", None)
+            if live_card is not None:
+                try:
+                    live_card.destroy()
+                except (RuntimeError, AttributeError):
+                    pass
+                self._live_stream_card = None
+            if hasattr(self, "_set_busy_state"):
+                self._set_busy_state(False)
+            if hasattr(self, "status_label"):
+                self.status_label.configure(text="Error encountered.")
+            curr_diag = getattr(self, "current_dialogue", None)
+            if not curr_diag and hasattr(self, "_render_transcript"):
+                self._render_transcript([])
             if isinstance(payload, dict):
                 ActionableErrorDialog(
                     self,
-                    title=payload.get("title", "Error"),
-                    message=payload.get("message", "An error occurred."),
+                    title=payload.get("title", "Error") or "Error",
+                    message=payload.get("message", "An error occurred.") or "An error occurred.",
                     details=payload.get("details"),
                     remedy=payload.get("remedy"),
                     actions=payload.get("actions"),
-                    dialog_type=payload.get("dialog_type", "error"),
+                    dialog_type=payload.get("dialog_type", "error") or "error",
                 )
             else:
-                messagebox.showerror("Error", str(payload))
+                if hasattr(self, "winfo_exists") and self.winfo_exists():
+                    messagebox.showerror("Error", str(payload))
+
+    def _init_live_streaming_ui(self, model_name: str):
+        """Initializes live streaming UI state across Formatted Dialogue and Editable Script tabs."""
+        self._streaming_raw_text = ""
+        self._streaming_chunks_count = 0
+        self._rendered_turns_count = 0
+        self.current_dialogue = []
+
+        # Clear formatted scroll view
+        for widget in self.formatted_scroll.winfo_children():
+            widget.destroy()
+
+        # Create Live Streaming Card
+        self._live_stream_card = LiveStreamingCard(
+            self.formatted_scroll,
+            title=f"Generating dialogue with Ollama ({model_name})...",
+            model_name=model_name,
+        )
+        self._live_stream_card.pack(fill="x", pady=4)
+
+        # In Editable Script Tab: Show live header and clear old content
+        self.editable_script_box.delete("1.0", "end")
+        self.editable_script_box.insert(
+            "1.0",
+            f"# Live Dialogue Stream from Ollama ({model_name})\n# Generating in real-time...\n\n",
+        )
+
+    def _handle_stream_chunk(self, chunk: str):
+        """Appends streaming chunk to live stream card and editable script box."""
+        if not chunk:
+            return
+        self._streaming_raw_text += chunk
+        self._streaming_chunks_count += 1
+
+        # 1. Update Live Streaming Card in Formatted tab
+        if self._live_stream_card:
+            self._live_stream_card.append_chunk(chunk)
+
+        # 2. Update Editable Script Box
+        try:
+            self.editable_script_box.insert("end", chunk)
+            self.editable_script_box.see("end")
+        except (RuntimeError, AttributeError, ValueError):
+            pass
+
+        # 3. Update status text with live token/chunk count if currently busy
+        if self.is_busy:
+            status_curr = self.status_label.cget("text")
+            if (
+                "Writing Act" in status_curr
+                or "Generating" in status_curr
+                or "Streaming" in status_curr
+                or "Connecting" in status_curr
+                or "Akt " in status_curr
+            ):
+                base_status = status_curr.split(" (Streaming")[0].rstrip(".")
+                self.status_label.configure(
+                    text=f"{base_status} (Streaming: ~{self._streaming_chunks_count} chunks)..."
+                )
+
+    def _handle_act_done(self, data: dict[str, Any]):
+        """Renders completed act turns into Formatted Dialogue view while keeping live stream card below."""
+        act_idx = int(data.get("act_idx", 1))
+        total_acts = int(data.get("total_acts", 1))
+        act_turns: list[DialogueTurn] = data.get("turns", [])
+
+        if not act_turns:
+            return
+
+        # Add to current_dialogue
+        self.current_dialogue.extend(act_turns)
+
+        # If live_stream_card is packed, unpack it temporarily to append turn cards
+        if self._live_stream_card:
+            self._live_stream_card.pack_forget()
+
+        # Render new DialogueTurnCards for each turn in this act
+        start_idx = self._rendered_turns_count + 1
+        for i, turn in enumerate(act_turns, start=start_idx):
+            turn_card = DialogueTurnCard(
+                self.formatted_scroll,
+                turn_number=i,
+                speaker=turn.speaker,
+                text=turn.text,
+            )
+            turn_card.pack(fill="x", pady=4)
+        self._rendered_turns_count += len(act_turns)
+
+        # If more acts remain, reset and repack the LiveStreamingCard below the completed turns
+        if act_idx < total_acts and self._live_stream_card:
+            next_act = act_idx + 1
+            self._live_stream_card.reset(
+                title=f"Writing Act {next_act}/{total_acts} (Current total: {len(self.current_dialogue)} turns)..."
+            )
+            self._live_stream_card.pack(fill="x", pady=4)
 
     # ==========================================================================
     # UI State & Transcript Rendering
@@ -1899,15 +2138,18 @@ class MainWindow(ctk.CTk):
             self.player_title_label.configure(
                 text=f"Loaded: {os.path.basename(self.current_mp3_path)}"
             )
-            self.player.open(self.current_mp3_path)
-            self.btn_play.configure(state="normal")
-            self.btn_pause.configure(state="normal")
-            self.btn_stop.configure(state="normal")
-            self.btn_export_mp3.configure(state="normal")
+            try:
+                self.player.open(self.current_mp3_path)
+                self.btn_play.configure(state="normal")
+                self.btn_pause.configure(state="normal")
+                self.btn_stop.configure(state="normal")
+                self.btn_export_mp3.configure(state="normal")
 
-            # Update initial time slider
-            tot_ms = self.player.get_length()
-            self.time_slider.update_position(0, tot_ms, "Loaded")
+                # Update initial time slider
+                tot_ms = self.player.get_length()
+                self.time_slider.update_position(0, tot_ms, "Loaded")
+            except Exception:
+                pass
 
     def _on_script_only_done(self, result: dict[str, Any]):
         self._set_busy_state(False)
@@ -1984,6 +2226,24 @@ class MainWindow(ctk.CTk):
         except OSError:
             pass
 
+    def _open_logs(self):
+        """Opens the application log file or log directory for inspection."""
+        log_path = get_log_file_path()
+        log_dir = resolve_log_directory()
+        logger.info("Opening application log directory/file: %s", log_path)
+        try:
+            if sys.platform == "win32":
+                if os.path.isfile(log_path):
+                    os.startfile(log_path)  # nosec: B606
+                elif os.path.isdir(log_dir):
+                    os.startfile(log_dir)  # nosec: B606
+            else:
+                if os.path.isdir(log_dir):
+                    os.system(f'xdg-open "{log_dir}"')  # nosec: B605
+        except OSError as e:
+            logger.warning("Could not open log file directly: %s", e)
+            messagebox.showinfo("Log File Location", f"Application logs are stored at:\n{log_path}")
+
     # ==========================================================================
     # Script Actions: Copy, Save As
     # ==========================================================================
@@ -2016,6 +2276,16 @@ class MainWindow(ctk.CTk):
 
     def reset_form(self):
         """Clears inputs and resets view."""
+        if self._live_stream_card:
+            try:
+                self._live_stream_card.destroy()
+            except (RuntimeError, AttributeError):
+                pass
+            self._live_stream_card = None
+        self._streaming_raw_text = ""
+        self._streaming_chunks_count = 0
+        self._rendered_turns_count = 0
+
         self.file_entry.delete(0, "end")
         self.file_info_label.configure(
             text="Ready to load document.", text_color=COLOR_TEXT_SECONDARY

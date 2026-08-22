@@ -55,6 +55,8 @@ class PodcastGeneratorService:
         options: GenerationOptions,
         progress_callback: Callable[[float, str], None] | None = None,
         cancel_event: threading.Event | None = None,
+        stream_callback: Callable[[str], None] | None = None,
+        act_callback: Callable[[int, int, list[DialogueTurn]], None] | None = None,
     ) -> GenerationResult:
         """
         Executes the 5-stage podcast generation pipeline:
@@ -95,6 +97,8 @@ class PodcastGeneratorService:
             is_topic=options.is_topic,
             cancel_event=cancel_event,
             progress_callback=_llm_progress,
+            stream_callback=stream_callback,
+            act_callback=act_callback,
         )
 
         if cancel_event and cancel_event.is_set():

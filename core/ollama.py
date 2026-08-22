@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from core.exceptions import OllamaConnectionError, OllamaModelNotFoundError
+from core.logger import get_logger
 from core.parser import DialogueParser, DialogueTurn, SpeakerRole
 from core.prompts import (
     build_act_system_prompt,
@@ -29,6 +30,8 @@ from core.prompts import (
     get_act_specs,
     normalize_language_code,
 )
+
+logger = get_logger("core.ollama")
 
 
 def _validate_url(url: str) -> str:
@@ -986,6 +989,8 @@ def generate_podcast_script(
     timeout: float = 300.0,
     cancel_event: threading.Event | None = None,
     progress_callback: Callable[[str], None] | None = None,
+    stream_callback: Callable[[str], None] | None = None,
+    act_callback: Callable[[int, int, list[DialogueTurn]], None] | None = None,
 ) -> list[DialogueTurn]:
     """
     High-level dialogue generation pipeline with Multi-Act Structured Generation:
@@ -993,6 +998,21 @@ def generate_podcast_script(
     For standard, deep dive, and extended in-depth episodes:
       Executes sequential thematic acts (chapters) passing previous dialogue context,
       guaranteeing authentic progression and reaching the target 45-60 turns.
+
+    Args:
+        content: Normalized source text or prompt.
+        language: Language code ('nb-NO' or 'en-US').
+        format_type: Duration preset ('quick', 'standard', 'deep_dive', 'extended').
+        tone_style: Tone preset ('casual', 'analytical', 'debate').
+        grounding_mode: Grounding mode ('strict', 'creative', 'open_topic').
+        model: Ollama model tag.
+        ollama_url: Base URL of local Ollama instance.
+        is_topic: True if content is a topic scratch prompt.
+        timeout: Generation timeout in seconds.
+        cancel_event: Optional thread cancellation flag.
+        progress_callback: Optional callback receiving high-level stage messages.
+        stream_callback: Optional real-time streaming callback receiving token pieces.
+        act_callback: Optional callback receiving (act_index, total_acts, act_turns).
 
     Returns:
         List[DialogueTurn] containing structured conversation.
@@ -1026,15 +1046,19 @@ def generate_podcast_script(
             model=model,
             prompt=user_prompt,
             system=system_prompt,
-            stream=False,
+            stream=stream_callback is not None,
             timeout=timeout,
             cancel_event=cancel_event,
+            callback=stream_callback,
         )
 
         if not raw_response or not raw_response.strip():
             raise ValueError("Ollama returned an empty response.")
 
-        return DialogueParser.parse(raw_response, default_language=lang)
+        parsed_turns = DialogueParser.parse(raw_response, default_language=lang)
+        if act_callback and parsed_turns:
+            act_callback(1, 1, parsed_turns)
+        return parsed_turns
 
     # 2. Multi-Act Sequential Generation Mode (Standard, Deep Dive, Extended In-Depth)
     full_script: list[DialogueTurn] = []
@@ -1079,9 +1103,10 @@ def generate_podcast_script(
             model=model,
             prompt=act_user_prompt,
             system=act_system_prompt,
-            stream=False,
+            stream=stream_callback is not None,
             timeout=timeout,
             cancel_event=cancel_event,
+            callback=stream_callback,
         )
 
         if raw_act_response and raw_act_response.strip():
@@ -1090,6 +1115,8 @@ def generate_podcast_script(
                 if act_turns:
                     for t in act_turns:
                         full_script.append(t)
+                    if act_callback:
+                        act_callback(act_idx, total_acts, act_turns)
             except ValueError:
                 if not full_script and act_idx == 1:
                     # Fallback retry on Act 1 if parsing failed
