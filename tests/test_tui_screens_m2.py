@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from core.ollama import ModelPullProgress
+from core.ollama import ModelPullProgress, OllamaClient
 from tui.screens.config import ConfigScreen
 from tui.screens.ingestion import IngestionScreen
 from tui.screens.ollama_mgr import OllamaManagerScreen, sort_models_by_preference
@@ -277,7 +277,10 @@ class TestOllamaManagerScreen:
         events = TUIEventQueue()
         screen = OllamaManagerScreen(state=state, event_queue=events)
 
-        with patch.object(screen.client, "check_connection", return_value=True):
+        with (
+            patch.object(OllamaClient, "check_connection", return_value=True),
+            patch.object(OllamaClient, "list_models", return_value=["llama3.1:8b"]),
+        ):
             success, msg = screen.set_server_url("http://127.0.0.1:11434", probe=True)
             assert success is True
             assert state.ollama.server_url == "http://127.0.0.1:11434"

@@ -58,6 +58,10 @@ class TestLoggerSubsystem:
 
     def test_main_window_open_logs(self):
         mock_win = MagicMock(spec=MainWindow)
-        with patch("os.path.isfile", return_value=True), patch("os.startfile") as mock_startfile:
+        with (
+            patch("sys.platform", "win32"),
+            patch("os.path.isfile", return_value=True),
+            patch("os.startfile", create=True) as mock_startfile,
+        ):
             MainWindow._open_logs(mock_win)
             mock_startfile.assert_called_once()
