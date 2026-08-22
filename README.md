@@ -45,6 +45,8 @@
   - 📚 **Extended In-Depth**: ~25–30 mins (45–60 dialogue turns)
 - **Tone & Style Controls**: Fine-tune conversation style (Casual & Lively, Analytical & Educational, Lively Debate).
 - **Voice Pace Fine-Tuning**: Adjust speaking speed from -10% to +15% for optimal natural rhythm.
+- **Interactive Tokyo Night TUI (`tui.py`)**: Full-screen, responsive terminal interface for Windows PowerShell and Command Prompt (CMD) with non-blocking workers and 8 specialized views.
+- **Scriptable CLI Engine (`cli.py`)**: Run full unattended podcast generation pipelines from the command line, generate rapidly with just a topic (`--topic`), or chain modular subcommands (`extract`, `generate-script`, `synthesize-audio`, `stitch`).
 - **Zero-FFmpeg Binary Stitching**: Native pure-Python MPEG audio frame stitcher seamlessly concatenates MP3 turns without external tools.
 - **Interactive Script Review**: Inspect and edit dialogue turns prior to synthesis, or trigger one-click end-to-end generation.
 - **Integrated Native Audio Player**: Play, pause, seek, and export generated audio directly inside the application.
@@ -60,12 +62,15 @@
               │
               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│          Desktop GUI (CustomTkinter Fluent Dark)            │
-│  - Multi-Format File Picker / Scratch Prompt Box            │
-│  - Dynamic Ollama Model Selector & Language Switcher        │
-│  - Episode Length (Quick, Standard, Deep Dive, In-Depth)    │
-│  - Style & Voice Rate Fine-Tuning                           │
-│  - Live Step-by-Step Progress & Real-Time Status Bar        │
+│                       Interface Layer                       │
+│  ┌───────────────────────────┐ ┌──────────────────────────┐ │
+│  │ CustomTkinter Desktop GUI │ │ Tokyo Night Terminal TUI │ │
+│  │ (python app.py)           │ │ (python tui.py)          │ │
+│  └───────────────────────────┘ └──────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │       Scriptable CLI Pipeline & Chaining Engine        │ │
+│  │       (python cli.py pipeline --topic "..." / -f ...)   │ │
+│  └────────────────────────────────────────────────────────┘ │
 └───────────────┬─────────────────────────────┬───────────────┘
                 │                             │
                 ▼                             ▼
@@ -82,7 +87,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                   3. Assembly & Playback                    │
 │ - Pure Python MP3 Frame Concatenation (Zero ffmpeg needed)  │
-│ - Built-in Native Windows Media Player                      │
+│ - Built-in Native Windows Media Player (MCI)                │
 │ - Custom Destination Folder & "Save MP3 As..." Export       │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -151,15 +156,51 @@ The setup script automatically:
 3. Installs all required runtime and development dependencies.
 4. Runs `check_env.py` to diagnose Ollama connectivity and installed models.
 
-### 3. Launch the Application
+### 3. Launching Your Preferred Interface
 
+#### Option A: Desktop GUI (Windows 11 Fluent Dark)
 ```powershell
-# Activate virtual environment
-.\.venv\Scripts\Activate.ps1
-
-# Launch application
 python app.py
 ```
+
+#### Option B: Interactive Terminal TUI (PowerShell / CMD)
+```powershell
+# Launch interactive Tokyo Night TUI dashboard
+python tui.py
+
+# Pre-load document or rapid topic directly into TUI
+python tui.py --topic "The Future of AI"
+python tui.py --file "docs/paper.pdf" --model llama3.1:8b
+```
+
+#### Option C: Headless Scriptable CLI & Pipeline Chaining
+```powershell
+# Rapid Topic-Only Generation (Zero documents required)
+python cli.py pipeline --topic "Quantum Computing in 2026" --length quick --outdir ./output
+
+# Fine-Grained Document Generation
+python cli.py pipeline --file "docs/paper.pdf" --grounding strict --model qwen2.5:7b --outdir ./output
+
+# Modular Pipeline Chaining
+python cli.py extract -f "document.pdf" > extracted.txt
+python cli.py generate-script --text "$(Get-Content extracted.txt -Raw)" --json > dialogue.json
+python cli.py synthesize-audio --dialogue-json dialogue.json --outdir ./output
+python cli.py stitch --input-dir ./output --output ./output/podcast.mp3
+```
+
+---
+
+## 🖥️ Desktop & Terminal Shortcuts
+
+Run the shortcut creator to generate desktop launch icons for both the GUI and Terminal TUI:
+
+```powershell
+.\create_desktop_shortcut.ps1
+```
+
+This creates:
+- `LocalPodcastLLMStudio.lnk` (Desktop GUI)
+- `LocalPodcastLLMStudio (Terminal TUI).lnk` (Terminal TUI)
 
 ---
 
@@ -215,34 +256,34 @@ LocalPodcastLLMStudio/
 │   └── pull_request_template.md       # PR checklist and change summary template
 │
 ├── core/                              # Core processing engines
-│   ├── extractor.py                   # Multi-format document parser (.pdf, .md, .txt)
+│   ├── extractor.py                   # Multi-format document parser (.pdf, .md, .txt, topics)
 │   ├── prompts.py                     # Dynamic prompt engineering & duration presets
 │   ├── parser.py                      # 6-tier resilient dialogue JSON parser
+│   ├── pipeline.py                    # Headless podcast generator service
 │   ├── ollama.py                      # Local Ollama REST client & turn generator
 │   ├── tts.py                         # 100% Offline Piper TTS neural voice synthesizer
 │   ├── mp3_stitcher.py                # Zero-dependency pure Python MP3 frame stitcher
 │   └── player.py                      # Native Windows MCI audio player & exporter
 │
-├── ui/                                # User interface layer
+├── ui/                                # Desktop GUI layer (CustomTkinter)
 │   ├── theme.py                       # Fluent Dark styling, palette, typography
 │   ├── widgets.py                     # Cards, headers, sliders, dialogue cards, error dialogs
+│   ├── about_dialog.py                # About & diagnostic info dialog
 │   └── main_window.py                 # Main GUI window & background worker queue loop
 │
-├── tests/                             # Comprehensive test suite
-│   ├── conftest.py                    # Fixtures & mock environments
-│   ├── test_check_env.py              # Diagnostic checker tests
-│   ├── test_extractor.py              # Document extraction tests
-│   ├── test_prompts.py                # Bilingual prompt preset tests
-│   ├── test_parser.py                 # Resilient JSON parser tests
-│   ├── test_ollama.py                 # Ollama REST API mock tests
-│   ├── test_tts.py                    # Piper TTS neural voice synthesizer tests
-│   ├── test_mp3_stitcher.py           # Pure Python MP3 frame stitching tests
-│   ├── test_player.py                 # Audio playback & export tests
-│   ├── test_ui.py                     # CustomTkinter GUI lifecycle tests
-│   └── test_e2e_pipeline.py           # End-to-end integration tests
+├── tui/                               # Terminal User Interface layer (PowerShell / CMD)
+│   ├── terminal.py                    # Windows ANSI controller & VTP setup
+│   ├── input.py                       # Non-blocking msvcrt keyboard input reader
+│   ├── state.py                       # Reactive thread-safe TUI state container
+│   ├── components.py                  # Cards, HotkeyBar, TimeSlider, tables, modals
+│   ├── workers.py                     # Background worker threads for async operations
+│   └── screens/                       # 8 interactive full-screen views
 │
-├── app.py                             # Main application entry point
+├── app.py                             # Desktop GUI main entry point
+├── tui.py                             # Interactive Terminal User Interface launcher
+├── cli.py                             # Scriptable CLI pipeline & chaining engine
 ├── check_env.py                       # Preflight environment diagnostics & model audit
+├── create_desktop_shortcut.ps1 / .bat # Desktop shortcuts creation utility
 ├── setup.bat / setup.ps1              # Automated self-healing environment setup
 ├── build_exe.bat / build_exe.ps1      # One-click PyInstaller build pipeline
 ├── LocalPodcastLLMStudio.spec         # PyInstaller packaging specification

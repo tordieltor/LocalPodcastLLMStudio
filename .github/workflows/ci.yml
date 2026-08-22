@@ -60,7 +60,7 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt mypy types-requests
 
       - name: Run Mypy Type Checking
-        run: mypy core ui app.py check_env.py
+        run: mypy core ui app.py check_env.py cli.py tui
 
   security-scan:
     name: Security Analysis (Bandit & Pip-Audit)
@@ -82,7 +82,7 @@ jobs:
           pip install bandit pip-audit
 
       - name: Run Bandit SAST Scan
-        run: bandit -r core ui app.py check_env.py -ll
+        run: bandit -r core ui app.py check_env.py cli.py tui -ll
 
       - name: Run Pip-Audit Dependency Scan
         run: pip-audit -r requirements.txt

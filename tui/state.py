@@ -110,6 +110,7 @@ class TUIEventType(str, Enum):
     INGESTION_ERROR = "ingestion:error"
 
     # Ollama Events
+    OLLAMA_PROBE_REQUESTED = "ollama:probe_requested"
     OLLAMA_STATUS_UPDATE = "ollama:status_update"
     OLLAMA_SERVICE_LAUNCHING = "ollama:service_launching"
     OLLAMA_SERVICE_STARTED = "ollama:service_started"

@@ -336,6 +336,7 @@ class TestDashboardScreen:
         assert "[1] Source Content Ingestion" in rendered
         assert "[2] Ollama Local LLM Engine" in rendered
         assert "[3] Podcast Settings & Personas" in rendered
+        assert "[4] Generation Pipeline & Studio" in rendered
         assert "[5] Script Studio & Dialogue Turns" in rendered
         assert "[6] Master Audio & MCI Player" in rendered
 
@@ -345,15 +346,22 @@ class TestDashboardScreen:
         screen = DashboardScreen(state=state, event_queue=events)
 
         assert screen.handle_key("1") is True
+        assert screen.handle_key("i") is True
         assert screen.handle_key("2") is True
+        assert screen.handle_key("o") is True
         assert screen.handle_key("3") is True
+        assert screen.handle_key("c") is True
         assert screen.handle_key("4") is True
         assert screen.handle_key("5") is True
+        assert screen.handle_key("s") is True
         assert screen.handle_key("6") is True
+        assert screen.handle_key("p") is True
         assert screen.handle_key("?") is True
+        assert screen.handle_key("f1") is True
         assert screen.handle_key("g") is True
+        assert screen.handle_key("r") is True
 
-        queued = events.drain(20)
+        queued = events.drain(30)
         destinations = [
             e.payload.get("screen") for e in queued if e.event_type == TUIEventType.NAVIGATE_SCREEN
         ]
@@ -364,6 +372,7 @@ class TestDashboardScreen:
         assert ScreenMode.SCRIPT_STUDIO.value in destinations
         assert ScreenMode.PLAYER.value in destinations
         assert ScreenMode.HELP.value in destinations
+        assert any(e.event_type == TUIEventType.OLLAMA_PROBE_REQUESTED for e in queued)
 
 
 # ==============================================================================

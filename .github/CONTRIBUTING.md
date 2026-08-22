@@ -97,10 +97,10 @@ ruff format .
 We use [Mypy](https://github.com/python/mypy) for strict static type safety:
 
 ```bash
-mypy core ui app.py check_env.py
+mypy core ui app.py check_env.py cli.py tui
 ```
 
-All code in `core/` and `ui/` should include proper type hints for function arguments, return types, and module-level interfaces.
+All code in `core/`, `ui/`, and `tui/` should include proper type hints for function arguments, return types, and module-level interfaces.
 
 ### 3. Security Scanning (`bandit` & `pip-audit`)
 
@@ -108,7 +108,7 @@ Ensure code and dependencies meet security standards:
 
 ```bash
 # Static Application Security Testing (SAST)
-bandit -r core ui app.py check_env.py -ll
+bandit -r core ui app.py check_env.py cli.py tui -ll
 
 # Dependency Vulnerability Audit
 pip-audit -r requirements.txt
@@ -116,7 +116,7 @@ pip-audit -r requirements.txt
 
 ### 4. Running the Test Suite (`pytest`)
 
-We maintain a 100% test pass rate with unit, integration, and UI lifecycle tests:
+We maintain a 100% test pass rate with unit, integration, UI lifecycle, TUI screen, and scriptable CLI tests:
 
 ```bash
 # Run all tests with duration breakdown
@@ -131,6 +131,11 @@ pytest tests/test_ollama.py
 pytest tests/test_tts.py
 pytest tests/test_player.py
 pytest tests/test_ui.py
+pytest tests/test_tui_app.py
+pytest tests/test_tui_terminal.py
+pytest tests/test_cli.py
+pytest tests/test_e2e_cli.py
+pytest tests/test_e2e_tui.py
 pytest tests/test_check_env.py
 pytest tests/test_e2e_pipeline.py
 ```
@@ -144,13 +149,13 @@ pytest tests/test_e2e_pipeline.py
 When adding or modifying components, adhere to the established architectural boundaries:
 
 1. **`core/extractor.py`**:
-   - Ingests `.pdf`, `.md`, and `.txt` files.
+   - Ingests `.pdf`, `.md`, and `.txt` files or raw topics.
    - Enforce bounded memory ingestion (default 50 MB file size guard, 200 page PDF limit).
    - Use encoding fallback chains (`utf-8` → `cp1252` → `latin-1`).
 2. **`core/prompts.py`**:
    - Manages bilingual prompt engineering (Norwegian Bokmål / English).
    - Manages the 4 duration presets: Quick Summary, Standard Episode, Deep Dive, Extended In-Depth.
-   - Manages tone and pacing styles.
+   - Manages tone, pacing styles, and grounding modes (Strict Source, Creative Analogy, Open Topic).
 3. **`core/parser.py`**:
    - 6-tier resilient JSON parsing pipeline for LLM dialogue turns.
    - Resilient against markdown fences, unescaped quotes, missing brackets, trailing commas, and single-turn dialogues.
@@ -167,10 +172,14 @@ When adding or modifying components, adhere to the established architectural bou
    - Strips ID3v2 tags and joins MPEG audio frames smoothly without requiring `ffmpeg` binaries.
 7. **`core/player.py`**:
    - Native Windows MCI audio playback and export engine.
-8. **`ui/` (`theme.py`, `widgets.py`, `main_window.py`)**:
+8. **`ui/` (`theme.py`, `widgets.py`, `main_window.py`, `app.py`)**:
    - Fluent Dark mode CustomTkinter GUI.
-   - Always offload heavy tasks (Ollama REST queries, TTS synthesis, audio stitching) to background threads (`threading.Thread`) with UI status callbacks to ensure zero UI freezes.
-   - Use `ActionableErrorDialog` for actionable error handling.
+   - Offload heavy tasks to background workers with queue callbacks.
+9. **`tui/` (`terminal.py`, `input.py`, `state.py`, `components.py`, `workers.py`, `screens/`, `tui.py`)**:
+   - Interactive Tokyo Night Terminal User Interface for PowerShell / CMD.
+   - Non-blocking `msvcrt` keyboard input, reactive state store, and threaded background workers.
+10. **`cli.py`**:
+   - Scriptable CLI pipeline engine supporting rapid topic-only generation, full unattended execution (`pipeline`), modular subcommands (`extract`, `generate-script`, `synthesize-audio`, `stitch`), and JSON output.
 
 ---
 

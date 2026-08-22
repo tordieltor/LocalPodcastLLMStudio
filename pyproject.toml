@@ -41,6 +41,7 @@ dependencies = [
     "customtkinter>=5.2.0",
     "pypdf>=4.0.0",
     "requests>=2.31.0",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]
@@ -60,9 +61,13 @@ dev = [
 localpodcastllmstudio = "app:main"
 podcaststudio = "app:main"
 
+[project.scripts]
+podcast-tui = "tui:main"
+podcast-cli = "cli:main"
+
 [tool.setuptools]
-py-modules = ["app", "check_env"]
-packages = ["core", "ui"]
+py-modules = ["app", "check_env", "cli", "tui"]
+packages = ["core", "ui", "tui"]
 
 [tool.ruff]
 target-version = "py310"
@@ -97,7 +102,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["core", "ui"]
+known-first-party = ["core", "ui", "tui"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -138,7 +143,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["core", "ui", "app", "check_env"]
+source = ["core", "ui", "tui", "app", "check_env", "cli"]
 omit = [
     "tests/*",
     ".venv/*",

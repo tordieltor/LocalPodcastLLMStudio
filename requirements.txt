@@ -12,3 +12,6 @@ pypdf>=4.0.0
 
 # HTTP Client for Local Ollama REST API Communication
 requests>=2.31.0
+
+# Terminal UI Framework (Tokyo Night TUI, ANSI styling & components)
+rich>=13.0.0

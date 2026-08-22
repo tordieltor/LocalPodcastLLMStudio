@@ -144,6 +144,15 @@ class TUIApplication:
         self.event_queue.subscribe(TUIEventType.OPEN_MODAL, self._on_open_modal_event)
         self.event_queue.subscribe(TUIEventType.CLOSE_MODAL, self._on_close_modal_event)
         self.event_queue.subscribe(TUIEventType.QUIT_REQUESTED, self._on_quit_event)
+        self.event_queue.subscribe(TUIEventType.OLLAMA_PROBE_REQUESTED, self._on_ollama_probe_event)
+
+    def _on_ollama_probe_event(self, event: Any) -> None:
+        probe_worker = OllamaProbeWorker(
+            server_url=self.state.ollama.server_url,
+            state=self.state,
+            event_queue=self.event_queue,
+        )
+        probe_worker.start()
 
     def _on_navigate_event(self, event: Any) -> None:
         payload = event.payload or {}
