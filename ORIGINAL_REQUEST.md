@@ -371,5 +371,87 @@ Synthesize all audit findings into a structured markdown report (`CODE_REVIEW_RE
 - [ ] Architectural recommendations include separation-of-concerns analysis and dependency flow evaluations.
 - [ ] Concurrency, resource management, and Windows-specific process lifecycles are explicitly evaluated.
 
+## 2026-08-22T11:37:45Z
+
+Build a full-featured, interactive terminal user interface (TUI) and text-based UX for LocalPodcastLLMStudio that runs natively in Windows PowerShell and CMD. The TUI must interface seamlessly with the existing `core/` backend to provide complete parity with the desktop application's workflow (document ingestion, Ollama model configuration, prompt/persona selection, dialogue generation, TTS audio synthesis, and playback).
+
+Working directory: c:\Users\torpr\Documents\antigravity\epic-hubble
+Integrity mode: development
+
+## Requirements
+
+### R1. Interactive Terminal User Interface (TUI)
+Provide a responsive, full-screen text-based interface and menu-driven workflow compatible with Windows PowerShell and Command Prompt (CMD). It must support interactive navigation, keyboard shortcuts, styled panels, live status indicators, and clean rendering across Windows terminal environments.
+
+### R2. Core Workflow Parity with Desktop GUI
+The TUI must expose full operational access to the existing podcast generation pipeline using the repository's `core/` modules:
+- Document input and text extraction (PDF, TXT, Markdown, URL, etc.)
+- Local Ollama connection status, model listing/selection, and generation parameters (hosts/personas, grounding mode, topic/custom prompts)
+- Real-time streaming generation view and parsed dialogue turn inspection
+- TTS voice selection, speech synthesis progress tracking, and atomic MP3 audio stitching
+- Integrated terminal audio playback control (play, pause, stop, position status) using the core audio engine
+
+### R3. Dedicated Entry Point & Non-blocking Concurrency
+Provide a dedicated CLI/TUI entry point script (e.g. `tui.py` or `cli.py`) that launches directly from the command line. Long-running operations (Ollama streaming, Piper/Edge TTS synthesis, audio processing) must run asynchronously or on worker threads without freezing TUI responsiveness or input handling.
+
+### R4. Verification, Test Suite & Quality Gate Compliance
+Include automated unit and integration tests for the TUI components, mock-driven pipeline execution tests, and ensure full compliance with the repository's quality gates (`ruff check`, `ruff format --check`, `mypy`, and `pytest`).
+
+## Acceptance Criteria
+
+### TUI Execution & Windows Terminal Compatibility
+- [ ] Running the dedicated entry point script launches an interactive full-screen TUI in Windows PowerShell and CMD without unhandled exceptions or display corruption.
+- [ ] Terminal resizing, redraws, and keyboard navigation (selection, confirmation, cancellation) function cleanly.
+
+### End-to-End Podcast Generation Workflow
+- [ ] Users can load/input source text or documents through the TUI.
+- [ ] Users can configure Ollama parameters, select personas/prompts, and trigger script generation with real-time feedback.
+- [ ] Generated dialogue turns are displayed and can be reviewed.
+- [ ] Users can trigger TTS voice synthesis with live progress bars and produce an output stitched MP3 file.
+- [ ] Built-in audio playback controls (play/pause/stop) function within the terminal interface.
+
+### Asynchronous Safety & Error Handling
+- [ ] Background tasks (LLM generation, TTS synthesis, audio stitching) do not block or crash the UI thread.
+- [ ] Connection errors (e.g. Ollama unreachable, invalid files, missing voices) display clear, actionable error messages in the TUI without crashing the process.
+
+### Verification & Code Quality Gate
+- [ ] All new code passes `.venv/Scripts/python.exe -m ruff check .` with zero errors.
+- [ ] All new code passes `.venv/Scripts/python.exe -m ruff format --check .` with zero formatting violations.
+- [ ] Static type checking `.venv/Scripts/python.exe -m mypy` passes cleanly on all new and modified modules.
+- [ ] Automated tests for the TUI pass via `.venv/Scripts/python.exe -m pytest tests/ -v`.
+
+## 2026-08-22T11:49:53Z
+
+Requirement update:
+In addition to the interactive TUI, the user requested:
+"It should also be possible to parse arguments in a script to go from start to finish and to chain to build a pipeline."
+
+Incorporate into project deliverables:
+1. Provide a comprehensive scriptable CLI with argument parsing (e.g. `cli.py` or `python -m cli`) supporting:
+   - Full end-to-end unattended podcast generation pipeline from start to finish via CLI arguments (input file, Ollama model, prompt/persona options, TTS voices, output paths).
+   - Modular subcommands/stages (extract, generate-script, synthesize-audio, stitch) that can run independently or be chained together in PowerShell/CMD scripts.
+   - Proper exit codes, quiet/JSON output options, and robust error handling.
+2. Include automated unit/integration tests for the CLI argument parser and headless pipeline workflows.
+3. Ensure both `tui.py` (interactive) and `cli.py` (scriptable/pipeline chaining) share the unified core backend and pass all quality gates (ruff, mypy, pytest).
+
+## 2026-08-22T11:51:51Z
+
+Requirement update:
+"It should be able to only send a theme/prompt and get results out, but also a possibility to be specific"
+
+Ensure implementation supports:
+1. **Rapid Topic/Prompt-only mode**:
+   - The user can simply provide a theme, topic, or prompt string (e.g. `--topic "Quantum Computing in 2026"` or `--prompt "Explain black holes"`) without any input document, utilizing GroundingMode.OPEN_TOPIC in `core/prompts.py`.
+   - Both in the CLI (`cli.py`) and TUI (`tui.py`), document input is optional; users can immediately generate a podcast from a prompt/theme alone.
+2. **Fine-grained specificity**:
+   - Full granular control when desired via CLI flags and TUI settings:
+     - Document input + Grounding Mode (Strict Source, Creative Analogy, Open Topic)
+     - Persona profiles, speaker names, conversation tone
+     - Dialogue length / turn count, dialogue language (English, Norwegian, etc.)
+     - Per-speaker TTS voices, speech rate/speed, pitch, inter-turn pause duration
+     - Model selection, Ollama host endpoint, generation temperature
+     - Custom system prompts and direct instructions.
+3. Unit and integration tests covering both minimal topic-only generation and fully customized fine-grained configurations.
+
 
 
