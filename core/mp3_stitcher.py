@@ -99,8 +99,6 @@ class MP3Stitcher:
 
         b0 = header_bytes[offset]
         b1 = header_bytes[offset + 1]
-        b2 = header_bytes[offset + 2]
-        _b3 = header_bytes[offset + 3]
 
         # Check sync word (11 bits = 0xFF followed by 0xE0 mask in byte 1)
         if b0 != 0xFF or (b1 & 0xE0) != 0xE0:
@@ -112,23 +110,26 @@ class MP3Stitcher:
         if version_id == 1 or layer != 1:
             return None
 
+        # Optimization: Defer b2 read until sync word and Layer III version check pass
+        b2 = header_bytes[offset + 2]
         bitrate_idx = (b2 >> 4) & 0x0F
         sr_idx = (b2 >> 2) & 0x03
-        padding = (b2 >> 1) & 0x01
 
         if bitrate_idx == 0 or bitrate_idx == 15 or sr_idx == 3:
             return None
 
+        padding = (b2 >> 1) & 0x01
         version_key = version_id if version_id in (3, 2, 0) else 2
         sample_rates = cls.SAMPLING_RATES.get(version_key, (24000, 24000, 24000))
         sample_rate = sample_rates[sr_idx]
 
+        # Optimization: Use fast integer arithmetic instead of floating-point multiplication/division
         if version_id == 3:
             bitrate = cls.MPEG1_L3_BITRATES[bitrate_idx]
-            frame_len = int((144 * bitrate * 1000) / sample_rate) + padding
+            frame_len = (144000 * bitrate) // sample_rate + padding
         else:
             bitrate = cls.MPEG2_L3_BITRATES[bitrate_idx]
-            frame_len = int((72 * bitrate * 1000) / sample_rate) + padding
+            frame_len = (72000 * bitrate) // sample_rate + padding
 
         if frame_len < 4 or frame_len > 4000:
             return None
