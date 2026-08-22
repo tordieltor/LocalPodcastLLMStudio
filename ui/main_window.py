@@ -61,7 +61,6 @@ from ui.theme import (
     COLOR_BUTTON_SECONDARY_HOVER,
     COLOR_BUTTON_SUCCESS,
     COLOR_BUTTON_SUCCESS_HOVER,
-    COLOR_ERROR,
     COLOR_INPUT_BG,
     COLOR_INPUT_BORDER,
     COLOR_PROGRESS_BG,
@@ -723,10 +722,11 @@ class MainWindow(ctk.CTk):
             text="⚡ Start Ollama",
             width=105,
             height=30,
-            font=get_font_caption(),
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_SUCCESS,
             hover_color=COLOR_BUTTON_SUCCESS_HOVER,
             text_color=COLOR_TEXT_DARK,
+            text_color_disabled=COLOR_TEXT_DARK,
             command=self.start_ollama_service_async,
         )
         self.btn_start_ollama_header.pack(side="left", padx=(0, 8))
@@ -736,9 +736,10 @@ class MainWindow(ctk.CTk):
             text="↻ Refresh",
             width=80,
             height=30,
-            font=get_font_caption(),
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
             command=self.refresh_ollama_models,
         )
         self.btn_refresh_models.pack(side="left")
@@ -748,9 +749,10 @@ class MainWindow(ctk.CTk):
             text="📋 Logs",
             width=75,
             height=30,
-            font=get_font_caption(),
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
             command=self._open_logs,
         )
         self.btn_logs.pack(side="left", padx=(8, 0))
@@ -760,9 +762,10 @@ class MainWindow(ctk.CTk):
             text="ℹ️ About",
             width=75,
             height=30,
-            font=get_font_caption(),
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
             command=self.show_about_dialog,
         )
         self.btn_about.pack(side="left", padx=(8, 0))
@@ -789,6 +792,9 @@ class MainWindow(ctk.CTk):
             font=get_font_body_bold(),
             selected_color=COLOR_ACCENT,
             selected_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            unselected_color="#1f2335",
+            unselected_hover_color="#292e42",
             command=self._on_nav_tab_changed,
         )
         self.nav_segmented.set("🎙️ Studio (The Highway)")
@@ -877,6 +883,11 @@ class MainWindow(ctk.CTk):
         self.modality_segmented = ctk.CTkSegmentedButton(
             scroll_container,
             values=["Document (.txt/.md/.pdf)", "Pasted Text", "Topic Prompt (Scratch)"],
+            selected_color=COLOR_ACCENT,
+            selected_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            unselected_color="#1f2335",
+            unselected_hover_color="#292e42",
             command=self._on_modality_changed,
         )
         self.modality_segmented.set("Document (.txt/.md/.pdf)")
@@ -899,8 +910,10 @@ class MainWindow(ctk.CTk):
             file_row,
             text="Browse...",
             width=80,
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_CLOSE,
             hover_color=COLOR_BUTTON_CLOSE_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
             command=self._browse_input_file,
         )
         self.btn_browse_file.pack(side="right")
@@ -923,6 +936,7 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_INPUT_BG,
             border_color=COLOR_INPUT_BORDER,
             border_width=1,
+            text_color=COLOR_TEXT_PRIMARY,
         )
         self.text_input_box.pack(fill="both", expand=True)
 
@@ -983,6 +997,8 @@ class MainWindow(ctk.CTk):
             font=get_font_body_bold(),
             fg_color=COLOR_ACCENT,
             hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_DARK,
+            text_color_disabled=COLOR_TEXT_DARK,
             command=lambda: self.start_generation(mode="full"),
         )
         self.btn_generate_full.pack(fill="x", pady=(4, 8))
@@ -995,9 +1011,11 @@ class MainWindow(ctk.CTk):
             action_row,
             text="📝 Script Only",
             height=34,
-            font=get_font_body(),
+            font=get_font_body_bold(),
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            text_color_disabled=COLOR_TEXT_MUTED,
             command=lambda: self.start_generation(mode="script_only"),
         )
         self.btn_generate_script.pack(side="left", fill="x", expand=True, padx=(0, 4))
@@ -1006,9 +1024,11 @@ class MainWindow(ctk.CTk):
             action_row,
             text="⏹️ Cancel",
             height=34,
-            font=get_font_body(),
-            fg_color=COLOR_ERROR,
-            hover_color="#db4b4b",
+            font=get_font_body_bold(),
+            fg_color=COLOR_BUTTON_DANGER,
+            hover_color=COLOR_BUTTON_DANGER_HOVER,
+            text_color="#ffffff",
+            text_color_disabled=COLOR_TEXT_MUTED,
             state="disabled",
             command=self.cancel_generation,
         )
@@ -1018,9 +1038,11 @@ class MainWindow(ctk.CTk):
             action_row,
             text="🔄 Reset",
             height=34,
-            font=get_font_body(),
+            font=get_font_body_bold(),
             fg_color=COLOR_BUTTON_CLOSE,
             hover_color=COLOR_BUTTON_CLOSE_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            text_color_disabled=COLOR_TEXT_MUTED,
             command=self.reset_form,
         )
         self.btn_reset.pack(side="right", fill="x", expand=True)
@@ -1113,6 +1135,8 @@ class MainWindow(ctk.CTk):
             state="disabled",
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            text_color_disabled=COLOR_TEXT_MUTED,
             command=self._play_audio,
         )
         self.btn_play.pack(side="left", padx=(0, 4))
@@ -1124,6 +1148,8 @@ class MainWindow(ctk.CTk):
             state="disabled",
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            text_color_disabled=COLOR_TEXT_MUTED,
             command=self._pause_audio,
         )
         self.btn_pause.pack(side="left", padx=(0, 4))
@@ -1135,6 +1161,8 @@ class MainWindow(ctk.CTk):
             state="disabled",
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            text_color_disabled=COLOR_TEXT_MUTED,
             command=self._stop_audio,
         )
         self.btn_stop.pack(side="left", padx=(0, 10))
@@ -1162,7 +1190,9 @@ class MainWindow(ctk.CTk):
             state="disabled",
             fg_color=COLOR_BUTTON_CLOSE,
             hover_color=COLOR_BUTTON_CLOSE_HOVER,
-            font=get_font_caption(),
+            text_color=COLOR_TEXT_PRIMARY,
+            text_color_disabled=COLOR_TEXT_MUTED,
+            font=get_font_caption_bold(),
             command=self._save_mp3_as,
         )
         self.btn_export_mp3.pack(side="right", padx=(4, 0))
@@ -1173,7 +1203,8 @@ class MainWindow(ctk.CTk):
             width=100,
             fg_color=COLOR_BUTTON_CLOSE,
             hover_color=COLOR_BUTTON_CLOSE_HOVER,
-            font=get_font_caption(),
+            text_color=COLOR_TEXT_PRIMARY,
+            font=get_font_caption_bold(),
             command=self._open_output_folder,
         )
         self.btn_open_folder.pack(side="right")
@@ -1217,7 +1248,8 @@ class MainWindow(ctk.CTk):
             width=110,
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            font=get_font_body(),
+            text_color=COLOR_TEXT_PRIMARY,
+            font=get_font_body_bold(),
             command=self._copy_script_to_clipboard,
         )
         self.btn_copy_script.pack(side="left", padx=(0, 8))
@@ -1228,7 +1260,8 @@ class MainWindow(ctk.CTk):
             width=130,
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-            font=get_font_body(),
+            text_color=COLOR_TEXT_PRIMARY,
+            font=get_font_body_bold(),
             command=self._save_script_as,
         )
         self.btn_save_script_as.pack(side="left", padx=(0, 8))
@@ -1239,6 +1272,8 @@ class MainWindow(ctk.CTk):
             height=36,
             fg_color=COLOR_ACCENT,
             hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_DARK,
+            text_color_disabled=COLOR_TEXT_DARK,
             font=get_font_body_bold(),
             command=self._synthesize_from_edited_script,
         )
@@ -1302,6 +1337,8 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
             command=self._on_language_changed,
         )
         self.lang_menu.set("English (Jenny & Guy)")
@@ -1325,6 +1362,8 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
             command=lambda _: self._update_highway_preset_label(),
         )
         self.length_menu.set("Standard Episode (12-16 turns, ~5-8 min)")
@@ -1372,6 +1411,8 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
             command=lambda _: self._update_highway_preset_label(),
         )
         self.model_menu.grid(row=0, column=0, sticky="ew", padx=(0, 6))
@@ -1380,10 +1421,11 @@ class MainWindow(ctk.CTk):
             model_row,
             text="⚡ Start",
             width=65,
-            font=get_font_caption(),
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_SUCCESS,
             hover_color=COLOR_BUTTON_SUCCESS_HOVER,
             text_color=COLOR_TEXT_DARK,
+            text_color_disabled=COLOR_TEXT_DARK,
             command=self.start_ollama_service_async,
         )
         self.btn_start_ollama.grid(row=0, column=1, padx=(0, 4))
@@ -1392,9 +1434,10 @@ class MainWindow(ctk.CTk):
             model_row,
             text="⬇ Pull",
             width=60,
-            font=get_font_caption(),
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
             command=self._on_download_model_clicked,
         )
         self.btn_download_model.grid(row=0, column=2)
@@ -1450,9 +1493,10 @@ class MainWindow(ctk.CTk):
             text="Cancel",
             width=60,
             height=24,
-            font=get_font_caption(),
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_DANGER,
             hover_color=COLOR_BUTTON_DANGER_HOVER,
+            text_color="#ffffff",
             command=self.cancel_model_pull,
         )
         self.btn_cancel_pull.pack(side="right")
@@ -1486,6 +1530,8 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
             command=self._on_grounding_mode_changed,
         )
         self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
@@ -1515,6 +1561,8 @@ class MainWindow(ctk.CTk):
             fg_color=COLOR_BUTTON_SECONDARY,
             button_color=COLOR_ACCENT,
             button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
         )
         self.tone_menu.set("Casual & Lively")
         self.tone_menu.pack(fill="x")
@@ -1536,7 +1584,10 @@ class MainWindow(ctk.CTk):
         out_row = ctk.CTkFrame(out_inner, fg_color="transparent")
         out_row.pack(fill="x")
         self.output_entry = ctk.CTkEntry(
-            out_row, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER
+            out_row,
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+            text_color=COLOR_TEXT_PRIMARY,
         )
         default_out = os.path.abspath(os.path.join(os.getcwd(), "output"))
         self.output_entry.insert(0, default_out)
@@ -1546,8 +1597,10 @@ class MainWindow(ctk.CTk):
             out_row,
             text="Browse...",
             width=80,
+            font=get_font_caption_bold(),
             fg_color=COLOR_BUTTON_CLOSE,
             hover_color=COLOR_BUTTON_CLOSE_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
             command=self._browse_output_dir,
         )
         self.btn_browse_output.pack(side="right")
@@ -1610,6 +1663,7 @@ class MainWindow(ctk.CTk):
             font=get_font_body_bold(),
             fg_color=COLOR_BUTTON_SECONDARY,
             hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
             command=self.refresh_ollama_models,
         )
         btn_run_env.pack(anchor="w", pady=(14, 0))

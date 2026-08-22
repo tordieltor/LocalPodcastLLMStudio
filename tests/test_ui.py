@@ -181,13 +181,13 @@ class TestUITheme:
         assert theme.COLOR_BUTTON_CLOSE_HOVER == "#414868"
         assert theme.COLOR_BUTTON_SUCCESS == "#9ece6a"
         assert theme.COLOR_BUTTON_SUCCESS_HOVER == "#7fb84e"
-        assert theme.COLOR_BUTTON_DANGER == "#f7768e"
-        assert theme.COLOR_BUTTON_DANGER_HOVER == "#db4b4b"
+        assert theme.COLOR_BUTTON_DANGER == "#db4b4b"
+        assert theme.COLOR_BUTTON_DANGER_HOVER == "#b93540"
 
         # State Indicators
         assert theme.COLOR_SUCCESS == "#9ece6a"
         assert theme.COLOR_WARNING == "#ff9e64"
-        assert theme.COLOR_ERROR == "#f7768e"
+        assert theme.COLOR_ERROR == "#db4b4b"
         assert theme.COLOR_INFO == "#7dcfff"
 
         # Progress Bar & Badges
@@ -198,9 +198,9 @@ class TestUITheme:
 
         # Text Colors
         assert theme.COLOR_TEXT_PRIMARY == "#c0caf5"
-        assert theme.COLOR_TEXT_SECONDARY == "#7982a9"
-        assert theme.COLOR_TEXT_MUTED == "#565f89"
-        assert theme.COLOR_TEXT_DARK == "#15161e"
+        assert theme.COLOR_TEXT_SECONDARY == "#9aa5ce"
+        assert theme.COLOR_TEXT_MUTED == "#787c99"
+        assert theme.COLOR_TEXT_DARK == "#0f111a"
 
         # Persona Colors
         assert theme.COLOR_HOST1 == "#7aa2f7"

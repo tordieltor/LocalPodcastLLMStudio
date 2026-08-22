@@ -33,13 +33,15 @@ COLOR_BUTTON_CLOSE = "#33384d"  # Neutral / Close / Browse button
 COLOR_BUTTON_CLOSE_HOVER = "#414868"  # Neutral / Close hover state
 COLOR_BUTTON_SUCCESS = "#9ece6a"  # Success action button (Start, Complete)
 COLOR_BUTTON_SUCCESS_HOVER = "#7fb84e"  # Success hover state
-COLOR_BUTTON_DANGER = "#f7768e"  # Cancel / Abort button
-COLOR_BUTTON_DANGER_HOVER = "#db4b4b"  # Cancel hover state
+COLOR_BUTTON_DANGER = "#db4b4b"  # Cancel / Abort button (high-contrast crimson)
+COLOR_BUTTON_DANGER_HOVER = "#b93540"  # Cancel hover state
+COLOR_BUTTON_DISABLED = "#282e44"  # Disabled button background
+COLOR_TEXT_DISABLED = "#7882a4"  # Disabled button readable text
 
 # State Indicators
 COLOR_SUCCESS = "#9ece6a"  # Vibrant emerald green (Connected / Ready)
 COLOR_WARNING = "#ff9e64"  # Warm amber orange (Checking / Busy / Warning)
-COLOR_ERROR = "#f7768e"  # Soft crimson red (Offline / Error / Cancelled)
+COLOR_ERROR = "#db4b4b"  # Crimson red (Offline / Error / Cancelled)
 COLOR_INFO = "#7dcfff"  # Cyan blue (Informational notifications)
 
 # Progress Bar & Badges
@@ -50,9 +52,9 @@ COLOR_BADGE_BG = "#1f2335"  # Status badge pill container background
 
 # Text & Typography Colors
 COLOR_TEXT_PRIMARY = "#c0caf5"  # High-contrast readable text
-COLOR_TEXT_SECONDARY = "#7982a9"  # Muted text for captions and subtitles
-COLOR_TEXT_MUTED = "#565f89"  # Deep muted text for placeholders
-COLOR_TEXT_DARK = "#15161e"  # Dark text for light button badges
+COLOR_TEXT_SECONDARY = "#9aa5ce"  # Readable text for captions and subtitles (>6:1 contrast)
+COLOR_TEXT_MUTED = "#787c99"  # Legible muted text for placeholders (>4.2:1 contrast)
+COLOR_TEXT_DARK = "#0f111a"  # High-contrast dark text for light/accent buttons (>9.5:1 contrast)
 
 # Persona Speaker Badges
 COLOR_HOST1 = "#7aa2f7"  # Host 1 / Kari / Jenny (Accent Cyan Blue)

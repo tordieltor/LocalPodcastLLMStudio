@@ -37,7 +37,6 @@ from ui.theme import (
     COLOR_INPUT_BORDER,
     COLOR_SUCCESS,
     COLOR_TEXT_DARK,
-    COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
     COLOR_WARNING,
@@ -305,7 +304,10 @@ class TimeSlider(ctk.CTkFrame):
         self.time_label.pack(side="right")
 
         self.status_mini = ctk.CTkLabel(
-            self.info_row, text="Stopped", font=get_font_caption(), text_color=COLOR_TEXT_MUTED
+            self.info_row,
+            text="Stopped",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
         )
         self.status_mini.pack(side="left")
 

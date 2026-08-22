@@ -17,6 +17,7 @@ from ui.theme import (
     COLOR_CARD_BORDER,
     COLOR_INFO,
     COLOR_SUCCESS,
+    COLOR_TEXT_DARK,
     COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
@@ -377,6 +378,7 @@ class AboutDialog(ctk.CTkToplevel):
             font=get_font_body_bold(),
             fg_color=COLOR_ACCENT,
             hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_DARK,
             command=self.destroy,
         )
         btn_close.pack(side="right")
