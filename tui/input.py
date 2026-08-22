@@ -12,6 +12,7 @@ import sys
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from rich.text import Text
 
@@ -117,7 +118,7 @@ class WindowsMSVCRTInputReader(InputReader):
             raise RuntimeError("WindowsMSVCRTInputReader is only available on Windows platforms.")
         import msvcrt
 
-        self._msvcrt = msvcrt
+        self._msvcrt: Any = msvcrt
 
     def has_key(self) -> bool:
         try:
@@ -136,12 +137,12 @@ class WindowsMSVCRTInputReader(InputReader):
         return None
 
     def _read_translated_key(self) -> str:
-        ch = self._msvcrt.getwch()
+        ch = str(self._msvcrt.getwch())
         if ch == "\x00":
-            ch2 = self._msvcrt.getwch()
+            ch2 = str(self._msvcrt.getwch())
             return EXTENDED_00_MAP.get(ch2, f"special_00_{ord(ch2)}")
         elif ch == "\xe0":
-            ch2 = self._msvcrt.getwch()
+            ch2 = str(self._msvcrt.getwch())
             return EXTENDED_E0_MAP.get(ch2, f"special_e0_{ord(ch2)}")
         elif ch in CHAR_MAP:
             return CHAR_MAP[ch]

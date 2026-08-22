@@ -23,13 +23,15 @@ from core.prompts import normalize_language_code
 
 logger = get_logger("core.tts")
 
+edge_tts: Any = None
+_EDGE_TTS_AVAILABLE: bool = False
 try:
-    import edge_tts
+    import edge_tts as _edge_tts_mod  # type: ignore[import-not-found,import-untyped,unused-ignore]
 
+    edge_tts = _edge_tts_mod
     _EDGE_TTS_AVAILABLE = True
 except ImportError:
-    edge_tts = None  # type: ignore[assignment]
-    _EDGE_TTS_AVAILABLE = False
+    pass
 
 # Global thread-safe in-memory cache for loaded PiperVoice ONNX instances
 _VOICE_MODEL_CACHE: dict[str, Any] = {}
