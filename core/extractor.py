@@ -7,16 +7,12 @@ import os
 import re
 from typing import Any
 
+from core.exceptions import DocumentExtractionError
+
 # Safe document ingestion bounds to protect against memory exhaustion (DoS)
 DEFAULT_MAX_FILE_SIZE_MB: int = 50
 DEFAULT_MAX_FILE_SIZE_BYTES: int = DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024  # 52,428,800 bytes
 DEFAULT_MAX_PDF_PAGES: int = 200
-
-
-class DocumentExtractionError(ValueError, FileNotFoundError):
-    """Raised when text extraction from a file, document, or prompt fails."""
-
-    pass
 
 
 # Precompiled regular expressions for text normalization performance

@@ -5,8 +5,51 @@ Bilingual (Norwegian Bokmål / English), 4-tier episode length presets,
 for two-host podcast dialogue.
 """
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+
+
+@dataclass(frozen=True)
+class ActSpec:
+    """Strongly typed specification for a structured podcast chapter/act."""
+
+    act_num: int
+    title: str
+    prompt_theme: str
+    target_turns: int = 10
+    min_turns: int = 8
+    max_turns: int = 12
+    is_intro: bool = False
+    is_outro: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Converts the ActSpec to a dictionary representation."""
+        return {
+            "act_num": self.act_num,
+            "title": self.title,
+            "prompt_theme": self.prompt_theme,
+            "target_turns": self.target_turns,
+            "min_turns": self.min_turns,
+            "max_turns": self.max_turns,
+            "is_intro": self.is_intro,
+            "is_outro": self.is_outro,
+        }
+
+
+@dataclass(frozen=True)
+class EpisodeFormatConfig:
+    """Strongly typed configuration for an episode length preset."""
+
+    id: str
+    name: str
+    duration: str
+    target_turns: int
+    min_turns: int
+    max_turns: int
+    description_nb: str
+    description_en: str
+
 
 # ==============================================================================
 # Grounding Modes & Anti-Hallucination Directives

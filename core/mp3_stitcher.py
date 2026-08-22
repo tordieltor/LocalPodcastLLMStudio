@@ -8,10 +8,11 @@ Zero external ffmpeg binary dependencies.
 import io
 import os
 import struct
-import threading
 import wave
 from collections.abc import Sequence
 from typing import Any
+
+from core.io_utils import atomic_write_file
 
 
 class MP3Stitcher:
@@ -467,38 +468,33 @@ def stitch_mp3_files(
         elif isinstance(item, (bytes, bytearray)):
             byte_segments.append(bytes(item))
 
+    valid_segments = [s for s in byte_segments if s]
+    if not valid_segments:
+        raise ValueError("Cannot stitch empty list of audio inputs.")
+
     # Check if inputs are WAV or MP3
-    is_wav = any(seg.startswith(b"RIFF") for seg in byte_segments if seg)
+    is_wav = valid_segments[0].startswith(b"RIFF")
     if is_wav:
-        stitched_bytes = WAVStitcher.stitch(segments=byte_segments, pause_ms=silence_duration_ms)
+        if not all(s.startswith(b"RIFF") for s in valid_segments):
+            raise ValueError(
+                "Mixed audio formats detected: cannot concatenate WAV and MP3 segments without transcoding."
+            )
+        stitched_bytes = WAVStitcher.stitch(segments=valid_segments, pause_ms=silence_duration_ms)
+        if not stitched_bytes:
+            raise ValueError("No valid WAV audio frames could be extracted from inputs.")
     else:
+        if any(s.startswith(b"RIFF") for s in valid_segments):
+            raise ValueError(
+                "Mixed audio formats detected: cannot concatenate MP3 and WAV segments without transcoding."
+            )
         stitched_bytes = MP3Stitcher.stitch(
-            segments=byte_segments,
+            segments=valid_segments,
             title=title,
             artist=artist,
             album=album,
             pause_ms=silence_duration_ms,
         )
+        if not stitched_bytes:
+            raise ValueError("No valid MPEG Layer III audio frames could be extracted from inputs.")
 
-    if not stitched_bytes:
-        raise ValueError("No valid MPEG Layer III audio frames could be extracted from inputs.")
-
-    abs_out_path = os.path.abspath(safe_out_path)
-    out_dir = os.path.dirname(abs_out_path)
-    os.makedirs(out_dir, exist_ok=True)
-
-    temp_out_path = f"{abs_out_path}.tmp.{os.getpid()}.{threading.get_ident()}"
-    try:
-        with open(temp_out_path, "wb") as f:
-            f.write(stitched_bytes)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp_out_path, abs_out_path)
-    finally:
-        if os.path.exists(temp_out_path):
-            try:
-                os.remove(temp_out_path)
-            except OSError:
-                pass
-
-    return abs_out_path
+    return atomic_write_file(safe_out_path, stitched_bytes)

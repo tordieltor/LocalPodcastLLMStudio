@@ -9,6 +9,7 @@ import ctypes
 import os
 import shutil
 import sys
+import uuid
 from typing import Any
 
 
@@ -18,8 +19,11 @@ class WindowsAudioPlayer:
     Supports MP3 playback, pause, resume, stop, position seeking, volume, and length queries.
     """
 
-    def __init__(self, alias: str = "localpodcastllmstudio_mci_player"):
-        self.alias = alias
+    def __init__(self, alias: str | None = None):
+        if alias is None:
+            self.alias = f"lp_mci_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+        else:
+            self.alias = alias
         self.current_file: str | None = None
         self._is_opened = False
         self._length_ms = 0
@@ -44,6 +48,18 @@ class WindowsAudioPlayer:
     @_is_open.setter
     def _is_open(self, val: bool) -> None:
         self._is_opened = val
+
+    def get_last_error_message(self) -> str:
+        """Retrieves human-readable error string from Windows winmm.dll."""
+        if not self._winmm or self._last_error == 0:
+            return ""
+        err_buf = ctypes.create_unicode_buffer(512)
+        try:
+            if self._winmm.mciGetErrorStringW(self._last_error, err_buf, 512):
+                return err_buf.value.strip()
+        except (AttributeError, OSError):
+            pass
+        return f"MCI Error Code {self._last_error}"
 
     def _send_command(self, cmd: str, buffer_len: int = 256) -> str:
         """Sends an MCI command string and returns response buffer string."""

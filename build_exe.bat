@@ -170,7 +170,7 @@ if exist "LocalPodcastLLMStudio.spec" (
     if errorlevel 1 (
         echo.
         echo -----------------------------------------------------------------------
-        echo [ERROR] PyInstaller build failed with exit code %ERRORLEVEL%.
+        echo [ERROR] PyInstaller build failed with exit code !ERRORLEVEL!.
         echo Please review the build errors printed above.
         echo -----------------------------------------------------------------------
         echo.
@@ -183,7 +183,7 @@ if exist "LocalPodcastLLMStudio.spec" (
     if errorlevel 1 (
         echo.
         echo -----------------------------------------------------------------------
-        echo [ERROR] PyInstaller build failed with exit code %ERRORLEVEL%.
+        echo [ERROR] PyInstaller build failed with exit code !ERRORLEVEL!.
         echo Please review the build errors printed above.
         echo -----------------------------------------------------------------------
         echo.

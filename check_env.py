@@ -19,13 +19,11 @@ Usage:
 
 import json
 import os
-import socket
 import sys
 import time
-import urllib.error
-import urllib.request
 from typing import Any
-from urllib.parse import urlparse
+
+from core.ollama import _validate_url as _validate_ollama_url
 
 # Reconfigure stdout/stderr for UTF-8 on Windows consoles to prevent charmap UnicodeEncodeErrors
 if sys.platform == "win32":
@@ -164,41 +162,14 @@ def check_pyinstaller() -> dict[str, Any]:
         }
 
 
-def _validate_ollama_url(url: str) -> str:
-    """
-    Validates and normalizes Ollama host URL ensuring http/https scheme.
-
-    Raises:
-        ValueError: If scheme is not http or https, or if host is invalid.
-    """
-    if not url or not isinstance(url, str):
-        raise ValueError("Ollama host URL must be a non-empty string.")
-    clean = url.strip()
-    if "://" in clean:
-        scheme = clean.split("://", 1)[0].lower()
-        if scheme not in ("http", "https"):
-            raise ValueError(
-                f"Invalid URL scheme '{scheme}'. Only 'http' and 'https' are supported."
-            )
-    elif not clean.startswith(("http://", "https://")):
-        clean = f"http://{clean}"
-    clean = clean.rstrip("/")
-    parsed = urlparse(clean)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"Invalid URL scheme '{parsed.scheme}'. Only 'http' and 'https' are supported."
-        )
-    if not parsed.netloc or not parsed.hostname:
-        raise ValueError(f"Invalid Ollama URL '{url}': missing host or network location.")
-    return clean
-
-
 def check_ollama_service(
     host: str = "http://localhost:11434", timeout_sec: float = 3.0
 ) -> dict[str, Any]:
     """
     Connect to local Ollama API at /api/tags to detect service status and installed models.
     """
+    from core.ollama import OllamaClient, find_ollama_binary
+
     try:
         clean_host = _validate_ollama_url(host)
     except ValueError as val_err:
@@ -214,96 +185,25 @@ def check_ollama_service(
             "remediation": "Provide a valid http:// or https:// URL for the Ollama service.",
         }
 
-    tags_url = f"{clean_host}/api/tags"
-
+    client = OllamaClient(base_url=clean_host)
     try:
-        req = urllib.request.Request(
-            tags_url,
-            headers={
-                "User-Agent": "LocalPodcastLLMStudio-Diagnostic/1.0",
-                "Accept": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=timeout_sec) as response:  # nosec: B310
-            if response.status == 200:
-                raw_body = response.read().decode("utf-8")
-                data = json.loads(raw_body)
-                raw_models = data.get("models", [])
-
-                parsed_models = []
-                for m in raw_models:
-                    name = m.get("name", "unknown")
-                    size_bytes = m.get("size", 0)
-                    size_gb = round(size_bytes / (1024**3), 2)
-                    details = m.get("details", {})
-                    param_size = details.get("parameter_size", "N/A")
-                    quant = details.get("quantization_level", "N/A")
-                    fmt = details.get("format", "gguf")
-                    family = details.get("family", "")
-
-                    parsed_models.append(
-                        {
-                            "name": name,
-                            "size_bytes": size_bytes,
-                            "size_gb": size_gb,
-                            "parameter_size": param_size,
-                            "quantization_level": quant,
-                            "format": fmt,
-                            "family": family,
-                            "modified_at": m.get("modified_at", ""),
-                        }
-                    )
-
-                has_models = len(parsed_models) > 0
-                return {
-                    "name": "Ollama LLM Service",
-                    "ok": True,
-                    "warn": not has_models,
-                    "online": True,
-                    "url": clean_host,
-                    "models_count": len(parsed_models),
-                    "models": parsed_models,
-                    "detail": f"Online at {clean_host} ({len(parsed_models)} model(s) available)",
-                    "remediation": "Ollama is running but has no models installed. Pull a model with: ollama pull llama3.1:8b (or ollama pull qwen2.5:7b / mistral-nemo)"
-                    if not has_models
-                    else None,
-                }
-            else:
-                return {
-                    "name": "Ollama LLM Service",
-                    "ok": False,
-                    "warn": False,
-                    "online": False,
-                    "url": clean_host,
-                    "models_count": 0,
-                    "models": [],
-                    "detail": f"HTTP status {response.status} from {tags_url}",
-                    "remediation": f"Verify Ollama is healthy and accessible at {clean_host}.",
-                }
-    except urllib.error.URLError as e:
-        reason = str(e.reason)
-        try:
-            from core.ollama import find_ollama_binary
-
-            bin_path = find_ollama_binary()
-        except (ImportError, OSError):
-            bin_path = None
-
-        if bin_path:
-            remediation = f"Start the Ollama desktop application or run in a terminal: ollama serve (binary found at {bin_path})"
-        else:
-            remediation = "Start the Ollama desktop application or run in a terminal: ollama serve"
-
+        models = client.list_models_detailed(timeout=timeout_sec)
+        has_models = len(models) > 0
         return {
             "name": "Ollama LLM Service",
-            "ok": False,
-            "warn": False,
-            "online": False,
+            "ok": True,
+            "warn": not has_models,
+            "online": True,
             "url": clean_host,
-            "models_count": 0,
-            "models": [],
-            "detail": f"Offline ({reason})",
-            "remediation": remediation,
+            "models_count": len(models),
+            "models": models,
+            "detail": f"Online at {clean_host} ({len(models)} model(s) available)",
+            "remediation": (
+                "Ollama is running but has no models installed. Pull a model with: "
+                "ollama pull llama3.1:8b (or ollama pull qwen2.5:7b / mistral-nemo)"
+            )
+            if not has_models
+            else None,
         }
     except TimeoutError:
         return {
@@ -317,7 +217,16 @@ def check_ollama_service(
             "detail": f"Connection timed out after {timeout_sec}s",
             "remediation": "Ollama is taking too long to respond. Ensure the Ollama daemon is responsive.",
         }
-    except (OSError, RuntimeError, ValueError) as e:
+    except Exception as e:
+        bin_path = find_ollama_binary()
+        if bin_path:
+            remediation = (
+                f"Start the Ollama desktop application or run in a terminal: "
+                f"ollama serve (binary found at {bin_path})"
+            )
+        else:
+            remediation = "Start the Ollama desktop application or run in a terminal: ollama serve"
+
         return {
             "name": "Ollama LLM Service",
             "ok": False,
@@ -326,46 +235,37 @@ def check_ollama_service(
             "url": clean_host,
             "models_count": 0,
             "models": [],
-            "detail": f"Connection failed: {str(e)}",
-            "remediation": f"Ensure Ollama is running and accessible at {clean_host}.",
+            "detail": f"Offline ({e})",
+            "remediation": remediation,
         }
 
 
 def check_edge_tts_network(timeout_sec: float = 3.0) -> dict[str, Any]:
     """Check connectivity to Microsoft Edge-TTS neural voice endpoint."""
+    from core.ollama import check_edge_tts_reachability
+
     target_host = "speech.platform.bing.com"
     target_port = 443
-    try:
-        sock = socket.create_connection((target_host, target_port), timeout=timeout_sec)
-        sock.close()
+    online, msg = check_edge_tts_reachability(timeout=timeout_sec)
+    if online:
         return {
             "name": "Edge-TTS Voice Network",
             "ok": True,
             "warn": False,
             "reachable": True,
             "endpoint": f"{target_host}:{target_port}",
-            "detail": f"Connected to {target_host}:{target_port}",
+            "detail": msg,
             "remediation": None,
         }
-    except TimeoutError:
+    else:
         return {
             "name": "Edge-TTS Voice Network",
             "ok": False,
             "warn": True,
             "reachable": False,
             "endpoint": f"{target_host}:{target_port}",
-            "detail": f"Network probe timed out after {timeout_sec}s",
+            "detail": msg,
             "remediation": "Ensure your internet connection is active. Edge-TTS neural voices require outbound HTTPS to speech.platform.bing.com.",
-        }
-    except (socket.gaierror, OSError, RuntimeError) as e:
-        return {
-            "name": "Edge-TTS Voice Network",
-            "ok": False,
-            "warn": True,
-            "reachable": False,
-            "endpoint": f"{target_host}:{target_port}",
-            "detail": f"Reachability probe failed ({str(e)})",
-            "remediation": "Edge-TTS neural voices require internet access. Please verify firewall and outbound DNS/HTTPS connections.",
         }
 
 

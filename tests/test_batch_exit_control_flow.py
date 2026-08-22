@@ -153,8 +153,11 @@ class TestBatchExitControlFlow:
                     time.sleep(0.1)
             time.sleep(1.0)
 
+    @pytest.mark.slow
     def test_build_exe_bat_happy_path(self):
         """Verify that build_exe.bat --no-pause completes cleanly, exits with 0, and produces executable."""
+        if os.environ.get("SKIP_SLOW_PACKAGING_TESTS") == "1":
+            pytest.skip("Skipping slow PyInstaller packaging test (SKIP_SLOW_PACKAGING_TESTS=1)")
         last_proc = None
         for _attempt in range(3):
             time.sleep(1.0)

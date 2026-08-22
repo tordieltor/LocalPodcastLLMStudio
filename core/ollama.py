@@ -4,7 +4,6 @@ REST client, background service launcher, streaming model downloader,
 and dialogue script generation pipeline interfacing with local Ollama.
 """
 
-import inspect
 import json
 import os
 import shutil
@@ -20,7 +19,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-from core.parser import DialogueParser, DialogueTurn
+from core.exceptions import OllamaConnectionError, OllamaModelNotFoundError
+from core.parser import DialogueParser, DialogueTurn, SpeakerRole
 from core.prompts import (
     build_act_system_prompt,
     build_act_user_prompt,
@@ -33,35 +33,44 @@ from core.prompts import (
 
 def _validate_url(url: str) -> str:
     """
-    Validates that the provided URL uses an allowed scheme ('http' or 'https')
-    and contains a valid network location/hostname.
+    Validates and normalizes Ollama host URL ensuring http/https scheme.
 
     Raises:
-        ValueError: If scheme is not 'http' or 'https' or URL is invalid.
+        ValueError: If scheme is not http or https, or if host is invalid.
     """
     if not url or not isinstance(url, str):
         raise ValueError("Ollama URL must be a non-empty string.")
-    clean_url = url.strip().rstrip("/")
-    parsed = urlparse(clean_url)
-    if parsed.scheme not in ("http", "https"):
+    clean = url.strip()
+    if not clean:
+        raise ValueError("Ollama URL must be a non-empty string.")
+
+    if "://" in clean:
+        scheme = clean.split("://", 1)[0].lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(
+                f"Invalid URL scheme '{scheme}': only 'http' and 'https' are supported for Ollama service."
+            )
+    elif ":" in clean:
+        prefix, suffix = clean.split(":", 1)
+        port_candidate = suffix.split("/")[0]
+        if port_candidate.isdigit():
+            clean = f"http://{clean}"
+        else:
+            raise ValueError(
+                f"Invalid URL scheme '{prefix}': only 'http' and 'https' are supported for Ollama service."
+            )
+    elif not clean.startswith(("http://", "https://")):
+        clean = f"http://{clean}"
+
+    clean = clean.rstrip("/")
+    parsed = urlparse(clean)
+    if parsed.scheme.lower() not in ("http", "https"):
         raise ValueError(
             f"Invalid URL scheme '{parsed.scheme}': only 'http' and 'https' are supported for Ollama service."
         )
     if not parsed.netloc or not parsed.hostname:
         raise ValueError(f"Invalid Ollama URL '{url}': missing hostname or network location.")
-    return clean_url
-
-
-class OllamaConnectionError(Exception):
-    """Raised when the Ollama service cannot be reached."""
-
-    pass
-
-
-class OllamaModelNotFoundError(Exception):
-    """Raised when the requested model is not installed in Ollama."""
-
-    pass
+    return clean
 
 
 @dataclass
@@ -299,6 +308,14 @@ def start_ollama_service(
 
     while time.time() < deadline:
         if cancel_event and cancel_event.is_set():
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.0)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
             return False, "Ollama service startup cancelled by user."
 
         # Detect early process crash
@@ -408,8 +425,8 @@ def pull_model_stream(
 
                 status = data.get("status", "")
                 digest = data.get("digest", "")
-                total = int(data.get("total", 0))
-                completed = int(data.get("completed", 0))
+                total = int(data.get("total") or 0)
+                completed = int(data.get("completed") or 0)
 
                 # Check if this is the final success chunk
                 is_done = (status.lower() == "success") or bool(data.get("done", False))
@@ -511,7 +528,7 @@ def pull_model_stream(
                 if progress_callback:
                     progress_callback(progress_obj)
 
-        return completed_successfully or True
+        return completed_successfully
 
     except RuntimeError:
         raise
@@ -679,6 +696,55 @@ class OllamaClient:
         except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
             raise OllamaConnectionError(f"Error fetching Ollama models: {e}") from e
 
+    def list_models_detailed(self, timeout: float = 5.0) -> list[dict[str, Any]]:
+        """
+        Retrieves rich metadata (name, size_gb, params, quant, format) for all installed models.
+
+        Raises:
+            OllamaConnectionError: If connection to Ollama fails.
+        """
+        url = f"{self.base_url}/api/tags"
+        req = urllib.request.Request(url, headers={"User-Agent": "LocalPodcastLLMStudio/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
+                if getattr(response, "status", 200) != 200:
+                    raise OllamaConnectionError(f"HTTP status {response.status} from {url}")
+                raw_bytes = response.read()
+                raw_text = (
+                    raw_bytes.decode("utf-8")
+                    if isinstance(raw_bytes, (bytes, bytearray))
+                    else str(raw_bytes)
+                )
+                data = json.loads(raw_text)
+                parsed = []
+                for m in data.get("models", []):
+                    if not isinstance(m, dict):
+                        continue
+                    size_bytes = int(m.get("size") or 0)
+                    details = m.get("details") or {}
+                    parsed.append(
+                        {
+                            "name": str(m.get("name") or "unknown"),
+                            "size_bytes": size_bytes,
+                            "size_gb": round(size_bytes / (1024**3), 2),
+                            "parameter_size": str(details.get("parameter_size") or "N/A"),
+                            "quantization_level": str(details.get("quantization_level") or "N/A"),
+                            "format": str(details.get("format") or "gguf"),
+                            "family": str(details.get("family") or ""),
+                            "modified_at": str(m.get("modified_at") or ""),
+                        }
+                    )
+                return parsed
+        except TimeoutError as e:
+            raise TimeoutError(f"Connection timed out after {timeout}s") from e
+        except urllib.error.URLError as e:
+            raise OllamaConnectionError(
+                f"Cannot connect to Ollama at {self.base_url}. "
+                "Please make sure Ollama is running ('ollama serve' or Windows tray app)."
+            ) from e
+        except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
+            raise OllamaConnectionError(f"Error fetching Ollama models: {e}") from e
+
     def pull_model(
         self,
         model: str,
@@ -799,15 +865,21 @@ class OllamaClient:
             temperature=temperature,
         )
 
-    def _execute_chat(
+    def _stream_ndjson_request(
         self,
+        endpoint: str,
         payload: dict[str, Any],
+        content_key: str,
         timeout: float,
         cancel_event: threading.Event | None,
         callback: Callable[[str], None] | None,
     ) -> str:
-        url = f"{self.base_url}/api/chat"
-        req_data = json.dumps(payload).encode("utf-8")
+        is_streaming = bool(payload.get("stream", False) or (callback is not None))
+        payload_copy = dict(payload)
+        payload_copy["stream"] = is_streaming
+
+        url = f"{self.base_url}{endpoint}"
+        req_data = json.dumps(payload_copy).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=req_data,
@@ -816,15 +888,16 @@ class OllamaClient:
                 "User-Agent": "LocalPodcastLLMStudio/1.0",
             },
         )
-
-        is_streaming = payload.get("stream", False)
         collected_chunks: list[str] = []
 
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
                 if not is_streaming:
                     data = json.loads(response.read().decode("utf-8"))
-                    return str(data.get("message", {}).get("content", ""))
+                    if content_key == "message":
+                        msg_obj = data.get("message") or {}
+                        return str(msg_obj.get("content", ""))
+                    return str(data.get(content_key) or "")
 
                 for line in response:
                     if cancel_event and cancel_event.is_set():
@@ -834,7 +907,12 @@ class OllamaClient:
                         continue
                     try:
                         chunk = json.loads(line_str)
-                        content_piece = chunk.get("message", {}).get("content", "")
+                        msg_obj = chunk.get("message") or {}
+                        content_piece = (
+                            msg_obj.get("content", "")
+                            if content_key == "message"
+                            else (chunk.get(content_key) or "")
+                        )
                         if content_piece:
                             collected_chunks.append(content_piece)
                             if callback:
@@ -848,6 +926,22 @@ class OllamaClient:
         except TimeoutError as e:
             raise TimeoutError(f"Ollama generation timed out after {timeout} seconds.") from e
 
+    def _execute_chat(
+        self,
+        payload: dict[str, Any],
+        timeout: float,
+        cancel_event: threading.Event | None,
+        callback: Callable[[str], None] | None,
+    ) -> str:
+        return self._stream_ndjson_request(
+            endpoint="/api/chat",
+            payload=payload,
+            content_key="message",
+            timeout=timeout,
+            cancel_event=cancel_event,
+            callback=callback,
+        )
+
     def _execute_generate(
         self,
         model: str,
@@ -859,66 +953,25 @@ class OllamaClient:
         cancel_event: threading.Event | None,
         callback: Callable[[str], None] | None,
     ) -> str:
-        url = f"{self.base_url}/api/generate"
-        is_streaming = callback is not None
         payload = {
             "model": model,
             "system": system,
             "prompt": prompt,
-            "stream": is_streaming,
+            "stream": callback is not None,
             "options": {
                 "temperature": temperature,
                 "num_ctx": num_ctx,
                 "num_predict": 4096,
             },
         }
-
-        req_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=req_data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "LocalPodcastLLMStudio/1.0",
-            },
+        return self._stream_ndjson_request(
+            endpoint="/api/generate",
+            payload=payload,
+            content_key="response",
+            timeout=timeout,
+            cancel_event=cancel_event,
+            callback=callback,
         )
-
-        collected_chunks: list[str] = []
-
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec: B310
-                if not is_streaming:
-                    data = json.loads(response.read().decode("utf-8"))
-                    return str(data.get("response", ""))
-
-                for line in response:
-                    if cancel_event and cancel_event.is_set():
-                        raise RuntimeError("Generation cancelled by user during streaming.")
-                    line_str = line.decode("utf-8").strip()
-                    if not line_str:
-                        continue
-                    try:
-                        chunk = json.loads(line_str)
-                        piece = chunk.get("response", "")
-                        if piece:
-                            collected_chunks.append(piece)
-                            if callback:
-                                callback(piece)
-                        if chunk.get("done", False):
-                            break
-                    except json.JSONDecodeError:
-                        continue
-
-            return "".join(collected_chunks)
-        except TimeoutError as e:
-            raise TimeoutError(f"Ollama generation timed out after {timeout} seconds.") from e
-
-
-def _call_with_supported_kwargs(func: Callable[..., Any], **kwargs: Any) -> Any:
-    """Helper to safely pass optional kwargs (e.g. grounding_mode) only if supported by prompt functions."""
-    sig = inspect.signature(func)
-    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return func(**filtered)
 
 
 def generate_podcast_script(
@@ -956,15 +1009,13 @@ def generate_podcast_script(
         if progress_callback:
             progress_callback(f"Generating episode dialogue via Ollama ({model})...")
 
-        system_prompt = _call_with_supported_kwargs(
-            build_system_prompt,
+        system_prompt = build_system_prompt(
             language=lang,
             format_type=format_type,
             tone_style=tone_style,
             grounding_mode=grounding_mode,
         )
-        user_prompt = _call_with_supported_kwargs(
-            build_user_prompt,
+        user_prompt = build_user_prompt(
             content=content,
             language=lang,
             grounding_mode=grounding_mode,
@@ -997,16 +1048,9 @@ def generate_podcast_script(
         target_turns = act.get("target_turns", 10)
 
         # Determine speaker alternation across act boundary
-        next_speaker = "Host 1"
+        next_speaker = SpeakerRole.HOST_1.value
         if full_script:
-            last_speaker = full_script[-1].speaker
-            next_speaker = (
-                "Host 2"
-                if "1" in last_speaker
-                or "kari" in last_speaker.lower()
-                or "jenny" in last_speaker.lower()
-                else "Host 1"
-            )
+            next_speaker = SpeakerRole.get_alternate(full_script[-1].speaker)
 
         if progress_callback:
             progress_callback(
@@ -1015,8 +1059,7 @@ def generate_podcast_script(
             )
 
         prev_dict_turns = [t.to_dict() for t in full_script[-2:]] if full_script else None
-        act_system_prompt = _call_with_supported_kwargs(
-            build_act_system_prompt,
+        act_system_prompt = build_act_system_prompt(
             act=act,
             total_acts=total_acts,
             language=lang,
@@ -1024,8 +1067,7 @@ def generate_podcast_script(
             grounding_mode=grounding_mode,
             next_speaker=next_speaker,
         )
-        act_user_prompt = _call_with_supported_kwargs(
-            build_act_user_prompt,
+        act_user_prompt = build_act_user_prompt(
             content=content,
             prev_turns=prev_dict_turns,
             language=lang,

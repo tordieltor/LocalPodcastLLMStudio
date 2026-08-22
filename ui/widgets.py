@@ -9,6 +9,7 @@ from typing import Any
 
 import customtkinter as ctk
 
+from core.parser import SpeakerRole
 from ui.about_dialog import AboutDialog
 from ui.theme import (
     BADGE_RADIUS,
@@ -367,7 +368,7 @@ class DialogueTurnCard(ctk.CTkFrame):
     """
 
     def __init__(self, master: Any, turn_number: int, speaker: str, text: str, **kwargs):
-        is_host1 = "1" in speaker or "Kari" in speaker or "Jenny" in speaker
+        is_host1 = SpeakerRole.from_speaker(speaker) == SpeakerRole.HOST_1
         bg_color = COLOR_HOST1_BG if is_host1 else COLOR_HOST2_BG
         accent_color = COLOR_HOST1 if is_host1 else COLOR_HOST2
         display_speaker = speaker

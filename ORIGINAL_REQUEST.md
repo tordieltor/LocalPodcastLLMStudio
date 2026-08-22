@@ -330,4 +330,46 @@ Integrity mode: development
 - [ ] `bandit -r core ui` reports 0 High / Medium issues.
 - [ ] `pytest tests -v` passes 100% (1,649+ tests passing, 0 failed, 0 errors).
 
+## 2026-08-21T20:54:16Z
+
+Conduct a full, multi-faceted code review and architectural audit of the LocalPodcastLLMStudio codebase against modern software engineering and Python best practices, evaluating architecture, type safety, test adequacy, security, and Windows runtime resilience, producing a comprehensive, prioritized review report.
+
+Working directory: c:\Users\torpr\Documents\antigravity\epic-hubble
+Integrity mode: development
+
+## Verification Resources
+- Lint & Style Check: `.venv/Scripts/python.exe -m ruff check .` and `.venv/Scripts/python.exe -m ruff format --check .`
+- Type Checker: `.venv/Scripts/python.exe -m mypy core ui app.py check_env.py`
+- Security Analyzer: `.venv/Scripts/python.exe -m bandit -r core ui`
+- Automated Test Suite: `.venv/Scripts/python.exe -m pytest tests -v`
+- Environment & Diagnostics: `check_env.py`
+
+## Requirements
+
+### R1. Comprehensive Architectural & Code Quality Audit
+Evaluate the codebase structure, separation of concerns (Core business logic vs. UI presentation layer vs. CLI entry points), modularity, maintainability, and clean code conventions across all modules (`core/`, `ui/`, `app.py`, `check_env.py`).
+
+### R2. Static Analysis, Type Safety & Security Assessment
+Execute and analyze static verification tooling (Ruff, Mypy, Bandit). Assess strict typing coverage, dead code, potential runtime bugs, security vulnerabilities (secret handling, API key storage, input validation, subprocess invocation safety), and dependency management.
+
+### R3. Test Suite, Concurrency & Runtime Resilience Evaluation
+Audit test coverage, empirical E2E validation, and edge-case handling across unit and integration tests. Assess Windows-specific runtime behavior, asynchronous task handling, background thread safety, process lifecycle management, and file/handle cleanup.
+
+### R4. Structured, Prioritized Deliverable Report
+Synthesize all audit findings into a structured markdown report (`CODE_REVIEW_REPORT.md`) in the project root. Categorize findings by severity (Critical, High, Medium, Low, Informational/Style), providing root cause analyses and actionable, concrete before/after code refactoring examples.
+
+## Acceptance Criteria
+
+### Audit Deliverable & Coverage
+- [ ] A structured review report is generated at `CODE_REVIEW_REPORT.md`.
+- [ ] The report covers all primary modules: `core/`, `ui/`, `app.py`, `check_env.py`, and test infrastructure.
+- [ ] Each finding is categorized with an explicit severity level (Critical, High, Medium, Low, Informational).
+- [ ] Each identified issue includes a concrete remediation plan with before/after code diffs or implementation snippets.
+
+### Verification & Tooling Evidence
+- [ ] The report documents empirical results and findings from executing `ruff check`, `ruff format --check`, `mypy`, `bandit`, and `pytest`.
+- [ ] Architectural recommendations include separation-of-concerns analysis and dependency flow evaluations.
+- [ ] Concurrency, resource management, and Windows-specific process lifecycles are explicitly evaluated.
+
+
 

@@ -16,8 +16,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.exceptions import AudioSynthesisError
 from core.mp3_stitcher import validate_safe_output_path
-from core.parser import DialogueTurn, normalize_speaker
+from core.parser import DialogueTurn, SpeakerRole, normalize_speaker
 from core.prompts import normalize_language_code
 
 # Global thread-safe in-memory cache for loaded PiperVoice ONNX instances
@@ -204,8 +205,7 @@ async def synthesize_turn(
         length_scale = 1.0
 
     # Differentiate Host 1 vs Host 2 personas
-    spk_norm = normalize_speaker(speaker)
-    if spk_norm in ("Host 2", "Ola", "Finn", "Guy", "Ryan", "Joe"):
+    if SpeakerRole.from_speaker(speaker) == SpeakerRole.HOST_2:
         length_scale *= 1.04
         noise_scale = 0.70
     else:
@@ -226,9 +226,10 @@ async def synthesize_turn(
                             wav_file,
                             length_scale=length_scale,
                             noise_scale=noise_scale,
+                            noise_w=0.8,
                         )
                     audio_bytes = wav_buf.getvalue()
-                except (RuntimeError, OSError, ValueError):
+                except Exception:
                     audio_bytes = None
 
             # 2. Check if edge_tts is available as a compatibility fallback (if configured / mocked)
@@ -239,7 +240,7 @@ async def synthesize_turn(
                 if "torkil" in voice.lower():
                     edge_voice = (
                         "nb-NO-FinnNeural"
-                        if spk_norm in ("Host 2", "Ola", "Finn")
+                        if SpeakerRole.from_speaker(speaker) == SpeakerRole.HOST_2
                         else "nb-NO-PernilleNeural"
                     )
                 elif "lessac" in voice.lower() or "amy" in voice.lower():
@@ -254,8 +255,8 @@ async def synthesize_turn(
                 async for chunk in communicate.stream():
                     if isinstance(chunk, dict) and chunk.get("type") == "audio" and "data" in chunk:
                         chunks.append(chunk["data"])
-                if chunks:
-                    audio_bytes = b"".join(chunks)
+                    if chunks:
+                        audio_bytes = b"".join(chunks)
 
             # 3. If offline models are still loading or unavailable in local test env, generate valid PCM WAV
             if not audio_bytes:
@@ -273,7 +274,7 @@ async def synthesize_turn(
 
         except (RuntimeError, ConnectionError, OSError, ValueError, TypeError) as e:
             if attempt == max_retries:
-                raise RuntimeError(
+                raise AudioSynthesisError(
                     f"Piper TTS synthesis failed for voice '{voice}' after {max_retries} attempts: {e}"
                 ) from e
             await asyncio.sleep(0.5 * attempt)

@@ -20,6 +20,7 @@ import customtkinter as ctk
 
 # Core Subsystem Imports
 from core.extractor import DocumentExtractionError, extract_text
+from core.io_utils import atomic_write_file
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import (
     ModelPullProgress,
@@ -102,30 +103,8 @@ GROUNDING_UI_OPTIONS: list[str] = [
     "Open Topic / Scratch (Free Generative Synthesis)",
 ]
 
-
-def _atomic_write_file(file_path: str, data: str | bytes, encoding: str | None = "utf-8") -> None:
-    """Writes data atomically to destination using temporary staging file and os.replace."""
-    abs_path = os.path.abspath(file_path)
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    temp_path = f"{abs_path}.tmp.{os.getpid()}_{threading.get_ident()}"
-    try:
-        if isinstance(data, bytes):
-            with open(temp_path, "wb") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-        else:
-            with open(temp_path, "w", encoding=encoding) as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-        os.replace(temp_path, abs_path)
-    finally:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+# Backward compatibility alias
+_atomic_write_file = atomic_write_file
 
 
 # ==============================================================================
@@ -262,19 +241,6 @@ class GenerationWorker(threading.Thread):
                         cancel_event=self.cancel_event,
                         progress_callback=progress_cb,
                     )
-                except OllamaConnectionError as oc_err:
-                    self.msg_queue.put(
-                        (
-                            "ERROR",
-                            {
-                                "title": "Ollama Connection Error",
-                                "message": "Could not connect to Ollama local service.",
-                                "details": str(oc_err),
-                                "remedy": "Ensure Ollama is running ('ollama serve' in terminal or Windows tray app) and click Refresh (↻).",
-                            },
-                        )
-                    )
-                    return
                 except OllamaModelNotFoundError as mnf_err:
                     self.msg_queue.put(
                         (
@@ -284,6 +250,19 @@ class GenerationWorker(threading.Thread):
                                 "message": f"Requested model '{self.model}' is not installed.",
                                 "details": str(mnf_err),
                                 "remedy": f"Open terminal and run: 'ollama pull {self.model}', then refresh the model list.",
+                            },
+                        )
+                    )
+                    return
+                except OllamaConnectionError as oc_err:
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "Ollama Connection Error",
+                                "message": "Could not connect to Ollama local service.",
+                                "details": str(oc_err),
+                                "remedy": "Ensure Ollama is running ('ollama serve' in terminal or Windows tray app) and click Refresh (↻).",
                             },
                         )
                     )
@@ -313,10 +292,10 @@ class GenerationWorker(threading.Thread):
 
                 # Save script files to output folder (.json and .md) atomically
                 script_json_path = os.path.join(self.output_dir, f"podcast_script_{timestamp}.json")
-                _atomic_write_file(script_json_path, dialogue_to_json(dialogue))
+                atomic_write_file(script_json_path, dialogue_to_json(dialogue))
 
                 script_md_path = os.path.join(self.output_dir, f"podcast_transcript_{timestamp}.md")
-                _atomic_write_file(script_md_path, dialogue_to_markdown(dialogue))
+                atomic_write_file(script_md_path, dialogue_to_markdown(dialogue))
 
                 if self.mode == "script_only":
                     self.msg_queue.put(("PROGRESS", 1.0))
@@ -599,20 +578,20 @@ class MainWindow(ctk.CTk):
     interactive script editing, and native MCI audio playback.
     """
 
-    _queue_poll_id: str | None = None
-    _player_poll_id: str | None = None
-    _is_closing: bool = False
-    current_worker: GenerationWorker | None = None
-    current_pull_worker: ModelPullWorker | None = None
-    current_launcher_worker: OllamaLauncherWorker | None = None
-    cancel_event: threading.Event = None  # type: ignore[assignment]
-    pull_cancel_event: threading.Event = None  # type: ignore[assignment]
-    launcher_cancel_event: threading.Event = None  # type: ignore[assignment]
-    player: WindowsAudioPlayer = None  # type: ignore[assignment]
-    is_busy: bool = False
-    current_dialogue: list[DialogueTurn] = []
-    current_mp3_path: str | None = None
-    current_script_path: str | None = None
+    _queue_poll_id: str | None
+    _player_poll_id: str | None
+    _is_closing: bool
+    current_worker: GenerationWorker | None
+    current_pull_worker: ModelPullWorker | None
+    current_launcher_worker: OllamaLauncherWorker | None
+    cancel_event: threading.Event
+    pull_cancel_event: threading.Event
+    launcher_cancel_event: threading.Event
+    player: WindowsAudioPlayer
+    is_busy: bool
+    current_dialogue: list[DialogueTurn]
+    current_mp3_path: str | None
+    current_script_path: str | None
 
     def __init__(self):
         super().__init__()
@@ -1717,12 +1696,15 @@ class MainWindow(ctk.CTk):
     def _start_queue_poller(self):
         if self._is_closing:
             return
-        self._process_queue()
+        self._process_queue(max_batch_size=30)
         if not self._is_closing:
             self._queue_poll_id = self.after(50, self._start_queue_poller)
 
-    def _process_queue(self):
+    def _process_queue(self, max_batch_size: int | None = None):
+        processed = 0
         while not self.msg_queue.empty():
+            if max_batch_size is not None and processed >= max_batch_size:
+                break
             try:
                 event_type, payload = self.msg_queue.get_nowait()
             except queue.Empty:
@@ -1733,6 +1715,7 @@ class MainWindow(ctk.CTk):
                 pass
             finally:
                 self.msg_queue.task_done()
+                processed += 1
 
     def _handle_event(self, event_type: str, payload: Any):
         if event_type == "STATUS":
@@ -1992,13 +1975,14 @@ class MainWindow(ctk.CTk):
                 messagebox.showerror("Export Failed", f"Could not export MP3: {e}")
 
     def _open_output_folder(self):
-        out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
-        os.makedirs(out_dir, exist_ok=True)
-        if sys.platform == "win32":
-            try:
-                os.startfile(out_dir)
-            except OSError:
-                pass
+        raw_dir = self.output_entry.get().strip() or os.path.abspath("./output")
+        out_dir = os.path.abspath(raw_dir)
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            if sys.platform == "win32" and os.path.isdir(out_dir):
+                os.startfile(out_dir)  # nosec: B606
+        except OSError:
+            pass
 
     # ==========================================================================
     # Script Actions: Copy, Save As
@@ -2025,7 +2009,7 @@ class MainWindow(ctk.CTk):
         )
         if dest:
             try:
-                _atomic_write_file(dest, text)
+                atomic_write_file(dest, text)
                 messagebox.showinfo("Saved", f"Script saved to:\n{dest}")
             except OSError as e:
                 messagebox.showerror("Save Failed", f"Could not save script: {e}")

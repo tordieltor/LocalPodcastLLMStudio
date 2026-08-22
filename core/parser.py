@@ -8,8 +8,55 @@ regex object extraction, and plain text transcripts.
 import json
 import re
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from typing import Any
+
+
+class SpeakerRole(str, Enum):
+    """Normalized speaker roles for two-host podcast conversations."""
+
+    HOST_1 = "Host 1"
+    HOST_2 = "Host 2"
+
+    @classmethod
+    def from_speaker(cls, speaker: str) -> "SpeakerRole":
+        """Maps any persona name or string identifier to the corresponding SpeakerRole enum."""
+        norm = normalize_speaker(speaker)
+        return cls.HOST_2 if norm == cls.HOST_2.value else cls.HOST_1
+
+    @classmethod
+    def get_alternate(cls, speaker: str) -> str:
+        """Returns the alternating speaker name ('Host 1' <-> 'Host 2')."""
+        norm = normalize_speaker(speaker)
+        return cls.HOST_2.value if norm == cls.HOST_1.value else cls.HOST_1.value
+
+
+def _unescape_json_string(s: str) -> str:
+    """Safely decodes JSON string escape sequences without corrupting multi-byte UTF-8."""
+    if "\\" not in s:
+        return s
+    try:
+        # Wrap in valid JSON quotes to use fast C-accelerated decoder
+        return str(json.loads(f'"{s}"'))
+    except (json.JSONDecodeError, ValueError):
+        # Fallback for unescaped double quotes in input
+        replacements = {
+            r"\"": '"',
+            r"\'": "'",
+            r"\n": "\n",
+            r"\r": "\r",
+            r"\t": "\t",
+            r"\\": "\\",
+        }
+        for escaped, unescaped in replacements.items():
+            s = s.replace(escaped, unescaped)
+        # Decode explicit \uXXXX unicode escape sequences
+        return re.sub(
+            r"\\u([0-9a-fA-F]{4})",
+            lambda m: chr(int(m.group(1), 16)),
+            s,
+        )
 
 
 @dataclass
@@ -271,12 +318,7 @@ class DialogueParser:
         for match in matches:
             spk = normalize_speaker(match.group("speaker"))
             raw_txt = match.group("text")
-            try:
-                txt = raw_txt.encode("utf-8").decode("unicode_escape", errors="ignore")
-                txt = txt.replace('\\"', '"').replace("\\'", "'")
-            except (UnicodeError, ValueError):
-                txt = raw_txt
-            txt = txt.strip()
+            txt = _unescape_json_string(raw_txt).strip()
             if txt:
                 turns.append(DialogueTurn(speaker=spk, text=txt))
 
