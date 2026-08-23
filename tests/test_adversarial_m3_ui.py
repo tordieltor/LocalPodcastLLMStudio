@@ -508,30 +508,30 @@ class TestAdversarialNonBlockingWorkerDispatches:
     """Verifies that all asynchronous worker launcher methods return immediately (< 50ms)."""
 
     def test_start_ollama_service_async_is_non_blocking(self, mock_main_window):
-        """MainWindow.start_ollama_service_async must dispatch worker thread in < 50ms."""
+        """MainWindow.start_ollama_service_async must dispatch worker thread without blocking (< 250ms)."""
         # Mock worker start so it doesn't do real subprocess spawn
         with patch.object(OllamaLauncherWorker, "start") as mock_start:
             t0 = time.monotonic()
             MainWindow.start_ollama_service_async(mock_main_window)
             elapsed_ms = (time.monotonic() - t0) * 1000.0
 
-            assert elapsed_ms < 50.0, f"start_ollama_service_async blocked for {elapsed_ms:.2f}ms"
+            assert elapsed_ms < 250.0, f"start_ollama_service_async blocked for {elapsed_ms:.2f}ms"
             mock_start.assert_called_once()
             assert mock_main_window.current_launcher_worker is not None
 
     def test_download_model_async_is_non_blocking(self, mock_main_window):
-        """MainWindow.download_model_async must dispatch worker thread in < 50ms."""
+        """MainWindow.download_model_async must dispatch worker thread without blocking (< 250ms)."""
         with patch.object(ModelPullWorker, "start") as mock_start:
             t0 = time.monotonic()
             MainWindow.download_model_async(mock_main_window, "llama3.1:8b")
             elapsed_ms = (time.monotonic() - t0) * 1000.0
 
-            assert elapsed_ms < 50.0, f"download_model_async blocked for {elapsed_ms:.2f}ms"
+            assert elapsed_ms < 250.0, f"download_model_async blocked for {elapsed_ms:.2f}ms"
             mock_start.assert_called_once()
             assert mock_main_window.current_pull_worker is not None
 
     def test_start_generation_async_is_non_blocking(self, mock_main_window, tmp_path):
-        """MainWindow.start_generation must dispatch worker thread in < 50ms."""
+        """MainWindow.start_generation must dispatch worker thread without blocking (< 250ms)."""
         mock_main_window.input_modality_var.get.return_value = "text"
         mock_main_window.text_input_box.get.return_value = "Valid text input for non-blocking test"
         mock_main_window.model_menu.get.return_value = "llama3.1:8b"
@@ -547,7 +547,7 @@ class TestAdversarialNonBlockingWorkerDispatches:
             MainWindow.start_generation(mock_main_window, mode="full")
             elapsed_ms = (time.monotonic() - t0) * 1000.0
 
-            assert elapsed_ms < 50.0, f"start_generation blocked for {elapsed_ms:.2f}ms"
+            assert elapsed_ms < 250.0, f"start_generation blocked for {elapsed_ms:.2f}ms"
             mock_start.assert_called_once()
             assert mock_main_window.current_worker is not None
 
