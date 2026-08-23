@@ -11,9 +11,9 @@ We actively maintain and provide security patches for the following versions of 
 
 | Version | Supported          | Status                                 |
 | ------- | ------------------ | -------------------------------------- |
-| 1.0.x   | :white_check_mark: | Current stable release (Active support)|
+| 0.7.x   | :white_check_mark: | Current release (Active support)       |
 | main    | :white_check_mark: | Development branch (Bleeding edge)     |
-| < 1.0.0 | :x:                | Legacy / Unsupported                   |
+| < 0.7.0 | :x:                | Legacy / Unsupported                   |
 
 If you are running an unsupported version, please upgrade to the latest release before submitting a vulnerability report.
 
