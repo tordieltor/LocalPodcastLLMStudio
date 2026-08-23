@@ -566,17 +566,30 @@ def check_edge_tts_reachability(timeout: float = 3.0) -> tuple[bool, str]:
     """
     Checks reachability to Microsoft Edge-TTS neural voice synthesis endpoint
     (speech.platform.bing.com:443) via a lightweight socket connection probe.
+    Validates timeout input bounds to protect against invalid socket configurations.
 
     Returns:
         Tuple[bool, str]: (is_reachable, detail_message)
     """
     host = "speech.platform.bing.com"
     port = 443
+
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        return False, f"Invalid timeout value '{timeout}': must be a positive number."
+
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        timeout_val = float(timeout)
+    except (ValueError, TypeError):
+        return False, f"Invalid timeout value '{timeout}': must be a positive number."
+
+    if timeout_val <= 0 or timeout_val > 3600 or timeout_val != timeout_val:  # NaN check
+        return False, f"Invalid timeout '{timeout}': must be a positive number <= 3600 seconds."
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout_val):
             return True, f"Connected to {host}:{port}"
     except TimeoutError:
-        return False, f"Connection to {host}:{port} timed out after {timeout}s"
+        return False, f"Connection to {host}:{port} timed out after {timeout_val}s"
     except socket.gaierror as e:
         return False, f"DNS resolution failed for {host}: {e}"
     except (OSError, RuntimeError) as e:

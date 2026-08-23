@@ -456,6 +456,31 @@ class TestEdgeTTSReachabilityProbe:
             assert reachable is False
             assert "Reachability probe failed" in detail
 
+    def test_reachability_invalid_timeout_inputs(self):
+        """Security unit test: Verifies invalid timeout values fail safely without socket connection attempt."""
+        with patch("socket.create_connection") as mock_conn:
+            reachable, detail = check_edge_tts_reachability(timeout=-1.0)
+            assert reachable is False
+            assert "Invalid timeout" in detail
+
+            reachable, detail = check_edge_tts_reachability(timeout=0)
+            assert reachable is False
+            assert "Invalid timeout" in detail
+
+            reachable, detail = check_edge_tts_reachability(timeout="invalid")
+            assert reachable is False
+            assert "Invalid timeout" in detail
+
+            reachable, detail = check_edge_tts_reachability(timeout=True)
+            assert reachable is False
+            assert "Invalid timeout" in detail
+
+            reachable, detail = check_edge_tts_reachability(timeout=float("nan"))
+            assert reachable is False
+            assert "Invalid timeout" in detail
+
+            mock_conn.assert_not_called()
+
 
 class TestOllamaBinaryResolver:
     """Tests for find_ollama_binary across platforms and fallback paths."""
