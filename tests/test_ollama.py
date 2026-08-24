@@ -101,6 +101,13 @@ class TestOllamaClientUnit:
             _validate_url("http://localhost:11434 /api")
         assert "forbidden control characters" in str(exc4.value)
 
+    def test_validate_url_disallows_credentials(self):
+        with pytest.raises(ValueError, match="user credentials in URL are not supported"):
+            _validate_url("http://admin:secret@localhost:11434")
+
+        with pytest.raises(ValueError, match="user credentials in URL are not supported"):
+            _validate_url("http://user@127.0.0.1:11434")
+
     def test_check_connection_success(self):
         mock_resp = MagicMock()
         mock_resp.status = 200

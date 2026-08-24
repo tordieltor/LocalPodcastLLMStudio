@@ -80,6 +80,8 @@ def _validate_url(url: str) -> str:
         )
     if not parsed.netloc or not parsed.hostname:
         raise ValueError(f"Invalid Ollama URL '{url}': missing hostname or network location.")
+    if "@" in parsed.netloc or parsed.username or parsed.password:
+        raise ValueError("Invalid Ollama URL: user credentials in URL are not supported.")
     return clean
 
 
