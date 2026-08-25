@@ -12,6 +12,8 @@ import sys
 import uuid
 from typing import Any
 
+from core.mp3_stitcher import validate_safe_output_path
+
 
 class WindowsAudioPlayer:
     """
@@ -337,15 +339,20 @@ def parse_time_str(time_str: str) -> int:
 def export_audio_file(source_path: str, destination_path: str) -> str:
     """
     Exports/copies generated podcast MP3 to a user-selected destination directory or path.
+    Sanitizes both input paths to prevent path traversal or null byte injection.
 
     Returns:
         Absolute path to the exported file.
     """
-    if not os.path.exists(source_path):
-        raise FileNotFoundError(f"Source audio file not found: {source_path}")
+    # Security input validation: sanitize and reject invalid paths / null bytes
+    clean_src = validate_safe_output_path(source_path, param_name="source_path")
+    clean_dest = validate_safe_output_path(destination_path, param_name="destination_path")
 
-    dest_dir = os.path.dirname(os.path.abspath(destination_path))
+    if not os.path.exists(clean_src):
+        raise FileNotFoundError(f"Source audio file not found: {clean_src}")
+
+    dest_dir = os.path.dirname(os.path.abspath(clean_dest))
     os.makedirs(dest_dir, exist_ok=True)
 
-    shutil.copy2(source_path, destination_path)
-    return os.path.abspath(destination_path)
+    shutil.copy2(clean_src, clean_dest)
+    return os.path.abspath(clean_dest)
