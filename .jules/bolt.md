@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-08-25 - Native C str.replace Loops vs Regex Whitespace Normalization
+**Learning:** Replacing regular expressions (like `[ \t]+` or ` ?\n ?`) with fast native C `str.replace` loops guarded by `in` checks yields up to a ~2x speedup on document text normalization while maintaining exact output equivalence.
+**Action:** Prefer `while '  ' in text: text = text.replace('  ', ' ')` over regex pattern substitutions for standard whitespace collapsing in text processing loops.
