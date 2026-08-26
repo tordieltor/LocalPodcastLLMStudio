@@ -255,16 +255,20 @@ class DialogueParser:
     @classmethod
     def _sanitize_json_string(cls, text: str) -> str:
         """Fixes common LLM JSON syntax errors."""
-        # Replace smart/curly quotes with standard double/single quotes
-        s = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+        s = text
 
-        # Strip trailing commas before closing brackets or braces
-        s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
+        # PERFORMANCE OPTIMIZATION: Check for smart/curly quotes first to avoid redundant replace calls
+        if "“" in s or "”" in s or "‘" in s or "’" in s:
+            s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
-        # Fix single-quoted keys and values
-        # e.g. {'speaker': 'Host 1', 'text': 'Hello'}
-        s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
-        s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
+        # PERFORMANCE OPTIMIZATION: Fast-path substring guard before executing trailing comma regex substitution
+        if "," in s:
+            s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
+
+        # PERFORMANCE OPTIMIZATION: Fast-path substring guard before executing single-quote key/value regexes
+        if "'" in s:
+            s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
+            s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
 
         # Clean unescaped ASCII control characters in strings
         s = _REGEX_CONTROL_CHARS.sub(
