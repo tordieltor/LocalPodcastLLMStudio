@@ -101,6 +101,15 @@ class TestOllamaClientUnit:
             _validate_url("http://localhost:11434 /api")
         assert "forbidden control characters" in str(exc4.value)
 
+    def test_client_init_embedded_credentials(self):
+        with pytest.raises(ValueError) as exc1:
+            OllamaClient("http://admin:secret@localhost:11434")
+        assert "embedded user credentials are not allowed" in str(exc1.value)
+
+        with pytest.raises(ValueError) as exc2:
+            _validate_url("http://user@localhost:11434")
+        assert "embedded user credentials are not allowed" in str(exc2.value)
+
     def test_check_connection_success(self):
         mock_resp = MagicMock()
         mock_resp.status = 200
