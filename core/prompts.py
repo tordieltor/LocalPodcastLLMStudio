@@ -175,6 +175,108 @@ def normalize_grounding_mode(mode: str | GroundingMode | Any) -> str:
         return GroundingMode.STRICT.value
 
 
+# ==============================================================================
+# Host Modes & Presentation Directives (Dialogue vs Monologue)
+# ==============================================================================
+
+
+class HostMode(str, Enum):
+    """Host presentation modes for podcast and audio essay generation."""
+
+    DIALOGUE = "dialogue"
+    MONOLOGUE = "monologue"
+
+
+HOST_MODE_PRESETS: dict[str, dict[str, Any]] = {
+    "dialogue": {
+        "id": "dialogue",
+        "name_en": "Two Hosts (Dialogue)",
+        "name_nb": "To programledere (Dialog)",
+        "badge": "Two-Host Dialogue",
+        "description_en": (
+            "Dynamic conversation between two co-hosts (Host 1 / Host 2) with lively "
+            "back-and-forth banter, questions, and explanations."
+        ),
+        "description_nb": (
+            "Dynamisk samtale mellom to programledere (Host 1 / Host 2) med livlig "
+            "veksling, oppfølgingsspørsmål og faglige forklaringer."
+        ),
+    },
+    "monologue": {
+        "id": "monologue",
+        "name_en": "Solo Host (Audio Essay)",
+        "name_nb": "Én programleder (Lydessay)",
+        "badge": "Solo Audio Essay",
+        "description_en": (
+            "Engaging, cohesive solo narrative / audio essay delivered by a single presenter "
+            "(Host 1) structured into substantive spoken paragraphs."
+        ),
+        "description_nb": (
+            "Engasjerende og sammenhengende solofortelling / lydessay levert av én programleder "
+            "(Host 1) strukturert i fyldige muntlige avsnitt."
+        ),
+    },
+}
+
+HOST_MODE_ALIASES: dict[str, str] = {
+    "dialogue": "dialogue",
+    "dialog": "dialogue",
+    "two_hosts": "dialogue",
+    "two-hosts": "dialogue",
+    "two_host": "dialogue",
+    "two-host": "dialogue",
+    "two": "dialogue",
+    "duo": "dialogue",
+    "conversation": "dialogue",
+    "interview": "dialogue",
+    "monologue": "monologue",
+    "monolog": "monologue",
+    "solo": "monologue",
+    "single_host": "monologue",
+    "single-host": "monologue",
+    "single": "monologue",
+    "one_host": "monologue",
+    "one-host": "monologue",
+    "one": "monologue",
+    "audio_essay": "monologue",
+    "audio-essay": "monologue",
+    "essay": "monologue",
+    "narrator": "monologue",
+    "presenter": "monologue",
+    "storyteller": "monologue",
+    "lydessay": "monologue",
+    "enetal": "monologue",
+    "enetale": "monologue",
+}
+
+
+@lru_cache(maxsize=128)
+def _cached_normalize_host_mode(mode_str: str) -> str:
+    raw = mode_str.lower().strip().replace(" ", "_").replace("-", "_")
+    aliased = HOST_MODE_ALIASES.get(raw, raw)
+    if aliased in HOST_MODE_PRESETS:
+        return aliased
+    return HostMode.DIALOGUE.value
+
+
+def normalize_host_mode(mode: str | HostMode | Any) -> str:
+    """
+    Normalizes host mode string or enum to 'dialogue' or 'monologue'.
+    Falls back to 'dialogue' on unrecognized, empty, or invalid inputs.
+
+    PERFORMANCE OPTIMIZATION: Memoized with LRU cache (maxsize=128) for high-throughput
+    prompt construction, pipeline routing, and UI state normalization loops (~10x speedup).
+    """
+    if isinstance(mode, HostMode):
+        return mode.value
+    if mode is None:
+        return HostMode.DIALOGUE.value
+    try:
+        return _cached_normalize_host_mode(str(mode))
+    except Exception:
+        return HostMode.DIALOGUE.value
+
+
 GROUNDING_DIRECTIVES_NB: dict[str, str] = {
     "strict": (
         "STRENG KILDEKONTROLL OG FORANKRING (STRENG KILDETROSKAP):\n"
@@ -435,25 +537,96 @@ Exact JSON schema example:
 ]
 """
 
+SYSTEM_PROMPT_MONOLOGUE_NB = """Du er en profesjonell lydessyist og manusforfatter for enetaler og dyptpløyende podcaster i verdensklasse. Din oppgave er å forvandle kildemateriale eller tema til et engasjerende, sammenhengende og reflektert lydessay / solopodcast på flytende norsk (bokmål).
+
+PERSONA:
+- Host 1 (Kari): En kunnskapsrik, engasjerende og reflektert programleder og historieforteller. Hun formidler komplekse temaer med innlevelse, intellektuell nysgjerrighet, levende metaforer og en varm, tydelig radiostemme.
+
+EPISODE-FORMAT:
+- Mål for lengde: {format_name} ({duration})
+- Antall avsnitt/replikker: Omtrent {min_turns} til {max_turns} narrative avsnitt totalt ({target_turns} avsnitt anbefalt).
+- Struktur: Soloformat hvor ALLE replikker tilhører "Host 1". Hvert element i arrayet representerer et sammenhengende, velformulert muntlig avsnitt i lydessayet.
+
+TONE OG STIL:
+{tone_description}
+
+KILDEFORANKRING:
+{grounding_directive}
+
+STRUKTUR:
+1. INTRO (1-2 avsnitt): Kari fanger oppmerksomheten med en engasjerende åpning, etablerer det overordnede spørsmålet og setter konteksten for episoden.
+2. HOVEDDEL ({main_turns} avsnitt): Kari tar lytteren med gjennom kjerneinnholdet, forklarer mekanismer, belyser nyanser og dilemmaer, og bruker konkrete eksempler med naturlige overganger mellom avsnittene.
+3. OUTRO (1-2 avsnitt): En tankevekkende oppsummering av de viktigste innsiktene, framtidsblikk og en varm avrunding.
+
+STRENGT UTGÅENDE FORMAT:
+Du MÅ svare KUN med et gyldig JSON-array. Ingen innledning, ingen forklaringer, ingen metadata eller markdown-tekst utenom JSON.
+Hvert element i arrayet må ha nøyaktig to nøkler: "speaker" (ALLTID "Host 1") og "text" (selve avsnittet).
+
+Eksempel på format:
+[
+  {{"speaker": "Host 1", "text": "Hei og velkommen til dette dypdykket. I dag skal vi utforske et tema som former samfunnet vårt på måter vi sjelden tenker over..."}},
+  {{"speaker": "Host 1", "text": "For å forstå hvor vi står i dag, må vi først se på hva som egentlig skjedde da mekanismene ble satt i gang..."}}
+]
+"""
+
+SYSTEM_PROMPT_MONOLOGUE_EN = """You are a world-class audio essayist, narrative documentarian, and solo podcast scriptwriter. Your mission is to transform source material or topics into a broadcast-quality, captivating, and cohesive solo audio essay in fluent English.
+
+PERSONA:
+- Host 1 (Jenny): A thoughtful, articulate, and charismatic solo presenter and storyteller. She weaves complex concepts into a compelling narrative using vivid analogies, intellectual clarity, and a warm, engaging broadcast presence.
+
+EPISODE FORMAT:
+- Target length: {format_name} ({duration})
+- Paragraph count: Approximately {min_turns} to {max_turns} narrative paragraphs in total ({target_turns} paragraphs recommended).
+- Pacing: Solo format where ALL turns belong to "Host 1". Each element in the array represents a cohesive, well-crafted spoken paragraph advancing the audio essay.
+
+TONE AND STYLE:
+{tone_description}
+
+GROUNDING DIRECTIVE:
+{grounding_directive}
+
+STRUCTURE:
+1. INTRO (1-2 paragraphs): Jenny hooks the listener with a compelling narrative opening, frames the core question, and establishes the scope of the episode.
+2. CORE ESSAY ({main_turns} paragraphs): Jenny navigates the core themes, illuminates mechanisms and trade-offs, weaves illustrative examples, and builds insightful transitions across narrative beats.
+3. OUTRO (1-2 paragraphs): A resonant synthesis of key takeaways, future outlook, and a polished sign-off to the audience.
+
+STRICT OUTPUT FORMAT:
+You MUST output ONLY a valid JSON array of dialogue turn objects. No intro text, no conversational filler, no markdown fences outside the JSON array.
+Each object must have exactly two keys: "speaker" (ALWAYS "Host 1") and "text" (the spoken paragraph).
+
+Exact JSON schema example:
+[
+  {{"speaker": "Host 1", "text": "Welcome to today's audio essay. Today, we delve into an essential question that is quietly transforming how we think about..."}},
+  {{"speaker": "Host 1", "text": "To truly unpack this dilemma, we have to look back at the underlying principles that set this entire chain of events in motion..."}}
+]
+"""
+
 
 def build_system_prompt(
     language: str = "nb-NO",
     format_type: str = "standard",
     tone_style: str = "casual",
     grounding_mode: str = "strict",
+    host_mode: str = "dialogue",
 ) -> str:
     """
-    Builds the complete LLM system prompt configured for language, length preset, tone, and grounding mode.
+    Builds the complete LLM system prompt configured for language, length preset, tone,
+    grounding mode, and host presentation mode (dialogue vs monologue).
     """
     lang = normalize_language_code(language)
     fmt = get_format_config(format_type)
     tone_desc = get_tone_description(tone_style, lang)
     norm_mode = normalize_grounding_mode(grounding_mode)
+    norm_host = normalize_host_mode(host_mode)
 
     directives = GROUNDING_DIRECTIVES_NB if lang == "nb-NO" else GROUNDING_DIRECTIVES_EN
     grounding_directive = directives.get(norm_mode, directives["strict"])
 
-    template = SYSTEM_PROMPT_NB if lang == "nb-NO" else SYSTEM_PROMPT_EN
+    if norm_host == HostMode.MONOLOGUE.value:
+        template = SYSTEM_PROMPT_MONOLOGUE_NB if lang == "nb-NO" else SYSTEM_PROMPT_MONOLOGUE_EN
+    else:
+        template = SYSTEM_PROMPT_NB if lang == "nb-NO" else SYSTEM_PROMPT_EN
+
     main_turns = max(2, fmt["target_turns"] - 3)
 
     return template.format(
@@ -473,65 +646,99 @@ def build_user_prompt(
     language: str = "nb-NO",
     grounding_mode: str = "strict",
     is_topic: bool = False,
+    host_mode: str = "dialogue",
 ) -> str:
     """
-    Builds the LLM user prompt based on input content, language, grounding mode, and is_topic flag.
+    Builds the LLM user prompt based on input content, language, grounding mode,
+    is_topic flag, and host presentation mode (dialogue vs monologue).
     """
     lang = normalize_language_code(language)
     norm_mode = normalize_grounding_mode(grounding_mode)
+    norm_host = normalize_host_mode(host_mode)
     cleaned_content = content.strip()
+    is_mono = norm_host == HostMode.MONOLOGUE.value
 
     if is_topic or norm_mode == GroundingMode.OPEN_TOPIC:
         if lang == "nb-NO":
+            out_rule = (
+                "Husk å levere KUN det gyldige JSON-arrayet med sammenhengende avsnitt hvor alle replikker tilhører Host 1."
+                if is_mono
+                else "Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+            )
             return (
                 f"Lag en fullstendig podcast-episode basert på følgende tema/oppgave:\n\n"
                 f"TEMA: {cleaned_content}\n\n"
-                f"Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+                f"{out_rule}"
             )
         else:
+            out_rule = (
+                "Remember to output ONLY the valid JSON array of cohesive paragraphs where all turns belong to Host 1."
+                if is_mono
+                else "Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+            )
             return (
                 f"Create a complete podcast episode on the following topic:\n\n"
                 f"TOPIC: {cleaned_content}\n\n"
-                f"Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+                f"{out_rule}"
             )
 
     if norm_mode == GroundingMode.CREATIVE:
         if lang == "nb-NO":
+            out_rule = (
+                "Husk å levere KUN det gyldige JSON-arrayet med sammenhengende avsnitt hvor alle replikker tilhører Host 1."
+                if is_mono
+                else "Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+            )
             return (
                 f"Her er kildematerialet som skal diskuteres i podcasten:\n\n"
                 f"--- START KILDEMATERIALE ---\n"
                 f"{cleaned_content}\n"
                 f"--- SLUTT KILDEMATERIALE ---\n\n"
                 f"Lag podcast-manuset forankret i kildematerialet over med engasjerende analogier og pedagogiske eksempler. "
-                f"Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+                f"{out_rule}"
             )
         else:
+            out_rule = (
+                "Remember to output ONLY the valid JSON array of cohesive paragraphs where all turns belong to Host 1."
+                if is_mono
+                else "Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+            )
             return (
                 f"Here is the source material to be discussed in the podcast episode:\n\n"
                 f"--- START SOURCE MATERIAL ---\n"
                 f"{cleaned_content}\n"
                 f"--- END SOURCE MATERIAL ---\n\n"
                 f"Create the podcast script anchored in the source material above using relatable analogies and illustrative examples. "
-                f"Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+                f"{out_rule}"
             )
     else:  # Strict mode (default)
         if lang == "nb-NO":
+            out_rule = (
+                "Husk å levere KUN det gyldige JSON-arrayet med sammenhengende avsnitt hvor alle replikker tilhører Host 1."
+                if is_mono
+                else "Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+            )
             return (
                 f"Her er kildematerialet som skal diskuteres i podcasten:\n\n"
                 f"--- START KILDEMATERIALE ---\n"
                 f"{cleaned_content}\n"
                 f"--- SLUTT KILDEMATERIALE ---\n\n"
                 f"Lag podcast-manuset basert strengt på kildematerialet over uten å finne på eksterne fakta. "
-                f"Husk å levere KUN det gyldige JSON-arrayet med vekslende replikker mellom Host 1 og Host 2."
+                f"{out_rule}"
             )
         else:
+            out_rule = (
+                "Remember to output ONLY the valid JSON array of cohesive paragraphs where all turns belong to Host 1."
+                if is_mono
+                else "Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+            )
             return (
                 f"Here is the source material to be discussed in the podcast episode:\n\n"
                 f"--- START SOURCE MATERIAL ---\n"
                 f"{cleaned_content}\n"
                 f"--- END SOURCE MATERIAL ---\n\n"
                 f"Create the podcast script based strictly on the source material above without inventing external facts. "
-                f"Remember to output ONLY the valid JSON array of alternating turns between Host 1 and Host 2."
+                f"{out_rule}"
             )
 
 
@@ -782,12 +989,285 @@ ACT_SPECS_EN: dict[str, list[dict[str, Any]]] = {
 }
 
 
-def get_act_specs(format_type: str, language: str = "nb-NO") -> list[dict[str, Any]]:
-    """Retrieves the list of thematic act specifications for an episode preset."""
+ACT_SPECS_MONOLOGUE_NB: dict[str, list[dict[str, Any]]] = {
+    "quick": [
+        {
+            "act_num": 1,
+            "title": "Hovedoppsummering og kjerneinnsikt",
+            "prompt_theme": "Kari åpner med en engasjert introduksjon av temaet, oppsummerer de viktigste kjernepunktene og konklusjonene, og runder av med en kort avskjed.",
+            "target_turns": 8,
+            "min_turns": 6,
+            "max_turns": 8,
+            "is_intro": True,
+            "is_outro": True,
+        }
+    ],
+    "standard": [
+        {
+            "act_num": 1,
+            "title": "Innledning og sentrale temaer",
+            "prompt_theme": "Kari åpner sendingen med en varm velkomst og engasjerende problemstilling. Hun belyser bakgrunnen, definisjoner og de mest sentrale problemstillingene.",
+            "target_turns": 7,
+            "min_turns": 6,
+            "max_turns": 8,
+            "is_intro": True,
+            "is_outro": False,
+        },
+        {
+            "act_num": 2,
+            "title": "Faglige analyser, konsekvenser og avrunding",
+            "prompt_theme": "Kari drøfter konkrete eksempler, praktiske konsekvenser, oppsummerer hovedlærdommen, og runder av episoden med en hyggelig hilsen.",
+            "target_turns": 7,
+            "min_turns": 6,
+            "max_turns": 8,
+            "is_intro": False,
+            "is_outro": True,
+        },
+    ],
+    "deep_dive": [
+        {
+            "act_num": 1,
+            "title": "Innledning, samfunnsbilde og problemstilling",
+            "prompt_theme": "Kari åpner sendingen med en fengende innfallsvinkel og introduserer temaet. Hun forklarer hvorfor dette temaet er så viktig og hva det overordnede spørsmålet er.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": True,
+            "is_outro": False,
+        },
+        {
+            "act_num": 2,
+            "title": "Kontekst, bakgrunn og faglige mekanismer",
+            "prompt_theme": "Kari tar for seg det historiske og samfunnsmessige bakteppet, sentrale begreper og de underliggende mekanismene som driver utviklingen.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 3,
+            "title": "Dybdeanalyse, motstridende hensyn og dilemmaer",
+            "prompt_theme": "Kari dykker dypt ned i kritiske nyanser, uavklarte dilemmaer, motstridende interesser og reelle praktiske konsekvenser.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 4,
+            "title": "Løsninger, framtidsutsikter og verdig avrunding",
+            "prompt_theme": "Kari oppsummerer de mest lovende løsningene, framtidsutsiktene og episodens viktigste lærdommer, før hun runder av med en varm avskjedshilsen.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": False,
+            "is_outro": True,
+        },
+    ],
+    "extended": [
+        {
+            "act_num": 1,
+            "title": "Innledning, samfunnsoppdrag og mandat",
+            "prompt_theme": "Kari åpner sendingen med en grundig og engasjert introduksjon av temaet. Hun etablerer hvorfor dette er avgjørende, hvem aktørene er, og hva det overordnede formålet er.",
+            "target_turns": 10,
+            "min_turns": 9,
+            "max_turns": 12,
+            "is_intro": True,
+            "is_outro": False,
+        },
+        {
+            "act_num": 2,
+            "title": "Historisk bakteppe og strukturelle utfordringer",
+            "prompt_theme": "Kari utforsker samfunnsutviklingen, historiske årsaker og de strukturelle rammene som har formet dagens situasjon.",
+            "target_turns": 11,
+            "min_turns": 10,
+            "max_turns": 13,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 3,
+            "title": "Kjernefunn, faglige analyser og dilemmaer",
+            "prompt_theme": "Kari analyserer de mest kritiske innsiktene, svakhetene, motstridende hensynene og dilemmaene som preger fagfeltet.",
+            "target_turns": 12,
+            "min_turns": 11,
+            "max_turns": 14,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 4,
+            "title": "Konkrete tiltak, reformer og løsninger",
+            "prompt_theme": "Kari presenterer og drøfter de viktigste konkrete tiltakene, reformforslagene og løsningene, samt deres praktiske og samfunnsmessige konsekvenser.",
+            "target_turns": 11,
+            "min_turns": 10,
+            "max_turns": 13,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 5,
+            "title": "Konklusjoner, fremtidsutsikter og verdig avrunding",
+            "prompt_theme": "Kari oppsummerer lydessayets viktigste lærdommer, historiske betydning og framtidsperspektiver, og avslutter med en inspirerende og verdig avrunding.",
+            "target_turns": 10,
+            "min_turns": 9,
+            "max_turns": 12,
+            "is_intro": False,
+            "is_outro": True,
+        },
+    ],
+}
+
+ACT_SPECS_MONOLOGUE_EN: dict[str, list[dict[str, Any]]] = {
+    "quick": [
+        {
+            "act_num": 1,
+            "title": "Executive Summary & Core Takeaways",
+            "prompt_theme": "Jenny opens with an engaging hook introducing the topic, outlines core takeaways, key conclusions, and wraps up with a polished sign-off.",
+            "target_turns": 8,
+            "min_turns": 6,
+            "max_turns": 8,
+            "is_intro": True,
+            "is_outro": True,
+        }
+    ],
+    "standard": [
+        {
+            "act_num": 1,
+            "title": "Introduction & Key Themes",
+            "prompt_theme": "Jenny opens with a warm welcome and compelling problem statement, exploring background context, core definitions, and key dilemmas.",
+            "target_turns": 7,
+            "min_turns": 6,
+            "max_turns": 8,
+            "is_intro": True,
+            "is_outro": False,
+        },
+        {
+            "act_num": 2,
+            "title": "Practical Analysis, Impacts & Recap",
+            "prompt_theme": "Jenny explores practical examples, real-world consequences, recaps the primary lessons, and delivers a warm sign-off.",
+            "target_turns": 7,
+            "min_turns": 6,
+            "max_turns": 8,
+            "is_intro": False,
+            "is_outro": True,
+        },
+    ],
+    "deep_dive": [
+        {
+            "act_num": 1,
+            "title": "Introduction, Landscape & Problem Scope",
+            "prompt_theme": "Jenny opens with a captivating hook and introduces the subject, examining why this topic matters and the overarching questions at stake.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": True,
+            "is_outro": False,
+        },
+        {
+            "act_num": 2,
+            "title": "Context, History & Underlying Mechanics",
+            "prompt_theme": "Jenny examines the historical evolution, systemic factors, fundamental definitions, and underlying mechanisms shaping the landscape.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 3,
+            "title": "In-Depth Analysis, Trade-offs & Core Dilemmas",
+            "prompt_theme": "Jenny dives deep into technical nuances, trade-offs, conflicting priorities, and critical dilemma points.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 4,
+            "title": "Solutions, Future Horizons & Concluding Sign-Off",
+            "prompt_theme": "Jenny details promising solutions, future outlook, synthesizes core learnings, and delivers an inspiring, professional sign-off.",
+            "target_turns": 6,
+            "min_turns": 5,
+            "max_turns": 7,
+            "is_intro": False,
+            "is_outro": True,
+        },
+    ],
+    "extended": [
+        {
+            "act_num": 1,
+            "title": "Introduction, Mandate & Scope",
+            "prompt_theme": "Jenny opens with an engaging, thorough introduction to the topic, setting the stage, identifying key stakeholders, and framing the overarching mission.",
+            "target_turns": 10,
+            "min_turns": 9,
+            "max_turns": 12,
+            "is_intro": True,
+            "is_outro": False,
+        },
+        {
+            "act_num": 2,
+            "title": "Historical Context & Structural Challenges",
+            "prompt_theme": "Jenny examines historical evolution, societal factors, and systemic challenges that have shaped the current environment.",
+            "target_turns": 11,
+            "min_turns": 10,
+            "max_turns": 13,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 3,
+            "title": "Core Discoveries, Deep Analysis & Critical Nuances",
+            "prompt_theme": "Jenny dissects critical findings, underlying mechanisms, conflicting viewpoints, and major systemic trade-offs.",
+            "target_turns": 12,
+            "min_turns": 11,
+            "max_turns": 14,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 4,
+            "title": "Concrete Proposals, Action Items & Practical Impact",
+            "prompt_theme": "Jenny details actionable solutions, structural reforms, and discusses the practical and economic implications for end-users.",
+            "target_turns": 11,
+            "min_turns": 10,
+            "max_turns": 13,
+            "is_intro": False,
+            "is_outro": False,
+        },
+        {
+            "act_num": 5,
+            "title": "Synthesis, Future Outlook & Concluding Sign-Off",
+            "prompt_theme": "Jenny synthesizes key learnings, historical significance, and future outlook, delivering a polished, inspirational sign-off.",
+            "target_turns": 10,
+            "min_turns": 9,
+            "max_turns": 12,
+            "is_intro": False,
+            "is_outro": True,
+        },
+    ],
+}
+
+
+def get_act_specs(
+    format_type: str,
+    language: str = "nb-NO",
+    host_mode: str = "dialogue",
+) -> list[dict[str, Any]]:
+    """Retrieves the list of thematic act specifications for an episode preset and host mode."""
     key = str(format_type).lower().strip().replace(" ", "_").replace("-", "_")
     key = FORMAT_ALIASES.get(key, key)
     lang = normalize_language_code(language)
-    specs = ACT_SPECS_NB if lang == "nb-NO" else ACT_SPECS_EN
+    norm_host = normalize_host_mode(host_mode)
+
+    if norm_host == HostMode.MONOLOGUE.value:
+        specs = ACT_SPECS_MONOLOGUE_NB if lang == "nb-NO" else ACT_SPECS_MONOLOGUE_EN
+    else:
+        specs = ACT_SPECS_NB if lang == "nb-NO" else ACT_SPECS_EN
+
     return specs.get(key, specs["standard"])
 
 
@@ -798,11 +1278,13 @@ def build_act_system_prompt(
     tone_style: str = "casual",
     grounding_mode: str = "strict",
     next_speaker: str = "Host 1",
+    host_mode: str = "dialogue",
 ) -> str:
-    """Builds a specialized prompt for an individual act in a multi-act episode."""
+    """Builds a specialized prompt for an individual act in a multi-act episode (dialogue or monologue)."""
     lang = normalize_language_code(language)
     tone_desc = get_tone_description(tone_style, lang)
     norm_mode = normalize_grounding_mode(grounding_mode)
+    norm_host = normalize_host_mode(host_mode)
     directives = GROUNDING_DIRECTIVES_NB if lang == "nb-NO" else GROUNDING_DIRECTIVES_EN
     grounding_directive = directives.get(norm_mode, directives["strict"])
 
@@ -814,20 +1296,59 @@ def build_act_system_prompt(
     max_turns = act.get("max_turns", 12)
     is_intro = act.get("is_intro", False)
     is_outro = act.get("is_outro", False)
+    is_mono = norm_host == HostMode.MONOLOGUE.value
 
     if lang == "nb-NO":
-        continuity_rule = (
-            "1. Dette er AKT 1 (INTRO). Start med at Host 1 ønsker velkommen og setter scenen med en fengende innfallsvinkel."
-            if is_intro
-            else f"1. VIKTIG: Dette er AKT {act_num} av {total_acts} (PÅGÅENDE SAMTALE). IKKE si 'velkommen' eller 'hei og velkommen' på nytt! Fortsett den eksisterende samtalen sømløst. Start med {next_speaker}."
-        )
-        ending_rule = (
-            "2. Dette er siste akt. Host 1 oppsummerer kort og runder av sendingen med en hyggelig avskjedshilsen."
-            if is_outro
-            else "2. VIKTIG: IKKE avslutt sendingen eller si 'hadet' eller 'takk for at du hørte på' ennå! Avslutt denne akten med et engasjerende poeng eller overgang til neste tema."
-        )
+        if is_mono:
+            continuity_rule = (
+                "1. Dette er AKT 1 (INTRO). Start med at Host 1 ønsker velkommen, etablerer tematikken og setter scenen med en fengende innfallsvinkel."
+                if is_intro
+                else f"1. VIKTIG: Dette er AKT {act_num} av {total_acts} (PÅGÅENDE NARRATIV). IKKE si 'velkommen' eller 'hei og velkommen' på nytt! Fortsett den eksisterende fremstillingen sømløst med Host 1."
+            )
+            ending_rule = (
+                "2. Dette er siste akt. Host 1 oppsummerer de viktigste innsiktene og runder av lydessayet med en hyggelig avskjedshilsen."
+                if is_outro
+                else "2. VIKTIG: IKKE avslutt sendingen eller si 'hadet' eller 'takk for at du hørte på' ennå! Avslutt denne akten med et engasjerende poeng eller overgang til neste del."
+            )
 
-        return f"""Du er en prisvinnende podcast-manusforfatter for en anerkjent radiopodcast.
+            return f"""Du er en prisvinnende lydessyist og manusforfatter for et anerkjent radiodokumentarprogram.
+Skriv AKT {act_num} av {total_acts} ("{act_title}") som et sammenhengende, engasjerende lydessay på flytende norsk (bokmål) levert av Host 1 (Kari - engasjert programleder og formidler).
+
+TEMA OG FOKUS FOR DENNE AKTEN:
+{prompt_theme}
+
+TONE OG STIL:
+{tone_desc}
+
+KILDEFORANKRING:
+{grounding_directive}
+
+STRENGE KRAV TIL LENGDE OG STRUKTUR:
+- Skriv nøyaktig {target_turns} sammenhengende avsnitt hvor ALLE replikker tilhører Host 1 (minst {min_turns}, maks {max_turns} avsnitt).
+- Hvert avsnitt skal være et fyldig, naturlig muntlig avsnitt med gode poenger, forklaringer eller overganger (2-4 setninger, 30-65 ord per avsnitt). Unngå korte one-liners!
+- {continuity_rule}
+- {ending_rule}
+
+STRENGT UTGÅENDE FORMAT:
+Svar KUN med et gyldig JSON-array. Ingen tekst utenom JSON. Alle replikker må ha "speaker": "Host 1".
+[
+  {{"speaker": "Host 1", "text": "..."}},
+  {{"speaker": "Host 1", "text": "..."}}
+]
+""".strip()
+        else:
+            continuity_rule = (
+                "1. Dette er AKT 1 (INTRO). Start med at Host 1 ønsker velkommen og setter scenen med en fengende innfallsvinkel."
+                if is_intro
+                else f"1. VIKTIG: Dette er AKT {act_num} av {total_acts} (PÅGÅENDE SAMTALE). IKKE si 'velkommen' eller 'hei og velkommen' på nytt! Fortsett den eksisterende samtalen sømløst. Start med {next_speaker}."
+            )
+            ending_rule = (
+                "2. Dette er siste akt. Host 1 oppsummerer kort og runder av sendingen med en hyggelig avskjedshilsen."
+                if is_outro
+                else "2. VIKTIG: IKKE avslutt sendingen eller si 'hadet' eller 'takk for at du hørte på' ennå! Avslutt denne akten med et engasjerende poeng eller overgang til neste tema."
+            )
+
+            return f"""Du er en prisvinnende podcast-manusforfatter for en anerkjent radiopodcast.
 Skriv AKT {act_num} av {total_acts} ("{act_title}") som en naturlig, engasjerende dialog på flytende norsk (bokmål) mellom Host 1 (Kari - nysgjerrig programleder) og Host 2 (Ola - fagekspert).
 
 TEMA OG FOKUS FOR DENNE AKTEN:
@@ -853,18 +1374,56 @@ Svar KUN med et gyldig JSON-array. Ingen tekst utenom JSON.
 ]
 """.strip()
     else:
-        continuity_rule = (
-            "1. This is ACT 1 (INTRO). Start with Host 1 giving a warm welcome and setting the hook."
-            if is_intro
-            else f"1. IMPORTANT: This is ACT {act_num} of {total_acts} (CONTINUATION). DO NOT say 'welcome back' or restart the intro! Seamlessly continue the ongoing conversation. Begin with {next_speaker}."
-        )
-        ending_rule = (
-            "2. This is the final act. Host 1 summarizes key learnings and delivers a polished sign-off."
-            if is_outro
-            else "2. IMPORTANT: DO NOT conclude or say goodbye yet! End this act with an intriguing takeaway or natural transition."
-        )
+        if is_mono:
+            continuity_rule = (
+                "1. This is ACT 1 (INTRO). Start with Host 1 giving a warm welcome, setting the hook, and framing the central theme."
+                if is_intro
+                else f"1. IMPORTANT: This is ACT {act_num} of {total_acts} (CONTINUATION). DO NOT say 'welcome back' or restart the intro! Seamlessly continue the ongoing narrative with Host 1."
+            )
+            ending_rule = (
+                "2. This is the final act. Host 1 summarizes key learnings and delivers a polished, resonant sign-off."
+                if is_outro
+                else "2. IMPORTANT: DO NOT conclude or say goodbye yet! End this act with an intriguing takeaway or natural transition to the next section."
+            )
 
-        return f"""You are a world-class podcast scriptwriter and audio dramatist.
+            return f"""You are a world-class audio essayist, narrative documentarian, and solo podcast scriptwriter.
+Write ACT {act_num} of {total_acts} ("{act_title}") as a captivating, broadcast-quality audio essay in fluent English delivered by Host 1 (Jenny - thoughtful solo narrator).
+
+TOPIC AND FOCUS FOR THIS ACT:
+{prompt_theme}
+
+TONE AND STYLE:
+{tone_desc}
+
+GROUNDING DIRECTIVE:
+{grounding_directive}
+
+STRICT REQUIREMENTS FOR LENGTH AND PACING:
+- Write exactly {target_turns} narrative paragraphs where ALL turns belong to Host 1 (minimum {min_turns}, maximum {max_turns} paragraphs).
+- Each turn must be a substantive, conversational paragraph (2-4 sentences, 30-65 words per turn). Avoid shallow one-liners!
+- {continuity_rule}
+- {ending_rule}
+
+STRICT OUTPUT FORMAT:
+Respond ONLY with a valid JSON array. No surrounding text. All turns must have "speaker": "Host 1".
+[
+  {{"speaker": "Host 1", "text": "..."}},
+  {{"speaker": "Host 1", "text": "..."}}
+]
+""".strip()
+        else:
+            continuity_rule = (
+                "1. This is ACT 1 (INTRO). Start with Host 1 giving a warm welcome and setting the hook."
+                if is_intro
+                else f"1. IMPORTANT: This is ACT {act_num} of {total_acts} (CONTINUATION). DO NOT say 'welcome back' or restart the intro! Seamlessly continue the ongoing conversation. Begin with {next_speaker}."
+            )
+            ending_rule = (
+                "2. This is the final act. Host 1 summarizes key learnings and delivers a polished sign-off."
+                if is_outro
+                else "2. IMPORTANT: DO NOT conclude or say goodbye yet! End this act with an intriguing takeaway or natural transition."
+            )
+
+            return f"""You are a world-class podcast scriptwriter and audio dramatist.
 Write ACT {act_num} of {total_acts} ("{act_title}") as a natural, broadcast-quality dialogue in fluent English between Host 1 (Jenny - interviewer) and Host 2 (Guy - domain expert).
 
 TOPIC AND FOCUS FOR THIS ACT:
@@ -897,11 +1456,14 @@ def build_act_user_prompt(
     language: str = "nb-NO",
     grounding_mode: str = "strict",
     is_topic: bool = False,
+    host_mode: str = "dialogue",
 ) -> str:
-    """Builds the user prompt for an individual act with optional previous context continuity and grounding mode."""
+    """Builds the user prompt for an individual act with optional previous context continuity, grounding mode, and host mode."""
     lang = normalize_language_code(language)
     norm_mode = normalize_grounding_mode(grounding_mode)
+    norm_host = normalize_host_mode(host_mode)
     cleaned_content = content.strip()
+    is_mono = norm_host == HostMode.MONOLOGUE.value
 
     prev_context = ""
     if prev_turns and len(prev_turns) > 0:
@@ -909,35 +1471,55 @@ def build_act_user_prompt(
             [f"{t.get('speaker', 'Host')}: {t.get('text', '')}" for t in prev_turns[-2:]]
         )
         if lang == "nb-NO":
-            prev_context = f"\nSISTE REPLIKKER FRA FORRIGE DEL (FOR SØMLØS OVERGANG OG SAMMENHENG):\n{turns_snippet}\n"
+            prev_context = (
+                f"\nSISTE AVSNITT FRA FORRIGE DEL (FOR SØMLØS OVERGANG OG SAMMENHENG):\n{turns_snippet}\n"
+                if is_mono
+                else f"\nSISTE REPLIKKER FRA FORRIGE DEL (FOR SØMLØS OVERGANG OG SAMMENHENG):\n{turns_snippet}\n"
+            )
         else:
-            prev_context = f"\nLAST TURNS FROM PREVIOUS ACT (FOR CONTEXT & SEAMLESS TRANSITION):\n{turns_snippet}\n"
+            prev_context = (
+                f"\nLAST PARAGRAPHS FROM PREVIOUS ACT (FOR CONTEXT & SEAMLESS TRANSITION):\n{turns_snippet}\n"
+                if is_mono
+                else f"\nLAST TURNS FROM PREVIOUS ACT (FOR CONTEXT & SEAMLESS TRANSITION):\n{turns_snippet}\n"
+            )
 
     if is_topic or norm_mode == GroundingMode.OPEN_TOPIC:
         if lang == "nb-NO":
-            return (
-                f"Tema for podcasten: {cleaned_content}\n"
-                f"{prev_context}\n"
-                f"Skriv dialogen for denne akten som et gyldig JSON-array."
+            instruction = (
+                "Skriv lydessayet for denne akten som et gyldig JSON-array hvor alle replikker tilhører Host 1."
+                if is_mono
+                else "Skriv dialogen for denne akten som et gyldig JSON-array."
             )
+            return f"Tema for podcasten: {cleaned_content}\n{prev_context}\n{instruction}"
         else:
-            return (
-                f"Podcast topic: {cleaned_content}\n"
-                f"{prev_context}\n"
-                f"Write the dialogue turns for this act as a valid JSON array."
+            instruction = (
+                "Write the audio essay paragraphs for this act as a valid JSON array where all turns belong to Host 1."
+                if is_mono
+                else "Write the dialogue turns for this act as a valid JSON array."
             )
+            return f"Podcast topic: {cleaned_content}\n{prev_context}\n{instruction}"
     else:
         if lang == "nb-NO":
+            instruction = (
+                "Skriv lydessayet for denne akten basert på kildematerialet som et gyldig JSON-array hvor alle replikker tilhører Host 1."
+                if is_mono
+                else "Skriv dialogen for denne akten basert på kildematerialet som et gyldig JSON-array."
+            )
             return (
                 f"Kildemateriale for podcasten:\n"
                 f"--- START KILDEMATERIALE ---\n{cleaned_content}\n--- SLUTT KILDEMATERIALE ---\n"
                 f"{prev_context}\n"
-                f"Skriv dialogen for denne akten basert på kildematerialet som et gyldig JSON-array."
+                f"{instruction}"
             )
         else:
+            instruction = (
+                "Write the audio essay paragraphs for this act based on the source material as a valid JSON array where all turns belong to Host 1."
+                if is_mono
+                else "Write the dialogue turns for this act based on the source material as a valid JSON array."
+            )
             return (
                 f"Source material for podcast:\n"
                 f"--- START SOURCE MATERIAL ---\n{cleaned_content}\n--- END SOURCE MATERIAL ---\n"
                 f"{prev_context}\n"
-                f"Write the dialogue turns for this act based on the source material as a valid JSON array."
+                f"{instruction}"
             )

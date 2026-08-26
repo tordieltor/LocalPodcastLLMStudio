@@ -18,7 +18,13 @@ from typing import Any
 
 import customtkinter as ctk
 
-from core.extractor import DocumentExtractionError, extract_text
+from core.extractor import (
+    DEFAULT_FETCH_TIMEOUT_SECONDS,
+    DEFAULT_MAX_URL_SIZE_BYTES,
+    DocumentExtractionError,
+    SecurityError,
+    extract_text,
+)
 from core.io_utils import atomic_write_file
 from core.logger import get_log_file_path, get_logger, resolve_log_directory
 from core.mp3_stitcher import stitch_mp3_files
@@ -36,6 +42,10 @@ from core.parser import (
     DialogueTurn,
     dialogue_to_json,
     dialogue_to_markdown,
+)
+from core.pipeline import (
+    PipelineStage,
+    StageStatus,
 )
 from core.player import WindowsAudioPlayer, export_audio_file
 from core.prompts import (
@@ -61,6 +71,7 @@ from ui.theme import (
     COLOR_BUTTON_SECONDARY_HOVER,
     COLOR_BUTTON_SUCCESS,
     COLOR_BUTTON_SUCCESS_HOVER,
+    COLOR_ERROR,
     COLOR_INPUT_BG,
     COLOR_INPUT_BORDER,
     COLOR_PROGRESS_BG,
@@ -71,6 +82,7 @@ from ui.theme import (
     COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
+    COLOR_WARNING,
     DEFAULT_WINDOW_SIZE,
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
@@ -92,6 +104,7 @@ from ui.widgets import (
     LabeledSlider,
     LiveStreamingCard,
     SectionHeader,
+    StageProgressTracker,
     StatusBadge,
     TimeSlider,
 )
@@ -109,6 +122,106 @@ _atomic_write_file = atomic_write_file
 
 
 # ==============================================================================
+# Background Website URL Extraction Worker Thread (Milestone 4)
+# ==============================================================================
+class URLExtractionWorker(threading.Thread):
+    """
+    Dedicated background worker thread for safely validating, fetching,
+    and converting website URLs to Markdown without blocking the CustomTkinter GUI thread.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        msg_queue: queue.Queue,
+        cancel_event: threading.Event | None = None,
+        timeout: float = DEFAULT_FETCH_TIMEOUT_SECONDS,
+        max_size_bytes: int = DEFAULT_MAX_URL_SIZE_BYTES,
+    ):
+        super().__init__(daemon=True)
+        self.url = url.strip()
+        self.msg_queue = msg_queue
+        self.cancel_event = cancel_event or threading.Event()
+        self.timeout = timeout
+        self.max_size_bytes = max_size_bytes
+
+    def run(self):
+        try:
+            self.msg_queue.put(("EXTRACTION_STARTING", {"url": self.url}))
+            self.msg_queue.put(("URL_EXTRACTION_STARTING", {"url": self.url}))
+
+            def progress_cb(msg: str):
+                if not self.cancel_event.is_set():
+                    self.msg_queue.put(("EXTRACTION_PROGRESS", {"status": msg, "url": self.url}))
+                    self.msg_queue.put(
+                        ("URL_EXTRACTION_PROGRESS", {"status": msg, "url": self.url})
+                    )
+
+            extracted_md = extract_text(
+                source=self.url,
+                is_url=True,
+                timeout=self.timeout,
+                max_size_bytes=self.max_size_bytes,
+                progress_callback=progress_cb,
+            )
+
+            if self.cancel_event.is_set():
+                self.msg_queue.put(("EXTRACTION_CANCELLED", {"url": self.url}))
+                self.msg_queue.put(("URL_EXTRACTION_CANCELLED", {"url": self.url}))
+                return
+
+            payload = {
+                "url": self.url,
+                "markdown": extracted_md,
+                "char_count": len(extracted_md),
+            }
+            self.msg_queue.put(("EXTRACTION_DONE", payload))
+            self.msg_queue.put(("URL_EXTRACTION_DONE", payload))
+        except SecurityError as sec_err:
+            err_payload = {
+                "title": "URL Security Violation (SSRF Blocked)",
+                "message": f"Target URL was blocked by security rules:\n{sec_err}",
+                "details": str(sec_err),
+                "error": str(sec_err),
+                "url": self.url,
+                "is_security": True,
+                "remedy": (
+                    "Private IP addresses (localhost, 127.0.0.1, 10.x, 192.168.x), "
+                    "cloud metadata endpoints, and non-HTTP/HTTPS schemes are forbidden."
+                ),
+                "dialog_type": "error",
+            }
+            self.msg_queue.put(("EXTRACTION_ERROR", err_payload))
+            self.msg_queue.put(("URL_EXTRACTION_ERROR", err_payload))
+        except DocumentExtractionError as doc_err:
+            err_payload = {
+                "title": "Web Extraction Failed",
+                "message": f"Could not extract article content from URL:\n{doc_err}",
+                "details": str(doc_err),
+                "error": str(doc_err),
+                "url": self.url,
+                "is_security": False,
+                "remedy": "Ensure the URL is public, accessible, and contains readable article text.",
+                "dialog_type": "warning",
+            }
+            self.msg_queue.put(("EXTRACTION_ERROR", err_payload))
+            self.msg_queue.put(("URL_EXTRACTION_ERROR", err_payload))
+        except Exception as unhandled_err:
+            err_payload = {
+                "title": "Extraction Error",
+                "message": f"Unexpected error during URL extraction: {unhandled_err}",
+                "details": str(unhandled_err),
+                "error": str(unhandled_err),
+                "url": self.url,
+                "is_security": False,
+                "remedy": "Check network connectivity and retry.",
+                "dialog_type": "error",
+            }
+            self.msg_queue.put(("EXTRACTION_ERROR", err_payload))
+            self.msg_queue.put(("URL_EXTRACTION_ERROR", err_payload))
+
+
+# ==============================================================================
 # Background Generation Worker Thread
 # ==============================================================================
 class GenerationWorker(threading.Thread):
@@ -120,7 +233,7 @@ class GenerationWorker(threading.Thread):
     def __init__(
         self,
         mode: str,  # 'full', 'script_only', or 'audio_from_script'
-        input_type: str,  # 'file', 'text', 'topic', or 'dialogue'
+        input_type: str,  # 'file', 'text', 'topic', 'url', or 'dialogue'
         input_data: Any,
         language: str,
         model: str,
@@ -132,6 +245,8 @@ class GenerationWorker(threading.Thread):
         cancel_event: threading.Event,
         grounding_mode: str = "strict",
         ollama_url: str = "http://localhost:11434",
+        host_mode: str = "dialogue",
+        solo_voice: str | None = None,
     ):
         super().__init__(daemon=True)
         self.mode = mode
@@ -147,87 +262,195 @@ class GenerationWorker(threading.Thread):
         self.cancel_event = cancel_event
         self.grounding_mode = grounding_mode
         self.ollama_url = ollama_url
+        self.host_mode = host_mode
+        self.solo_voice = solo_voice
         self.temp_turn_files: list[str] = []
 
+    def _cleanup_temp_dir(self, temp_dir: str) -> None:
+        if os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+
     def run(self):
+        current_stage = PipelineStage.URL_INGESTION
+        current_pct = 0.0
+
+        def _notify(stage: PipelineStage, status: StageStatus, pct: float, msg: str):
+            nonlocal current_stage, current_pct
+            current_stage = stage
+            current_pct = pct
+            self.msg_queue.put(("STAGE_UPDATE", (stage, status, pct, msg)))
+            self.msg_queue.put(
+                (
+                    "STAGE_UPDATE",
+                    {"stage": stage, "status": status, "pct": pct, "message": msg, "details": msg},
+                )
+            )
+            self.msg_queue.put(("STATUS", msg))
+            self.msg_queue.put(("PROGRESS", pct))
+
         try:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             os.makedirs(self.output_dir, exist_ok=True)
             dialogue: list[DialogueTurn] = []
 
             # ------------------------------------------------------------------
-            # Phase 1: Ingestion & Script Generation (if not audio_from_script)
+            # Phase 1 & 2: Ingestion & Extraction (if not audio_from_script)
             # ------------------------------------------------------------------
             if self.mode != "audio_from_script":
-                # Check cancellation
                 if self.cancel_event.is_set():
                     self.msg_queue.put(("CANCELLED", "Generation cancelled before ingestion."))
                     return
 
-                self.msg_queue.put(("STATUS", "Extracting and preparing input content..."))
-                self.msg_queue.put(("PROGRESS", 0.05))
-
-                is_raw = self.input_type == "text"
-                is_topic = self.input_type == "topic"
-                source_content = self.input_data
-
-                try:
-                    extracted_text = extract_text(
-                        source=source_content, is_raw_text=is_raw, is_topic=is_topic
+                is_url = self.input_type == "url"
+                if is_url:
+                    _notify(
+                        PipelineStage.URL_INGESTION,
+                        StageStatus.IN_ACTION,
+                        0.02,
+                        f"Validating and fetching URL: {str(self.input_data)[:60]}...",
                     )
-                except DocumentExtractionError as de_err:
-                    self.msg_queue.put(
-                        (
-                            "ERROR",
-                            {
-                                "title": "Document Extraction Error",
-                                "message": str(de_err),
-                                "details": f"Source: {source_content[:100]}...\nError: {de_err}",
-                                "remedy": "Please check that the document contains selectable text (not scanned images) and is not password protected.",
-                            },
+                    try:
+                        extracted_text = extract_text(source=self.input_data, is_url=True)
+                    except SecurityError as sec_err:
+                        _notify(
+                            PipelineStage.URL_INGESTION,
+                            StageStatus.FAILED,
+                            current_pct,
+                            str(sec_err),
                         )
+                        self.msg_queue.put(
+                            (
+                                "ERROR",
+                                {
+                                    "title": "URL Security Violation (SSRF Blocked)",
+                                    "message": f"Target URL was blocked by security filters:\n{sec_err}",
+                                    "details": str(sec_err),
+                                    "stage": PipelineStage.URL_INGESTION,
+                                    "remedy": "Private IP addresses and non-HTTP/HTTPS schemes are forbidden.",
+                                },
+                            )
+                        )
+                        return
+                    except DocumentExtractionError as de_err:
+                        _notify(
+                            PipelineStage.URL_INGESTION,
+                            StageStatus.FAILED,
+                            current_pct,
+                            str(de_err),
+                        )
+                        self.msg_queue.put(
+                            (
+                                "ERROR",
+                                {
+                                    "title": "Web Extraction Error",
+                                    "message": str(de_err),
+                                    "details": str(de_err),
+                                    "stage": PipelineStage.URL_INGESTION,
+                                    "remedy": "Please check that the website is online and accessible.",
+                                },
+                            )
+                        )
+                        return
+
+                    _notify(
+                        PipelineStage.URL_INGESTION,
+                        StageStatus.COMPLETED,
+                        0.10,
+                        "URL content securely validated and fetched.",
                     )
+                else:
+                    _notify(
+                        PipelineStage.URL_INGESTION,
+                        StageStatus.COMPLETED,
+                        0.05,
+                        "Source is non-URL (skipped ingestion).",
+                    )
+
+                if self.cancel_event.is_set():
+                    self.msg_queue.put(("CANCELLED", "Generation cancelled before extraction."))
                     return
 
-                if not extracted_text or len(extracted_text.strip()) < 10:
+                _notify(
+                    PipelineStage.CONTENT_EXTRACTION,
+                    StageStatus.IN_ACTION,
+                    0.12,
+                    "Extracting and normalizing source content...",
+                )
+
+                if not is_url:
+                    is_raw = self.input_type == "text"
+                    is_topic = self.input_type == "topic"
+                    source_content = self.input_data
+
+                    try:
+                        extracted_text = extract_text(
+                            source=source_content, is_raw_text=is_raw, is_topic=is_topic
+                        )
+                    except DocumentExtractionError as de_err:
+                        _notify(
+                            PipelineStage.CONTENT_EXTRACTION,
+                            StageStatus.FAILED,
+                            current_pct,
+                            str(de_err),
+                        )
+                        self.msg_queue.put(
+                            (
+                                "ERROR",
+                                {
+                                    "title": "Document Extraction Error",
+                                    "message": str(de_err),
+                                    "details": f"Source: {str(source_content)[:100]}...\nError: {de_err}",
+                                    "stage": PipelineStage.CONTENT_EXTRACTION,
+                                    "remedy": "Please check that the document contains selectable text.",
+                                },
+                            )
+                        )
+                        return
+
+                if not extracted_text or len(extracted_text.strip()) < 5:
+                    _notify(
+                        PipelineStage.CONTENT_EXTRACTION,
+                        StageStatus.FAILED,
+                        current_pct,
+                        "Empty content.",
+                    )
                     self.msg_queue.put(
                         (
                             "ERROR",
                             {
                                 "title": "Empty Content",
-                                "message": "The provided document or prompt is empty or too short.",
-                                "details": "Minimum 10 characters required.",
-                                "remedy": "Please provide a document with text or enter a more descriptive topic prompt.",
+                                "message": "The provided document, URL, or prompt is empty or too short.",
+                                "details": "Minimum 5 characters required.",
+                                "stage": PipelineStage.CONTENT_EXTRACTION,
+                                "remedy": "Please provide a source with text or enter a descriptive prompt.",
                             },
                         )
                     )
                     return
 
-                self.msg_queue.put(("PROGRESS", 0.15))
-                self.msg_queue.put(
-                    (
-                        "STATUS",
-                        f"Connecting to Ollama ({self.model}) and generating dialogue script...",
-                    )
+                _notify(
+                    PipelineStage.CONTENT_EXTRACTION,
+                    StageStatus.COMPLETED,
+                    0.25,
+                    f"Extracted {len(extracted_text):,} characters of content.",
                 )
 
+                # ------------------------------------------------------------------
+                # Phase 3: Script Generation
+                # ------------------------------------------------------------------
                 if self.cancel_event.is_set():
                     self.msg_queue.put(("CANCELLED", "Generation cancelled before LLM request."))
                     return
 
-                def progress_cb(msg: str):
-                    if not self.cancel_event.is_set():
-                        self.msg_queue.put(("STATUS", msg))
-                        if "Act 1/" in msg or "Akt 1/" in msg:
-                            self.msg_queue.put(("PROGRESS", 0.12))
-                        elif "Act 2/" in msg or "Akt 2/" in msg:
-                            self.msg_queue.put(("PROGRESS", 0.18))
-                        elif "Act 3/" in msg or "Akt 3/" in msg:
-                            self.msg_queue.put(("PROGRESS", 0.24))
-                        elif "Act 4/" in msg or "Akt 4/" in msg:
-                            self.msg_queue.put(("PROGRESS", 0.30))
-                        elif "Act 5/" in msg or "Akt 5/" in msg:
-                            self.msg_queue.put(("PROGRESS", 0.36))
+                _notify(
+                    PipelineStage.SCRIPT_GENERATION,
+                    StageStatus.IN_ACTION,
+                    0.25,
+                    f"Connecting to Ollama ({self.model}) and generating dialogue script...",
+                )
 
                 def stream_chunk_cb(chunk: str):
                     if not self.cancel_event.is_set():
@@ -235,6 +458,13 @@ class GenerationWorker(threading.Thread):
 
                 def act_done_cb(act_idx: int, total_acts: int, turns: list[DialogueTurn]):
                     if not self.cancel_event.is_set():
+                        pct = 0.25 + (0.35 * (act_idx / max(1, total_acts)))
+                        _notify(
+                            PipelineStage.SCRIPT_GENERATION,
+                            StageStatus.IN_ACTION,
+                            pct,
+                            f"Writing Act {act_idx} of {total_acts} ({len(turns)} turns)...",
+                        )
                         self.msg_queue.put(
                             (
                                 "ACT_DONE",
@@ -251,13 +481,19 @@ class GenerationWorker(threading.Thread):
                         grounding_mode=self.grounding_mode,
                         model=self.model,
                         ollama_url=self.ollama_url,
-                        is_topic=is_topic,
+                        is_topic=(self.input_type == "topic"),
                         cancel_event=self.cancel_event,
-                        progress_callback=progress_cb,
                         stream_callback=stream_chunk_cb,
                         act_callback=act_done_cb,
+                        host_mode=self.host_mode,
                     )
                 except OllamaModelNotFoundError as mnf_err:
+                    _notify(
+                        PipelineStage.SCRIPT_GENERATION,
+                        StageStatus.FAILED,
+                        current_pct,
+                        str(mnf_err),
+                    )
                     self.msg_queue.put(
                         (
                             "ERROR",
@@ -265,12 +501,19 @@ class GenerationWorker(threading.Thread):
                                 "title": "Ollama Model Missing",
                                 "message": f"Requested model '{self.model}' is not installed.",
                                 "details": str(mnf_err),
+                                "stage": PipelineStage.SCRIPT_GENERATION,
                                 "remedy": f"Open terminal and run: 'ollama pull {self.model}', then refresh the model list.",
                             },
                         )
                     )
                     return
                 except OllamaConnectionError as oc_err:
+                    _notify(
+                        PipelineStage.SCRIPT_GENERATION,
+                        StageStatus.FAILED,
+                        current_pct,
+                        str(oc_err),
+                    )
                     self.msg_queue.put(
                         (
                             "ERROR",
@@ -278,7 +521,8 @@ class GenerationWorker(threading.Thread):
                                 "title": "Ollama Connection Error",
                                 "message": "Could not connect to Ollama local service.",
                                 "details": str(oc_err),
-                                "remedy": "Ensure Ollama is running ('ollama serve' in terminal or Windows tray app) and click Refresh (↻).",
+                                "stage": PipelineStage.SCRIPT_GENERATION,
+                                "remedy": "Ensure Ollama is running and click Refresh (↻).",
                             },
                         )
                     )
@@ -289,6 +533,12 @@ class GenerationWorker(threading.Thread):
                     return
 
                 if not dialogue:
+                    _notify(
+                        PipelineStage.SCRIPT_GENERATION,
+                        StageStatus.FAILED,
+                        current_pct,
+                        "Script parsing failed.",
+                    )
                     self.msg_queue.put(
                         (
                             "ERROR",
@@ -296,27 +546,39 @@ class GenerationWorker(threading.Thread):
                                 "title": "Script Parsing Failed",
                                 "message": "Failed to parse a structured dialogue script from the model's output.",
                                 "details": "The model response did not contain valid dialogue turns.",
-                                "remedy": "Try selecting a more capable model (e.g., llama3.1:8b or qwen2.5:7b) and try again.",
+                                "stage": PipelineStage.SCRIPT_GENERATION,
+                                "remedy": "Try selecting a more capable model and try again.",
                             },
                         )
                     )
                     return
 
-                # Send script to UI
+                _notify(
+                    PipelineStage.SCRIPT_GENERATION,
+                    StageStatus.COMPLETED,
+                    0.60,
+                    f"Generated full {len(dialogue)}-turn script.",
+                )
                 self.msg_queue.put(("SCRIPT_READY", dialogue))
-                self.msg_queue.put(("PROGRESS", 0.40))
 
-                # Save script files to output folder (.json and .md) atomically
+                # Save script files atomically
                 script_json_path = os.path.join(self.output_dir, f"podcast_script_{timestamp}.json")
                 atomic_write_file(script_json_path, dialogue_to_json(dialogue))
 
                 script_md_path = os.path.join(self.output_dir, f"podcast_transcript_{timestamp}.md")
-                atomic_write_file(script_md_path, dialogue_to_markdown(dialogue))
+                atomic_write_file(
+                    script_md_path,
+                    dialogue_to_markdown(
+                        dialogue, language=self.language, host_mode=self.host_mode
+                    ),
+                )
 
                 if self.mode == "script_only":
-                    self.msg_queue.put(("PROGRESS", 1.0))
-                    self.msg_queue.put(
-                        ("STATUS", f"Script generated successfully! ({len(dialogue)} turns)")
+                    _notify(
+                        PipelineStage.AUDIO_ASSEMBLY,
+                        StageStatus.COMPLETED,
+                        1.0,
+                        f"Script generated successfully! ({len(dialogue)} turns)",
                     )
                     self.msg_queue.put(
                         (
@@ -333,31 +595,51 @@ class GenerationWorker(threading.Thread):
             else:
                 # Mode: audio_from_script
                 dialogue = self.input_data
-                self.msg_queue.put(("PROGRESS", 0.40))
-                # Save script files to output folder (.json and .md) atomically
+                _notify(PipelineStage.URL_INGESTION, StageStatus.COMPLETED, 0.05, "Loaded script.")
+                _notify(
+                    PipelineStage.CONTENT_EXTRACTION, StageStatus.COMPLETED, 0.25, "Loaded script."
+                )
+                _notify(
+                    PipelineStage.SCRIPT_GENERATION,
+                    StageStatus.COMPLETED,
+                    0.60,
+                    "Loaded existing script.",
+                )
+
                 script_json_path = os.path.join(self.output_dir, f"podcast_script_{timestamp}.json")
                 atomic_write_file(script_json_path, dialogue_to_json(dialogue))
 
                 script_md_path = os.path.join(self.output_dir, f"podcast_transcript_{timestamp}.md")
-                atomic_write_file(script_md_path, dialogue_to_markdown(dialogue))
+                atomic_write_file(
+                    script_md_path,
+                    dialogue_to_markdown(
+                        dialogue, language=self.language, host_mode=self.host_mode
+                    ),
+                )
 
             # ------------------------------------------------------------------
-            # Phase 2: Local Piper TTS Neural Voice Synthesis
+            # Phase 4: Local Piper TTS Neural Voice Synthesis
             # ------------------------------------------------------------------
             if self.cancel_event.is_set():
                 self.msg_queue.put(("CANCELLED", "Generation cancelled before audio synthesis."))
                 return
 
-            self.msg_queue.put(("STATUS", "Synthesizing neural voices with Piper TTS..."))
+            _notify(
+                PipelineStage.TTS_SYNTHESIS,
+                StageStatus.IN_ACTION,
+                0.60,
+                "Synthesizing neural voices with Piper TTS...",
+            )
 
             def tts_progress_cb(curr: int, tot: int):
                 if not self.cancel_event.is_set():
-                    # Map progress range: 40% -> 90%
-                    pct = 0.40 + (0.50 * (curr / max(1, tot)))
+                    pct = 0.60 + (0.30 * (curr / max(1, tot)))
                     turn_speaker = dialogue[curr - 1].speaker if curr <= len(dialogue) else "Host"
-                    self.msg_queue.put(("PROGRESS", pct))
-                    self.msg_queue.put(
-                        ("STATUS", f"Synthesizing turn {curr}/{tot} ({turn_speaker})...")
+                    _notify(
+                        PipelineStage.TTS_SYNTHESIS,
+                        StageStatus.IN_ACTION,
+                        pct,
+                        f"Synthesizing turn {curr}/{tot} ({turn_speaker})...",
                     )
 
             temp_tts_dir = tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
@@ -370,13 +652,14 @@ class GenerationWorker(threading.Thread):
                     output_dir=temp_tts_dir,
                     progress_cb=tts_progress_cb,
                     cancel_event=self.cancel_event,
+                    solo_voice=self.solo_voice,
                 )
-            except (RuntimeError, OSError, ValueError, TypeError, Exception) as tts_err:
-                # Clean up temp files
+            except Exception as tts_err:
                 self._cleanup_temp_dir(temp_tts_dir)
                 if self.cancel_event.is_set():
                     self.msg_queue.put(("CANCELLED", "Audio synthesis cancelled by user."))
                     return
+                _notify(PipelineStage.TTS_SYNTHESIS, StageStatus.FAILED, current_pct, str(tts_err))
                 self.msg_queue.put(
                     (
                         "ERROR",
@@ -384,6 +667,7 @@ class GenerationWorker(threading.Thread):
                             "title": "Voice Synthesis Error",
                             "message": f"Piper TTS synthesis encountered an error: {tts_err}",
                             "details": str(tts_err),
+                            "stage": PipelineStage.TTS_SYNTHESIS,
                             "remedy": "Please verify Piper TTS local neural voice models in models/voices/ directory.",
                         },
                     )
@@ -395,11 +679,27 @@ class GenerationWorker(threading.Thread):
                 self.msg_queue.put(("CANCELLED", "Generation cancelled by user."))
                 return
 
+            _notify(
+                PipelineStage.TTS_SYNTHESIS,
+                StageStatus.COMPLETED,
+                0.90,
+                f"Synthesized {len(self.temp_turn_files)} audio segments.",
+            )
+
             # ------------------------------------------------------------------
-            # Phase 3: Zero-FFmpeg MP3 Binary Frame Stitching
+            # Phase 5: Zero-FFmpeg MP3 Binary Frame Stitching
             # ------------------------------------------------------------------
-            self.msg_queue.put(("STATUS", "Stitching audio segments into master MP3..."))
-            self.msg_queue.put(("PROGRESS", 0.92))
+            if self.cancel_event.is_set():
+                self._cleanup_temp_dir(temp_tts_dir)
+                self.msg_queue.put(("CANCELLED", "Generation cancelled before audio assembly."))
+                return
+
+            _notify(
+                PipelineStage.AUDIO_ASSEMBLY,
+                StageStatus.IN_ACTION,
+                0.92,
+                "Stitching audio segments into master MP3...",
+            )
 
             output_mp3_path = os.path.join(self.output_dir, f"podcast_{timestamp}.mp3")
 
@@ -411,8 +711,11 @@ class GenerationWorker(threading.Thread):
                     title=f"Podcast {timestamp}",
                     artist="LocalPodcastLLMStudio",
                 )
-            except (RuntimeError, ValueError, OSError, Exception) as stitch_err:
+            except Exception as stitch_err:
                 self._cleanup_temp_dir(temp_tts_dir)
+                _notify(
+                    PipelineStage.AUDIO_ASSEMBLY, StageStatus.FAILED, current_pct, str(stitch_err)
+                )
                 self.msg_queue.put(
                     (
                         "ERROR",
@@ -420,6 +723,7 @@ class GenerationWorker(threading.Thread):
                             "title": "MP3 Stitching Error",
                             "message": f"Failed to stitch MP3 audio frames: {stitch_err}",
                             "details": str(stitch_err),
+                            "stage": PipelineStage.AUDIO_ASSEMBLY,
                             "remedy": "Check write permissions in the output directory.",
                         },
                     )
@@ -430,11 +734,13 @@ class GenerationWorker(threading.Thread):
             self._cleanup_temp_dir(temp_tts_dir)
 
             # ------------------------------------------------------------------
-            # Phase 4: Completion & Readiness
+            # Phase 6: Completion & Readiness
             # ------------------------------------------------------------------
-            self.msg_queue.put(("PROGRESS", 1.0))
-            self.msg_queue.put(
-                ("STATUS", f"Ready! Master podcast generated: {os.path.basename(output_mp3_path)}")
+            _notify(
+                PipelineStage.AUDIO_ASSEMBLY,
+                StageStatus.COMPLETED,
+                1.0,
+                f"Ready! Master podcast generated: {os.path.basename(output_mp3_path)}",
             )
             self.msg_queue.put(
                 (
@@ -450,6 +756,7 @@ class GenerationWorker(threading.Thread):
             )
 
         except Exception as unhandled_err:
+            _notify(current_stage, StageStatus.FAILED, current_pct, f"Error: {unhandled_err}")
             self.msg_queue.put(
                 (
                     "ERROR",
@@ -457,18 +764,11 @@ class GenerationWorker(threading.Thread):
                         "title": "Unexpected Pipeline Error",
                         "message": str(unhandled_err),
                         "details": str(unhandled_err),
+                        "stage": current_stage,
                         "remedy": "Please review the error details and try again.",
                     },
                 )
             )
-
-    def _cleanup_temp_dir(self, temp_dir: str):
-        """Recursively cleans temporary turn files."""
-        if os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except OSError:
-                pass
 
 
 # ==============================================================================
@@ -606,9 +906,11 @@ class MainWindow(ctk.CTk):
     current_worker: GenerationWorker | None = None
     current_pull_worker: ModelPullWorker | None = None
     current_launcher_worker: OllamaLauncherWorker | None = None
+    current_url_worker: URLExtractionWorker | None = None
     cancel_event: threading.Event
     pull_cancel_event: threading.Event
     launcher_cancel_event: threading.Event
+    url_cancel_event: threading.Event
     player: WindowsAudioPlayer
     is_busy: bool = False
     current_dialogue: list[DialogueTurn]
@@ -618,6 +920,37 @@ class MainWindow(ctk.CTk):
     _streaming_raw_text: str = ""
     _streaming_chunks_count: int = 0
     _rendered_turns_count: int = 0
+
+    # UI Widget References for Spec Fidelity
+    stage_tracker: StageProgressTracker
+    stage_progress_tracker: StageProgressTracker
+    input_modality_var: ctk.StringVar
+    modality_segmented: ctk.CTkSegmentedButton
+    file_container: ctk.CTkFrame
+    file_entry: ctk.CTkEntry
+    btn_browse_file: ctk.CTkButton
+    file_info_label: ctk.CTkLabel
+    text_container: ctk.CTkFrame
+    text_input_box: ctk.CTkTextbox
+    url_container: ctk.CTkFrame
+    url_entry: ctk.CTkEntry
+    btn_extract_url: ctk.CTkButton
+    url_status_label: ctk.CTkLabel
+    url_info_label: ctk.CTkLabel
+    url_preview_box: ctk.CTkTextbox
+    url_char_count_label: ctk.CTkLabel
+    episode_style_var: ctk.StringVar
+    style_segmented: ctk.CTkSegmentedButton
+    episode_style_segmented: ctk.CTkSegmentedButton
+    voice_selection_container: ctk.CTkFrame
+    dialogue_voice_frame: ctk.CTkFrame
+    monologue_voice_frame: ctk.CTkFrame
+    solo_voice_frame: ctk.CTkFrame
+    host1_voice_frame: ctk.CTkFrame
+    host1_voice_menu: ctk.CTkOptionMenu
+    host2_voice_frame: ctk.CTkFrame
+    host2_voice_menu: ctk.CTkOptionMenu
+    solo_voice_menu: ctk.CTkOptionMenu
 
     def __init__(self):
         super().__init__()
@@ -638,11 +971,13 @@ class MainWindow(ctk.CTk):
         self.cancel_event: threading.Event = threading.Event()
         self.current_worker: GenerationWorker | None = None
 
-        # Background Worker State for Launcher and Model Downloader
+        # Background Worker State for Launcher, Model Downloader, and URL Extractor
         self.current_launcher_worker: OllamaLauncherWorker | None = None
         self.launcher_cancel_event: threading.Event = threading.Event()
         self.current_pull_worker: ModelPullWorker | None = None
         self.pull_cancel_event: threading.Event = threading.Event()
+        self.current_url_worker: URLExtractionWorker | None = None
+        self.url_cancel_event: threading.Event = threading.Event()
 
         # Poller Timer Tracking & Lifecycle Flags
         self._queue_poll_id: str | None = None
@@ -882,7 +1217,12 @@ class MainWindow(ctk.CTk):
         self.input_modality_var = ctk.StringVar(value="file")
         self.modality_segmented = ctk.CTkSegmentedButton(
             scroll_container,
-            values=["Document (.txt/.md/.pdf)", "Pasted Text", "Topic Prompt (Scratch)"],
+            values=[
+                "Document (.txt/.md/.pdf)",
+                "Website URL",
+                "Pasted Text",
+                "Topic Prompt (Scratch)",
+            ],
             selected_color=COLOR_ACCENT,
             selected_hover_color=COLOR_ACCENT_HOVER,
             text_color=COLOR_TEXT_PRIMARY,
@@ -926,6 +1266,63 @@ class MainWindow(ctk.CTk):
             anchor="w",
         )
         self.file_info_label.pack(anchor="w", pady=(4, 0))
+
+        # Website URL Ingestion Container
+        self.url_container = ctk.CTkFrame(scroll_container, fg_color="transparent")
+
+        url_input_row = ctk.CTkFrame(self.url_container, fg_color="transparent")
+        url_input_row.pack(fill="x")
+        self.url_entry = ctk.CTkEntry(
+            url_input_row,
+            placeholder_text="https://en.wikipedia.org/wiki/Podcast...",
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+        )
+        self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.btn_extract_url = ctk.CTkButton(
+            url_input_row,
+            text="⚡ Extract & Preview",
+            width=135,
+            font=get_font_caption_bold(),
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            command=self._extract_url_async,
+        )
+        self.btn_extract_url.pack(side="right")
+
+        url_status_row = ctk.CTkFrame(self.url_container, fg_color="transparent")
+        url_status_row.pack(fill="x", pady=(4, 2))
+
+        self.url_status_label = ctk.CTkLabel(
+            url_status_row,
+            text="Ready to extract web content.",
+            font=get_font_caption(),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        )
+        self.url_status_label.pack(side="left", fill="x", expand=True)
+        self.url_info_label = self.url_status_label
+
+        self.url_char_count_label = ctk.CTkLabel(
+            url_status_row,
+            text="0 chars",
+            font=get_font_caption_bold(),
+            text_color=COLOR_ACCENT,
+            anchor="e",
+        )
+        self.url_char_count_label.pack(side="right")
+
+        self.url_preview_box = ctk.CTkTextbox(
+            self.url_container,
+            height=130,
+            font=get_font_code(),
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+            border_width=1,
+            text_color=COLOR_TEXT_PRIMARY,
+        )
+        self.url_preview_box.pack(fill="both", expand=True, pady=(2, 0))
 
         # Text & Topic Prompt Textbox Container
         self.text_container = ctk.CTkFrame(scroll_container, fg_color="transparent")
@@ -1048,11 +1445,16 @@ class MainWindow(ctk.CTk):
         self.btn_reset.pack(side="right", fill="x", expand=True)
 
     def _build_highway_right_panel(self, parent: CardFrame):
-        """Builds the right column of the Highway view: Live Status, Dialogue Preview & Native Audio Player."""
+        """Builds the right column of the Highway view: Live Status, Stage Tracker, Dialogue Preview & Native Audio Player."""
         container = ctk.CTkFrame(parent, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=12, pady=12)
 
-        # --- Section 1: Generation Progress & Live Status ---
+        # --- Section 1: 5-Stage Lifecycle Progress Tracker ---
+        self.stage_tracker = StageProgressTracker(container)
+        self.stage_tracker.pack(fill="x", pady=(0, 10))
+        self.stage_progress_tracker = self.stage_tracker  # Compatibility alias
+
+        # Overall Status & Single Progress Bar Card
         status_box = CardFrame(container, fg_color="#1a1c29", corner_radius=8, border_width=1)
         status_box.pack(fill="x", pady=(0, 10))
 
@@ -1283,8 +1685,39 @@ class MainWindow(ctk.CTk):
         """Dynamically synchronizes the highway profile badge label with active Settings."""
         if not hasattr(self, "highway_preset_label"):
             return
-        lang_str = "🇺🇸 English" if "English" in self.lang_menu.get() else "🇳🇴 Norwegian"
-        len_raw = self.length_menu.get()
+        lang_is_nb = "Norwegian" in self.lang_menu.get() if hasattr(self, "lang_menu") else False
+        lang_str = "🇳🇴 Norwegian" if lang_is_nb else "🇺🇸 English"
+
+        is_mono = False
+        if hasattr(self, "episode_style_var") and self.episode_style_var.get() == "monologue":
+            is_mono = True
+        elif hasattr(self, "style_segmented") and (
+            "monologue" in self.style_segmented.get().lower()
+            or "solo" in self.style_segmented.get().lower()
+        ):
+            is_mono = True
+
+        if is_mono:
+            voice = (
+                self.solo_voice_menu.get().split(" ")[0]
+                if hasattr(self, "solo_voice_menu")
+                else ("Kari" if lang_is_nb else "Jenny")
+            )
+            host_str = f"👤 Solo: {voice}"
+        else:
+            h1 = (
+                self.host1_voice_menu.get().split(" ")[0]
+                if hasattr(self, "host1_voice_menu")
+                else ("Kari" if lang_is_nb else "Jenny")
+            )
+            h2 = (
+                self.host2_voice_menu.get().split(" ")[0]
+                if hasattr(self, "host2_voice_menu")
+                else ("Ola" if lang_is_nb else "Guy")
+            )
+            host_str = f"🎙️ {h1} & {h2}"
+
+        len_raw = self.length_menu.get() if hasattr(self, "length_menu") else "Standard"
         if "Quick" in len_raw:
             len_str = "⏱️ ~2-3 min (Quick)"
         elif "Deep" in len_raw:
@@ -1300,7 +1733,9 @@ class MainWindow(ctk.CTk):
         if not model_str or "Checking" in model_str or "Offline" in model_str:
             model_str = "Auto Ollama"
 
-        self.highway_preset_label.configure(text=f"{lang_str} • {len_str} • 🤖 {model_str}")
+        self.highway_preset_label.configure(
+            text=f"{lang_str} ({host_str}) • {len_str} • 🤖 {model_str}"
+        )
 
     def _build_settings_view(self, parent: ctk.CTkFrame):
         """Builds the comprehensive settings and persona configuration view."""
@@ -1324,10 +1759,33 @@ class MainWindow(ctk.CTk):
         l_inner = ctk.CTkFrame(lang_box, fg_color="transparent")
         l_inner.pack(fill="x", padx=14, pady=12)
 
+        # Episode Style / Host Format Selector (Milestone 4)
+        ctk.CTkLabel(
+            l_inner,
+            text="Episode Style / Host Format:",
+            font=get_font_body_bold(),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.episode_style_var = ctk.StringVar(value="dialogue")
+        self.style_segmented = ctk.CTkSegmentedButton(
+            l_inner,
+            values=["🎙️ Dialogue (Two Hosts)", "👤 Monologue (Solo Host)"],
+            selected_color=COLOR_ACCENT,
+            selected_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            unselected_color="#1f2335",
+            unselected_hover_color="#292e42",
+            command=self._on_style_changed,
+        )
+        self.style_segmented.set("🎙️ Dialogue (Two Hosts)")
+        self.style_segmented.pack(fill="x", pady=(0, 10))
+        self.episode_style_segmented = self.style_segmented  # Compatibility alias
+
         # Language Selector (Default English)
         ctk.CTkLabel(
             l_inner,
-            text="Target Language & Host Personas:",
+            text="Target Language:",
             font=get_font_body_bold(),
             text_color=COLOR_TEXT_PRIMARY,
         ).pack(anchor="w", pady=(0, 4))
@@ -1342,7 +1800,92 @@ class MainWindow(ctk.CTk):
             command=self._on_language_changed,
         )
         self.lang_menu.set("English (Jenny & Guy)")
-        self.lang_menu.pack(fill="x", pady=(0, 8))
+        self.lang_menu.pack(fill="x", pady=(0, 10))
+
+        # Dynamic Voice Selection Container
+        self.voice_selection_container = ctk.CTkFrame(l_inner, fg_color="transparent")
+        self.voice_selection_container.pack(fill="x", pady=(0, 8))
+
+        # 1. Dialogue Voice Frame (Host 1 & Host 2)
+        self.dialogue_voice_frame = ctk.CTkFrame(
+            self.voice_selection_container, fg_color="transparent"
+        )
+        self.dialogue_voice_frame.pack(fill="x")
+
+        # Host 1 Voice Row
+        self.host1_voice_frame = ctk.CTkFrame(self.dialogue_voice_frame, fg_color="transparent")
+        self.host1_voice_frame.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            self.host1_voice_frame,
+            text="Host 1 Voice:",
+            font=get_font_body(),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=105,
+            anchor="w",
+        ).pack(side="left")
+        self.host1_voice_menu = ctk.CTkOptionMenu(
+            self.host1_voice_frame,
+            values=["Jenny (Female)", "Amy (Female)"],
+            fg_color=COLOR_BUTTON_SECONDARY,
+            button_color=COLOR_ACCENT,
+            button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
+            command=lambda _: self._update_highway_preset_label(),
+        )
+        self.host1_voice_menu.set("Jenny (Female)")
+        self.host1_voice_menu.pack(side="left", fill="x", expand=True)
+
+        # Host 2 Voice Row
+        self.host2_voice_frame = ctk.CTkFrame(self.dialogue_voice_frame, fg_color="transparent")
+        self.host2_voice_frame.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            self.host2_voice_frame,
+            text="Host 2 Voice:",
+            font=get_font_body(),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=105,
+            anchor="w",
+        ).pack(side="left")
+        self.host2_voice_menu = ctk.CTkOptionMenu(
+            self.host2_voice_frame,
+            values=["Guy (Male)", "Joe (Male)"],
+            fg_color=COLOR_BUTTON_SECONDARY,
+            button_color=COLOR_ACCENT,
+            button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
+            command=lambda _: self._update_highway_preset_label(),
+        )
+        self.host2_voice_menu.set("Guy (Male)")
+        self.host2_voice_menu.pack(side="left", fill="x", expand=True)
+
+        # 2. Monologue Voice Frame (Solo Host)
+        self.monologue_voice_frame = ctk.CTkFrame(
+            self.voice_selection_container, fg_color="transparent"
+        )
+        self.solo_voice_frame = self.monologue_voice_frame  # Compatibility alias
+
+        ctk.CTkLabel(
+            self.monologue_voice_frame,
+            text="Solo Host Voice:",
+            font=get_font_body(),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=115,
+            anchor="w",
+        ).pack(side="left")
+        self.solo_voice_menu = ctk.CTkOptionMenu(
+            self.monologue_voice_frame,
+            values=["Jenny (Female)", "Guy (Male)"],
+            fg_color=COLOR_BUTTON_SECONDARY,
+            button_color=COLOR_ACCENT,
+            button_hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            dropdown_text_color=COLOR_TEXT_PRIMARY,
+            command=lambda _: self._update_highway_preset_label(),
+        )
+        self.solo_voice_menu.set("Jenny (Female)")
+        self.solo_voice_menu.pack(side="left", fill="x", expand=True)
 
         # Episode Length Preset (Default Standard Episode ~8 min)
         ctk.CTkLabel(
@@ -1688,8 +2231,104 @@ class MainWindow(ctk.CTk):
 
     def _on_language_changed(self, choice: str):
         """Callback when user selects a different language."""
+        self._update_voice_selectors()
         self._update_grounding_description()
         self._update_highway_preset_label()
+
+    def _update_voice_selectors(self):
+        """Updates available voice menu options based on selected language."""
+        if not hasattr(self, "lang_menu"):
+            return
+        lang_is_nb = "Norwegian" in self.lang_menu.get()
+
+        if lang_is_nb:
+            host1_voices = ["Kari (Female)", "Pernille (Female)"]
+            host2_voices = ["Ola (Male)", "Finn (Male)"]
+            solo_voices = ["Kari (Female)", "Ola (Male)"]
+            default_h1 = "Kari (Female)"
+            default_h2 = "Ola (Male)"
+            default_solo = "Kari (Female)"
+        else:
+            host1_voices = ["Jenny (Female)", "Amy (Female)"]
+            host2_voices = ["Guy (Male)", "Joe (Male)"]
+            solo_voices = ["Jenny (Female)", "Guy (Male)"]
+            default_h1 = "Jenny (Female)"
+            default_h2 = "Guy (Male)"
+            default_solo = "Jenny (Female)"
+
+        if hasattr(self, "host1_voice_menu"):
+            self.host1_voice_menu.configure(values=host1_voices)
+            self.host1_voice_menu.set(default_h1)
+        if hasattr(self, "host2_voice_menu"):
+            self.host2_voice_menu.configure(values=host2_voices)
+            self.host2_voice_menu.set(default_h2)
+        if hasattr(self, "solo_voice_menu"):
+            self.solo_voice_menu.configure(values=solo_voices)
+            self.solo_voice_menu.set(default_solo)
+
+    def _on_style_changed(self, choice: str):
+        """Switches voice controls between dual hosts and solo host."""
+        is_mono = "monologue" in str(choice).lower() or "solo" in str(choice).lower()
+        if hasattr(self, "episode_style_var"):
+            self.episode_style_var.set("monologue" if is_mono else "dialogue")
+        if is_mono:
+            if hasattr(self, "dialogue_voice_frame"):
+                self.dialogue_voice_frame.pack_forget()
+            if hasattr(self, "host2_voice_frame"):
+                self.host2_voice_frame.pack_forget()
+            if hasattr(self, "monologue_voice_frame"):
+                self.monologue_voice_frame.pack(fill="x", pady=(0, 4))
+            elif hasattr(self, "solo_voice_frame"):
+                self.solo_voice_frame.pack(fill="x", pady=(0, 4))
+        else:
+            if hasattr(self, "monologue_voice_frame"):
+                self.monologue_voice_frame.pack_forget()
+            elif hasattr(self, "solo_voice_frame"):
+                self.solo_voice_frame.pack_forget()
+            if hasattr(self, "dialogue_voice_frame"):
+                self.dialogue_voice_frame.pack(fill="x")
+            if hasattr(self, "host2_voice_frame"):
+                self.host2_voice_frame.pack(fill="x", pady=(0, 4))
+        self._update_highway_preset_label()
+
+    def _on_episode_style_changed(self, choice: str):
+        """Alias callback for test compatibility."""
+        self._on_style_changed(choice)
+
+    def _extract_url_async(self):
+        """Asynchronously extracts and parses web article content in background thread."""
+        url = self.url_entry.get().strip() if hasattr(self, "url_entry") else ""
+        if not url:
+            ActionableErrorDialog(
+                self,
+                title="Missing Website URL",
+                message="Please enter a valid website URL before extracting.",
+                details="Example: https://en.wikipedia.org/wiki/Artificial_intelligence",
+            )
+            return
+
+        if not (url.startswith("http://") or url.startswith("https://")):
+            ActionableErrorDialog(
+                self,
+                title="Invalid URL Scheme",
+                message="Target URL must start with 'http://' or 'https://'.",
+                details=f"Received: {url}",
+            )
+            return
+
+        if hasattr(self, "btn_extract_url"):
+            self.btn_extract_url.configure(state="disabled")
+        if hasattr(self, "url_status_label"):
+            self.url_status_label.configure(
+                text=f"Fetching and validating {url[:40]}...", text_color=COLOR_WARNING
+            )
+        self.url_cancel_event.clear()
+        self.current_url_worker = URLExtractionWorker(
+            url=url,
+            msg_queue=self.msg_queue,
+            cancel_event=self.url_cancel_event,
+        )
+        self.current_url_worker.start()
 
     def _update_grounding_description(self):
         """Updates the caption helper text based on selected mode and language."""
@@ -1703,26 +2342,51 @@ class MainWindow(ctk.CTk):
         self.grounding_desc_label.configure(text=f"{prefix}{desc}")
 
     def _on_modality_changed(self, value: str):
-        if "Document" in value:
+        """Switches visible input container and auto-syncs grounding mode."""
+        if "Document" in value or value == "file":
             self.input_modality_var.set("file")
-            self.text_container.pack_forget()
-            self.file_container.pack(fill="x", pady=(0, 12))
+            if hasattr(self, "url_container"):
+                self.url_container.pack_forget()
+            if hasattr(self, "text_container"):
+                self.text_container.pack_forget()
+            if hasattr(self, "file_container"):
+                self.file_container.pack(fill="x", pady=(0, 12))
             # Auto-sync: If in open_topic, switch to strict
             if self.get_selected_grounding_mode() == "open_topic":
                 self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
                 self._update_grounding_description()
-        elif "Pasted" in value:
+        elif "Website URL" in value or "URL" in value or value == "url":
+            self.input_modality_var.set("url")
+            if hasattr(self, "file_container"):
+                self.file_container.pack_forget()
+            if hasattr(self, "text_container"):
+                self.text_container.pack_forget()
+            if hasattr(self, "url_container"):
+                self.url_container.pack(fill="both", expand=True, pady=(0, 12))
+            # Auto-sync: If in open_topic, switch to strict
+            if self.get_selected_grounding_mode() == "open_topic":
+                self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
+                self._update_grounding_description()
+        elif "Pasted" in value or value == "text":
             self.input_modality_var.set("text")
-            self.file_container.pack_forget()
-            self.text_container.pack(fill="both", expand=True, pady=(0, 12))
+            if hasattr(self, "file_container"):
+                self.file_container.pack_forget()
+            if hasattr(self, "url_container"):
+                self.url_container.pack_forget()
+            if hasattr(self, "text_container"):
+                self.text_container.pack(fill="both", expand=True, pady=(0, 12))
             # Auto-sync: If in open_topic, switch to strict
             if self.get_selected_grounding_mode() == "open_topic":
                 self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
                 self._update_grounding_description()
         else:  # Topic Prompt (Scratch)
             self.input_modality_var.set("topic")
-            self.file_container.pack_forget()
-            self.text_container.pack(fill="both", expand=True, pady=(0, 12))
+            if hasattr(self, "file_container"):
+                self.file_container.pack_forget()
+            if hasattr(self, "url_container"):
+                self.url_container.pack_forget()
+            if hasattr(self, "text_container"):
+                self.text_container.pack(fill="both", expand=True, pady=(0, 12))
             # Auto-sync: Switch to open_topic
             self.grounding_menu.set(GROUNDING_UI_OPTIONS[2])
             self._update_grounding_description()
@@ -1887,6 +2551,25 @@ class MainWindow(ctk.CTk):
                 )
                 return
             source_data = file_path
+        elif modality == "url":
+            url_val = self.url_entry.get().strip() if hasattr(self, "url_entry") else ""
+            if not url_val:
+                ActionableErrorDialog(
+                    self,
+                    title="Missing Website URL",
+                    message="Please enter a valid website URL before generating.",
+                    details="Example: https://en.wikipedia.org/wiki/Podcast",
+                )
+                return
+            if not (url_val.startswith("http://") or url_val.startswith("https://")):
+                ActionableErrorDialog(
+                    self,
+                    title="Invalid URL Scheme",
+                    message="Target URL must start with 'http://' or 'https://'.",
+                    details=f"Received: {url_val}",
+                )
+                return
+            source_data = url_val
         else:
             text_data = self.text_input_box.get("1.0", "end-1c").strip()
             if not text_data:
@@ -1965,6 +2648,25 @@ class MainWindow(ctk.CTk):
         out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
         grounding_mode = self.get_selected_grounding_mode()
 
+        # Host Mode & Solo Voice (Milestone 4)
+        is_mono = False
+        if hasattr(self, "episode_style_var") and self.episode_style_var.get() == "monologue":
+            is_mono = True
+        elif hasattr(self, "style_segmented") and (
+            "monologue" in self.style_segmented.get().lower()
+            or "solo" in self.style_segmented.get().lower()
+        ):
+            is_mono = True
+
+        host_mode = "monologue" if is_mono else "dialogue"
+        solo_voice = None
+        if is_mono and hasattr(self, "solo_voice_menu"):
+            solo_voice = self.solo_voice_menu.get().strip()
+
+        # Reset stage tracker on new generation run
+        if hasattr(self, "stage_tracker"):
+            self.stage_tracker.reset()
+
         # Prepare Worker & Live Streaming UI
         self.cancel_event.clear()
         self._set_busy_state(True)
@@ -1985,6 +2687,8 @@ class MainWindow(ctk.CTk):
             msg_queue=self.msg_queue,
             cancel_event=self.cancel_event,
             grounding_mode=grounding_mode,
+            host_mode=host_mode,
+            solo_voice=solo_voice,
         )
         self.current_worker.start()
 
@@ -2040,6 +2744,24 @@ class MainWindow(ctk.CTk):
             speed_rate = format_rate_str(speed_val)
             out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
 
+            # Host Mode & Solo Voice
+            is_mono = False
+            if hasattr(self, "episode_style_var") and self.episode_style_var.get() == "monologue":
+                is_mono = True
+            elif hasattr(self, "style_segmented") and (
+                "monologue" in self.style_segmented.get().lower()
+                or "solo" in self.style_segmented.get().lower()
+            ):
+                is_mono = True
+
+            host_mode = "monologue" if is_mono else "dialogue"
+            solo_voice = None
+            if is_mono and hasattr(self, "solo_voice_menu"):
+                solo_voice = self.solo_voice_menu.get().strip()
+
+            if hasattr(self, "stage_tracker"):
+                self.stage_tracker.reset()
+
             self.cancel_event.clear()
             self._set_busy_state(True)
             self.progress_bar.set(0.40)
@@ -2058,6 +2780,8 @@ class MainWindow(ctk.CTk):
                 msg_queue=self.msg_queue,
                 cancel_event=self.cancel_event,
                 grounding_mode=self.get_selected_grounding_mode(),
+                host_mode=host_mode,
+                solo_voice=solo_voice,
             )
             self.current_worker.start()
         except Exception as e:
@@ -2097,7 +2821,85 @@ class MainWindow(ctk.CTk):
                 processed += 1
 
     def _handle_event(self, event_type: str, payload: Any):
-        if event_type == "STATUS":
+        if event_type == "STAGE_UPDATE":
+            if isinstance(payload, tuple) and len(payload) == 4:
+                stage, status, pct, msg = payload
+            elif isinstance(payload, dict):
+                stage = payload.get("stage", PipelineStage.URL_INGESTION)
+                status = payload.get("status", StageStatus.IN_ACTION)
+                pct = payload.get("pct", 0.0)
+                msg = payload.get("message", payload.get("details", ""))
+            else:
+                return
+            if hasattr(self, "stage_tracker"):
+                self.stage_tracker.update_stage(stage, status, pct, msg)
+            if hasattr(self, "status_label"):
+                self.status_label.configure(text=str(msg))
+            if hasattr(self, "progress_bar"):
+                self.progress_bar.set(float(pct))
+            if hasattr(self, "progress_pct_label"):
+                self.progress_pct_label.configure(text=f"{int(float(pct) * 100)}%")
+        elif event_type in ("EXTRACTION_STARTING", "URL_EXTRACTION_STARTING"):
+            if hasattr(self, "btn_extract_url"):
+                self.btn_extract_url.configure(state="disabled")
+            if hasattr(self, "url_status_label"):
+                self.url_status_label.configure(
+                    text="Validating and fetching URL content...", text_color=COLOR_WARNING
+                )
+        elif event_type in ("EXTRACTION_PROGRESS", "URL_EXTRACTION_PROGRESS"):
+            st = payload.get("status", "") if isinstance(payload, dict) else str(payload)
+            if hasattr(self, "url_status_label"):
+                self.url_status_label.configure(text=st, text_color=COLOR_WARNING)
+            if hasattr(self, "status_label"):
+                self.status_label.configure(text=st)
+        elif event_type in ("EXTRACTION_DONE", "URL_EXTRACTION_DONE"):
+            if isinstance(payload, dict):
+                url = payload.get("url", "")
+                md = payload.get("markdown", "")
+                chars = payload.get("char_count", len(md))
+                if hasattr(self, "btn_extract_url"):
+                    self.btn_extract_url.configure(state="normal")
+                if hasattr(self, "url_status_label"):
+                    self.url_status_label.configure(
+                        text=f"✓ Extracted {chars:,} characters from {url[:35]}...",
+                        text_color=COLOR_SUCCESS,
+                    )
+                if hasattr(self, "url_char_count_label"):
+                    self.url_char_count_label.configure(text=f"{chars:,} chars")
+                if hasattr(self, "url_preview_box"):
+                    self.url_preview_box.delete("1.0", "end")
+                    self.url_preview_box.insert("1.0", md)
+                if hasattr(self, "text_input_box") and not getattr(self, "url_preview_box", None):
+                    self.text_input_box.delete("1.0", "end")
+                    self.text_input_box.insert("1.0", md)
+        elif event_type in ("EXTRACTION_ERROR", "URL_EXTRACTION_ERROR"):
+            if hasattr(self, "btn_extract_url"):
+                self.btn_extract_url.configure(state="normal")
+            if isinstance(payload, dict):
+                title = str(payload.get("title") or "URL Extraction Error")
+                msg = str(payload.get("message") or payload.get("error") or "Error extracting URL")
+                details = str(payload.get("details") or "")
+                remedy = str(payload.get("remedy") or "")
+                is_sec = bool(payload.get("is_security", False))
+                if is_sec and "Security Error" not in title:
+                    title = "Security Error: Blocked URL"
+                if hasattr(self, "url_status_label"):
+                    self.url_status_label.configure(text=f"✗ {msg[:50]}", text_color=COLOR_ERROR)
+                ActionableErrorDialog(
+                    self,
+                    title=title,
+                    message=msg,
+                    details=details or remedy,
+                    dialog_type=payload.get("dialog_type", "error" if is_sec else "warning"),
+                )
+        elif event_type in ("EXTRACTION_CANCELLED", "URL_EXTRACTION_CANCELLED"):
+            if hasattr(self, "btn_extract_url"):
+                self.btn_extract_url.configure(state="normal")
+            if hasattr(self, "url_status_label"):
+                self.url_status_label.configure(
+                    text="Extraction cancelled.", text_color=COLOR_TEXT_MUTED
+                )
+        elif event_type == "STATUS":
             self.status_label.configure(text=str(payload))
         elif event_type == "PROGRESS":
             pct = float(payload)
@@ -2231,6 +3033,12 @@ class MainWindow(ctk.CTk):
                 self._live_stream_card = None
             if hasattr(self, "_set_busy_state"):
                 self._set_busy_state(False)
+            if hasattr(self, "stage_tracker"):
+                active = self.stage_tracker.get_current_active_stage()
+                if active:
+                    self.stage_tracker.update_stage(
+                        active, StageStatus.CANCELLED, details="Cancelled by user."
+                    )
             if hasattr(self, "status_label"):
                 self.status_label.configure(text=str(payload))
             if hasattr(self, "progress_bar"):
@@ -2250,6 +3058,20 @@ class MainWindow(ctk.CTk):
                 self._live_stream_card = None
             if hasattr(self, "_set_busy_state"):
                 self._set_busy_state(False)
+            if hasattr(self, "stage_tracker"):
+                active = self.stage_tracker.get_current_active_stage()
+                if isinstance(payload, dict) and "stage" in payload:
+                    err_msg = payload.get("message", "Error")
+                    self.stage_tracker.update_stage(
+                        payload["stage"], StageStatus.FAILED, details=f"Error: {err_msg}"
+                    )
+                elif active:
+                    err_msg = (
+                        payload.get("message", "Pipeline error")
+                        if isinstance(payload, dict)
+                        else str(payload)
+                    )
+                    self.stage_tracker.update_stage(active, StageStatus.FAILED, details=err_msg)
             if hasattr(self, "status_label"):
                 self.status_label.configure(text="Error encountered.")
             curr_diag = getattr(self, "current_dialogue", None)
@@ -2561,18 +3383,39 @@ class MainWindow(ctk.CTk):
         self._streaming_chunks_count = 0
         self._rendered_turns_count = 0
 
-        self.file_entry.delete(0, "end")
-        self.file_info_label.configure(
-            text="Ready to load document.", text_color=COLOR_TEXT_SECONDARY
-        )
-        self.text_input_box.delete("1.0", "end")
-        self.editable_script_box.delete("1.0", "end")
-        self.progress_bar.set(0.0)
-        self.progress_pct_label.configure(text="0%")
-        self.status_label.configure(text="Ready to generate your podcast.")
-        self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
-        self._update_grounding_description()
-        self._render_transcript([])
+        if hasattr(self, "file_entry"):
+            self.file_entry.delete(0, "end")
+        if hasattr(self, "file_info_label"):
+            self.file_info_label.configure(
+                text="Ready to load document.", text_color=COLOR_TEXT_SECONDARY
+            )
+        if hasattr(self, "url_entry"):
+            self.url_entry.delete(0, "end")
+        if hasattr(self, "url_status_label"):
+            self.url_status_label.configure(
+                text="Ready to extract web content.", text_color=COLOR_TEXT_SECONDARY
+            )
+        if hasattr(self, "url_char_count_label"):
+            self.url_char_count_label.configure(text="0 chars")
+        if hasattr(self, "url_preview_box"):
+            self.url_preview_box.delete("1.0", "end")
+        if hasattr(self, "text_input_box"):
+            self.text_input_box.delete("1.0", "end")
+        if hasattr(self, "editable_script_box"):
+            self.editable_script_box.delete("1.0", "end")
+        if hasattr(self, "progress_bar"):
+            self.progress_bar.set(0.0)
+        if hasattr(self, "progress_pct_label"):
+            self.progress_pct_label.configure(text="0%")
+        if hasattr(self, "status_label"):
+            self.status_label.configure(text="Ready to generate your podcast.")
+        if hasattr(self, "grounding_menu"):
+            self.grounding_menu.set(GROUNDING_UI_OPTIONS[0])
+            self._update_grounding_description()
+        if hasattr(self, "stage_tracker"):
+            self.stage_tracker.reset()
+        if hasattr(self, "_render_transcript"):
+            self._render_transcript([])
 
     def show_about_dialog(self):
         """Displays the modal About dialog explaining tech stack, pipeline, and limitations."""

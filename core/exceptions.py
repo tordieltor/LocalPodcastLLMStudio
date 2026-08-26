@@ -16,6 +16,12 @@ class DocumentIngestionError(StudioError, ValueError):
     pass
 
 
+class SecurityError(DocumentIngestionError):
+    """Raised when SSRF, unauthorized protocol, or network security constraints are violated."""
+
+    pass
+
+
 class LLMServiceError(StudioError, RuntimeError):
     """Raised when Ollama connection, model pulling, or prompt inference fails."""
 

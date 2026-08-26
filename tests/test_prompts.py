@@ -16,11 +16,18 @@ Milestone 1 Test Suite covering:
 import pytest
 
 from core.prompts import (
+    ACT_SPECS_MONOLOGUE_EN,
+    ACT_SPECS_MONOLOGUE_NB,
     GROUNDING_DIRECTIVES_EN,
     GROUNDING_DIRECTIVES_NB,
     GROUNDING_MODE_ALIASES,
     GROUNDING_MODE_PRESETS,
+    HOST_MODE_ALIASES,
+    HOST_MODE_PRESETS,
+    SYSTEM_PROMPT_MONOLOGUE_EN,
+    SYSTEM_PROMPT_MONOLOGUE_NB,
     GroundingMode,
+    HostMode,
     build_act_system_prompt,
     build_act_user_prompt,
     build_system_prompt,
@@ -29,6 +36,7 @@ from core.prompts import (
     get_format_config,
     get_tone_description,
     normalize_grounding_mode,
+    normalize_host_mode,
 )
 
 
@@ -558,3 +566,395 @@ class TestPromptsExistingCoveragePreserved:
         prompt = build_user_prompt(content=topic_text, language="en-US", is_topic=True)
         assert topic_text in prompt
         assert "topic" in prompt.lower() or "tema" in prompt.lower()
+
+
+class TestHostModeEnumAndNormalization:
+    """Milestone 2: HostMode enum, presets, alias normalization, and edge case fallbacks."""
+
+    def test_host_mode_enum_values(self):
+        """Verify HostMode enum values and string subclass behavior."""
+        assert HostMode.DIALOGUE == "dialogue"
+        assert HostMode.DIALOGUE.value == "dialogue"
+        assert HostMode.MONOLOGUE == "monologue"
+        assert HostMode.MONOLOGUE.value == "monologue"
+        assert isinstance(HostMode.MONOLOGUE, str)
+        assert issubclass(HostMode, str)
+
+    def test_host_mode_presets_metadata(self):
+        """Verify HOST_MODE_PRESETS dictionary structure and required metadata keys."""
+        assert len(HOST_MODE_PRESETS) == 2
+        for mode_key in ["dialogue", "monologue"]:
+            assert mode_key in HOST_MODE_PRESETS
+            preset = HOST_MODE_PRESETS[mode_key]
+            assert preset["id"] == mode_key
+            assert "name_en" in preset and len(preset["name_en"]) > 0
+            assert "name_nb" in preset and len(preset["name_nb"]) > 0
+            assert "description_en" in preset and len(preset["description_en"]) > 0
+            assert "description_nb" in preset and len(preset["description_nb"]) > 0
+            assert "badge" in preset and len(preset["badge"]) > 0
+
+    def test_host_mode_aliases_dict(self):
+        """Verify HOST_MODE_ALIASES dictionary mappings and consistency."""
+        assert isinstance(HOST_MODE_ALIASES, dict)
+        assert len(HOST_MODE_ALIASES) >= 15
+        assert HOST_MODE_ALIASES["solo"] == "monologue"
+        assert HOST_MODE_ALIASES["single_host"] == "monologue"
+        assert HOST_MODE_ALIASES["audio_essay"] == "monologue"
+        assert HOST_MODE_ALIASES["lydessay"] == "monologue"
+        assert HOST_MODE_ALIASES["two_hosts"] == "dialogue"
+        assert HOST_MODE_ALIASES["dialog"] == "dialogue"
+        assert HOST_MODE_ALIASES["duo"] == "dialogue"
+
+    @pytest.mark.parametrize("mode", ["dialogue", "monologue"])
+    def test_normalize_host_mode_canonical(self, mode):
+        """Verify canonical mode strings resolve to themselves."""
+        assert normalize_host_mode(mode) == mode
+
+    def test_normalize_host_mode_enum_instances(self):
+        """Verify HostMode enum instances resolve properly."""
+        assert normalize_host_mode(HostMode.DIALOGUE) == "dialogue"
+        assert normalize_host_mode(HostMode.MONOLOGUE) == "monologue"
+
+    @pytest.mark.parametrize(
+        "alias,expected",
+        [
+            ("solo", "monologue"),
+            ("monolog", "monologue"),
+            ("single_host", "monologue"),
+            ("single-host", "monologue"),
+            ("single", "monologue"),
+            ("one_host", "monologue"),
+            ("one-host", "monologue"),
+            ("one", "monologue"),
+            ("audio_essay", "monologue"),
+            ("audio-essay", "monologue"),
+            ("essay", "monologue"),
+            ("narrator", "monologue"),
+            ("presenter", "monologue"),
+            ("storyteller", "monologue"),
+            ("lydessay", "monologue"),
+            ("enetal", "monologue"),
+            ("enetale", "monologue"),
+            ("two_hosts", "dialogue"),
+            ("two-hosts", "dialogue"),
+            ("two_host", "dialogue"),
+            ("two-host", "dialogue"),
+            ("two", "dialogue"),
+            ("duo", "dialogue"),
+            ("dialog", "dialogue"),
+            ("conversation", "dialogue"),
+            ("interview", "dialogue"),
+        ],
+    )
+    def test_normalize_host_mode_aliases(self, alias, expected):
+        """Verify all aliases resolve to canonical modes."""
+        assert normalize_host_mode(alias) == expected
+
+    @pytest.mark.parametrize(
+        "dirty_input,expected",
+        [
+            ("  MONOLOGUE\n", "monologue"),
+            ("Solo ", "monologue"),
+            (" Single_Host ", "monologue"),
+            ("Audio-Essay\t", "monologue"),
+            ("Two-Hosts", "dialogue"),
+            ("DIALOGUE", "dialogue"),
+            ("  Duo  ", "dialogue"),
+        ],
+    )
+    def test_normalize_host_mode_casing_and_whitespace(self, dirty_input, expected):
+        """Verify case-insensitivity and whitespace trimming during normalization."""
+        assert normalize_host_mode(dirty_input) == expected
+
+    @pytest.mark.parametrize(
+        "invalid_input",
+        [
+            None,
+            "",
+            "   ",
+            "unknown_mode",
+            "invalid-xyz",
+            123,
+            True,
+            False,
+            [],
+            {},
+        ],
+    )
+    def test_normalize_host_mode_invalid_fallback(self, invalid_input):
+        """Verify invalid/unknown inputs safely fallback to dialogue."""
+        assert normalize_host_mode(invalid_input) == "dialogue"
+
+
+class TestMonologueSystemPromptsContent:
+    """Milestone 2: Solo presenter system prompt contents, personas, and structure."""
+
+    def test_monologue_system_prompt_norwegian_persona(self):
+        """Verify Norwegian monologue prompt frames Kari as solo presenter without Ola."""
+        prompt = build_system_prompt(
+            language="nb-NO", format_type="standard", tone_style="casual", host_mode="monologue"
+        )
+        assert "Kari" in prompt
+        assert "Ola" not in prompt
+        assert "Host 1" in prompt
+        assert "Host 2" not in prompt
+        assert "lydessay" in prompt.lower() or "solopodcast" in prompt.lower()
+        assert "JSON" in prompt
+
+    def test_monologue_system_prompt_english_persona(self):
+        """Verify English monologue prompt frames Jenny as solo presenter without Guy."""
+        prompt = build_system_prompt(
+            language="en-US", format_type="standard", tone_style="casual", host_mode="monologue"
+        )
+        assert "Jenny" in prompt
+        assert "Guy" not in prompt
+        assert "Host 1" in prompt
+        assert "Host 2" not in prompt
+        assert "audio essay" in prompt.lower() or "solo" in prompt.lower()
+        assert "JSON" in prompt
+
+    def test_monologue_json_format_schema(self):
+        """Verify sample JSON in monologue prompt contains only Host 1."""
+        assert "Kari" in SYSTEM_PROMPT_MONOLOGUE_NB
+        assert "Jenny" in SYSTEM_PROMPT_MONOLOGUE_EN
+        for lang in ["nb-NO", "en-US"]:
+            prompt = build_system_prompt(language=lang, format_type="quick", host_mode="monologue")
+            assert '"speaker": "Host 1"' in prompt
+            assert '"speaker": "Host 2"' not in prompt
+
+
+class TestMonologueActSpecs:
+    """Milestone 2: Monologue multi-act chapter specifications and personas."""
+
+    def test_monologue_act_specs_constants(self):
+        """Verify ACT_SPECS_MONOLOGUE_NB and ACT_SPECS_MONOLOGUE_EN constants."""
+        assert len(ACT_SPECS_MONOLOGUE_NB) == 4
+        assert len(ACT_SPECS_MONOLOGUE_EN) == 4
+        assert "quick" in ACT_SPECS_MONOLOGUE_NB
+        assert "extended" in ACT_SPECS_MONOLOGUE_EN
+
+    @pytest.mark.parametrize("language", ["nb-NO", "en-US"])
+    def test_act_specs_monologue_counts_and_structure(self, language):
+        """Verify act counts and turn targets for all 4 format presets in monologue mode."""
+        # quick -> 1 act
+        quick_acts = get_act_specs("quick", language=language, host_mode="monologue")
+        assert len(quick_acts) == 1
+        assert quick_acts[0]["act_num"] == 1
+        assert quick_acts[0]["is_intro"] is True
+        assert quick_acts[0]["is_outro"] is True
+        assert quick_acts[0]["target_turns"] == 8
+
+        # standard -> 2 acts
+        std_acts = get_act_specs("standard", language=language, host_mode="monologue")
+        assert len(std_acts) == 2
+        assert std_acts[0]["is_intro"] is True
+        assert std_acts[0]["is_outro"] is False
+        assert std_acts[1]["is_intro"] is False
+        assert std_acts[1]["is_outro"] is True
+        assert sum(a["target_turns"] for a in std_acts) == 14
+
+        # deep_dive -> 4 acts
+        deep_acts = get_act_specs("deep_dive", language=language, host_mode="monologue")
+        assert len(deep_acts) == 4
+        assert deep_acts[0]["is_intro"] is True
+        assert deep_acts[-1]["is_outro"] is True
+        assert sum(a["target_turns"] for a in deep_acts) == 24
+
+        # extended -> 5 acts
+        ext_acts = get_act_specs("extended", language=language, host_mode="monologue")
+        assert len(ext_acts) == 5
+        assert ext_acts[0]["is_intro"] is True
+        assert ext_acts[-1]["is_outro"] is True
+        assert sum(a["target_turns"] for a in ext_acts) == 54
+
+    def test_act_specs_monologue_personas_and_themes(self):
+        """Verify monologue act themes feature solo presenters and never mention co-hosts."""
+        for fmt in ["quick", "standard", "deep_dive", "extended"]:
+            nb_acts = get_act_specs(fmt, language="nb-NO", host_mode="monologue")
+            for act in nb_acts:
+                assert "Kari" in act["prompt_theme"]
+                assert "Ola" not in act["prompt_theme"]
+
+            en_acts = get_act_specs(fmt, language="en-US", host_mode="monologue")
+            for act in en_acts:
+                assert "Jenny" in act["prompt_theme"]
+                assert "Guy" not in act["prompt_theme"]
+
+
+class TestMonologueCombinatorialMatrix72:
+    """Milestone 2: 72-Permutation Combinatorial Matrix for Monologue Mode."""
+
+    @pytest.mark.parametrize("language", ["nb-NO", "en-US"])
+    @pytest.mark.parametrize("grounding_mode", ["strict", "creative", "open_topic"])
+    @pytest.mark.parametrize("format_type", ["quick", "standard", "deep_dive", "extended"])
+    @pytest.mark.parametrize("tone_style", ["casual", "analytical", "debate"])
+    def test_72_permutation_monologue_system_prompt_matrix(
+        self, language, grounding_mode, format_type, tone_style
+    ):
+        """Verify all 72 monologue system prompt combinations produce valid solo prompts."""
+        prompt = build_system_prompt(
+            language=language,
+            format_type=format_type,
+            tone_style=tone_style,
+            grounding_mode=grounding_mode,
+            host_mode="monologue",
+        )
+        assert isinstance(prompt, str)
+        assert len(prompt) > 250
+        assert "Host 1" in prompt
+        assert "Host 2" not in prompt
+
+        if language == "nb-NO":
+            assert "Kari" in prompt
+            assert "Ola" not in prompt
+        else:
+            assert "Jenny" in prompt
+            assert "Guy" not in prompt
+
+        # Verify grounding directive insertion
+        if grounding_mode == "strict":
+            assert "STRENG" in prompt or "STRICT" in prompt
+        elif grounding_mode == "creative":
+            assert "ANALOGI" in prompt or "ANALOG" in prompt or "METAFOR" in prompt
+        elif grounding_mode == "open_topic":
+            assert "FRITT" in prompt or "OPEN TOPIC" in prompt or "SYNTHESIS" in prompt
+
+
+class TestMonologueMultiActGeneration:
+    """Milestone 2: Multi-act prompt builders in monologue mode."""
+
+    @pytest.mark.parametrize("language", ["nb-NO", "en-US"])
+    @pytest.mark.parametrize("format_type", ["quick", "standard", "deep_dive", "extended"])
+    @pytest.mark.parametrize("grounding_mode", ["strict", "creative", "open_topic"])
+    def test_monologue_multi_act_system_prompt_all_acts(
+        self, language, format_type, grounding_mode
+    ):
+        """Verify build_act_system_prompt for every monologue act."""
+        acts = get_act_specs(format_type, language=language, host_mode="monologue")
+        total_acts = len(acts)
+
+        for act in acts:
+            prompt = build_act_system_prompt(
+                act=act,
+                total_acts=total_acts,
+                language=language,
+                tone_style="analytical",
+                grounding_mode=grounding_mode,
+                host_mode="monologue",
+            )
+            assert f"AKT {act['act_num']}" in prompt or f"ACT {act['act_num']}" in prompt
+            assert act["title"] in prompt
+            assert "Host 1" in prompt
+            assert "Host 2" not in prompt
+
+            if act.get("is_intro"):
+                assert "AKT 1 (INTRO)" in prompt or "ACT 1 (INTRO)" in prompt
+            else:
+                assert "PÅGÅENDE NARRATIV" in prompt or "CONTINUATION" in prompt
+
+            if act.get("is_outro"):
+                assert "siste akt" in prompt.lower() or "final act" in prompt.lower()
+
+    @pytest.mark.parametrize("language", ["nb-NO", "en-US"])
+    def test_monologue_act_user_prompt_with_prev_turns(self, language):
+        """Verify act user prompt for monologue passes context and uses solo instructions."""
+        prev_turns = [
+            {"speaker": "Host 1", "text": "First paragraph on solar power development."},
+            {"speaker": "Host 1", "text": "Next we analyze grid integration challenges."},
+        ]
+        prompt = build_act_user_prompt(
+            content="Solar power report",
+            prev_turns=prev_turns,
+            language=language,
+            host_mode="monologue",
+        )
+        assert "Solar power report" in prompt
+        assert "solar power development" in prompt
+        if language == "nb-NO":
+            assert "SISTE AVSNITT FRA FORRIGE DEL" in prompt
+            assert "alle replikker tilhører Host 1" in prompt
+        else:
+            assert "LAST PARAGRAPHS FROM PREVIOUS ACT" in prompt
+            assert "all turns belong to Host 1" in prompt
+
+
+class TestMonologueUserPromptGeneration:
+    """Milestone 2: Monologue user prompt formatting for documents and topics."""
+
+    @pytest.mark.parametrize("language", ["nb-NO", "en-US"])
+    @pytest.mark.parametrize("grounding_mode", ["strict", "creative"])
+    def test_monologue_user_prompt_document_mode(self, language, grounding_mode):
+        """Verify user prompt in document mode enforces monologue format rule."""
+        content = "Executive report on artificial intelligence ethics."
+        prompt = build_user_prompt(
+            content=content,
+            language=language,
+            grounding_mode=grounding_mode,
+            is_topic=False,
+            host_mode="monologue",
+        )
+        assert content in prompt
+        if language == "nb-NO":
+            assert "alle replikker tilhører Host 1" in prompt
+            assert "vekslende replikker" not in prompt
+        else:
+            assert "all turns belong to Host 1" in prompt
+            assert "alternating turns" not in prompt
+
+    @pytest.mark.parametrize("language", ["nb-NO", "en-US"])
+    def test_monologue_user_prompt_topic_mode(self, language):
+        """Verify user prompt in topic mode enforces monologue format rule."""
+        prompt = build_user_prompt(
+            content="Quantum computing basics",
+            language=language,
+            is_topic=True,
+            host_mode="monologue",
+        )
+        assert "Quantum computing basics" in prompt
+        if language == "nb-NO":
+            assert "alle replikker tilhører Host 1" in prompt
+        else:
+            assert "all turns belong to Host 1" in prompt
+
+
+class TestBackwardCompatibilityDialogueMode:
+    """Milestone 2: Verify default parameters preserve 100% backward compatibility."""
+
+    def test_build_system_prompt_default_is_dialogue(self):
+        prompt_default = build_system_prompt(language="nb-NO", format_type="standard")
+        prompt_explicit = build_system_prompt(
+            language="nb-NO", format_type="standard", host_mode="dialogue"
+        )
+        assert prompt_default == prompt_explicit
+        assert "Host 2" in prompt_default
+
+    def test_build_user_prompt_default_is_dialogue(self):
+        prompt_default = build_user_prompt(content="Test content", language="en-US")
+        prompt_explicit = build_user_prompt(
+            content="Test content", language="en-US", host_mode="dialogue"
+        )
+        assert prompt_default == prompt_explicit
+        assert "alternating turns" in prompt_default
+
+    def test_get_act_specs_default_is_dialogue(self):
+        specs_default = get_act_specs("deep_dive", language="nb-NO")
+        specs_explicit = get_act_specs("deep_dive", language="nb-NO", host_mode="dialogue")
+        assert specs_default == specs_explicit
+        assert len(specs_default) == 3  # Dialogue deep_dive has 3 acts
+
+    def test_build_act_system_prompt_default_is_dialogue(self):
+        act = get_act_specs("standard", language="nb-NO")[0]
+        prompt_default = build_act_system_prompt(act=act, total_acts=2, language="nb-NO")
+        prompt_explicit = build_act_system_prompt(
+            act=act, total_acts=2, language="nb-NO", host_mode="dialogue"
+        )
+        assert prompt_default == prompt_explicit
+        assert "Host 2" in prompt_default
+
+    def test_build_act_user_prompt_default_is_dialogue(self):
+        prompt_default = build_act_user_prompt(content="Test content", language="nb-NO")
+        prompt_explicit = build_act_user_prompt(
+            content="Test content", language="nb-NO", host_mode="dialogue"
+        )
+        assert prompt_default == prompt_explicit
+        assert "alle replikker tilhører Host 1" not in prompt_default

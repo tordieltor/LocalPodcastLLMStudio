@@ -20,13 +20,17 @@ import customtkinter as ctk
 import pytest
 
 import ui.theme as theme
-from core.extractor import DocumentExtractionError
+from core.extractor import DocumentExtractionError, SecurityError
 from core.ollama import (
     ModelPullProgress,
     OllamaConnectionError,
     OllamaModelNotFoundError,
 )
 from core.parser import DialogueTurn
+from core.pipeline import (
+    PipelineStage,
+    StageStatus,
+)
 from core.prompts import (
     GROUNDING_MODE_PRESETS,
     GroundingMode,
@@ -37,6 +41,7 @@ from ui.main_window import (
     MainWindow,
     ModelPullWorker,
     OllamaLauncherWorker,
+    URLExtractionWorker,
 )
 from ui.widgets import (
     AboutDialog,
@@ -46,6 +51,7 @@ from ui.widgets import (
     LabeledSlider,
     LiveStreamingCard,
     SectionHeader,
+    StageProgressTracker,
     StatusBadge,
     TimeSlider,
 )
@@ -81,9 +87,11 @@ def mock_main_window():
     win.cancel_event = threading.Event()
     win.pull_cancel_event = threading.Event()
     win.launcher_cancel_event = threading.Event()
+    win.url_cancel_event = threading.Event()
     win.current_worker = None
     win.current_pull_worker = None
     win.current_launcher_worker = None
+    win.current_url_worker = None
     win.player = MagicMock()
     win.is_busy = False
     win.current_dialogue = []
@@ -91,6 +99,10 @@ def mock_main_window():
     win._streaming_raw_text = ""
     win._streaming_chunks_count = 0
     win._rendered_turns_count = 0
+
+    # Milestone 4 Stage Tracker Widget
+    win.stage_tracker = MagicMock(spec=StageProgressTracker)
+    win.stage_progress_tracker = win.stage_tracker
 
     # Widgets
     win.status_label = MagicMock()
@@ -120,6 +132,7 @@ def mock_main_window():
     win.grounding_menu = MagicMock()
     win.grounding_desc_label = MagicMock()
     win.input_modality_var = MagicMock()
+    win.modality_segmented = MagicMock()
     win.file_entry = MagicMock()
     win.file_info_label = MagicMock()
     win.text_input_box = MagicMock()
@@ -137,6 +150,25 @@ def mock_main_window():
     win.formatted_scroll = MagicMock()
     win.file_container = MagicMock()
     win.text_container = MagicMock()
+    win.url_container = MagicMock()
+    win.url_entry = MagicMock()
+    win.btn_extract_url = MagicMock()
+    win.url_status_label = MagicMock()
+    win.url_info_label = win.url_status_label
+    win.url_preview_box = MagicMock()
+    win.url_char_count_label = MagicMock()
+    win.episode_style_var = MagicMock()
+    win.style_segmented = MagicMock()
+    win.episode_style_segmented = win.style_segmented
+    win.voice_selection_container = MagicMock()
+    win.dialogue_voice_frame = MagicMock()
+    win.monologue_voice_frame = MagicMock()
+    win.solo_voice_frame = win.monologue_voice_frame
+    win.host1_voice_frame = MagicMock()
+    win.host1_voice_menu = MagicMock()
+    win.host2_voice_frame = MagicMock()
+    win.host2_voice_menu = MagicMock()
+    win.solo_voice_menu = MagicMock()
     win.highway_preset_label = MagicMock()
     win.nav_segmented = MagicMock()
     win.view_studio = MagicMock()
@@ -1661,3 +1693,521 @@ class TestAppBootstrap:
         content = crash_log.read_text(encoding="utf-8")
         assert "Crash Report" in content
         assert "Test synthetic exception for crash logger" in content
+
+
+# ==============================================================================
+# 10. Milestone 4: StageProgressTracker Widget Tests
+# ==============================================================================
+class TestStageProgressTrackerWidget:
+    """Verifies the 5-stage sequential lifecycle widget, Tokyo night theming, and thread safety."""
+
+    def test_tracker_initialization_and_5_stages(self, headless_tk_root):
+        """Verifies that StageProgressTracker initializes with all 5 stages in PENDING state."""
+        tracker = StageProgressTracker(headless_tk_root)
+        try:
+            assert len(tracker.stages) == 5
+            for stage in PipelineStage:
+                state = tracker.get_stage_state(stage)
+                assert state is not None
+                assert state["status"] == StageStatus.PENDING
+                assert state["pct"] == 0.0
+                assert tracker.get_stage_status(stage) == StageStatus.PENDING
+
+            # All 5 stage widgets exist
+            for stage in PipelineStage:
+                assert stage in tracker._stage_rows
+                assert stage in tracker._stage_widgets
+                widgets = tracker._stage_rows[stage]
+                assert "glyph" in widgets
+                assert "title" in widgets
+                assert "pbar" in widgets
+                assert "pct" in widgets
+                assert "details" in widgets
+                # Check initial glyph is pending hourglass [⏳]
+                assert "⏳" in widgets["glyph"].cget("text")
+        finally:
+            tracker.destroy()
+
+    def test_tracker_update_stage_all_statuses(self, headless_tk_root):
+        """Verifies updating stage across all 5 visual status states."""
+        tracker = StageProgressTracker(headless_tk_root)
+        try:
+            # 1. IN_ACTION
+            tracker.update_stage(
+                PipelineStage.URL_INGESTION,
+                StageStatus.IN_ACTION,
+                0.50,
+                "Validating and fetching URL...",
+            )
+            state = tracker.get_stage_state(PipelineStage.URL_INGESTION)
+            assert state["status"] == StageStatus.IN_ACTION
+            assert state["pct"] == 0.50
+            assert state["details"] == "Validating and fetching URL..."
+            assert tracker.get_current_active_stage() == PipelineStage.URL_INGESTION
+            row = tracker._stage_rows[PipelineStage.URL_INGESTION]
+            assert "●" in row["glyph"].cget("text")
+            assert "50%" in row["pct"].cget("text")
+
+            # 2. COMPLETED
+            tracker.update_stage(
+                PipelineStage.URL_INGESTION,
+                StageStatus.COMPLETED,
+                1.0,
+                "URL fetched successfully.",
+            )
+            state = tracker.get_stage_state(PipelineStage.URL_INGESTION)
+            assert state["status"] == StageStatus.COMPLETED
+            assert state["pct"] == 1.0
+            assert "✓" in row["glyph"].cget("text")
+
+            # 3. FAILED
+            tracker.update_stage(
+                PipelineStage.CONTENT_EXTRACTION,
+                StageStatus.FAILED,
+                0.12,
+                "Extraction failed: SSRF blocked.",
+            )
+            state = tracker.get_stage_state(PipelineStage.CONTENT_EXTRACTION)
+            assert state["status"] == StageStatus.FAILED
+            row_ext = tracker._stage_rows[PipelineStage.CONTENT_EXTRACTION]
+            assert "✗" in row_ext["glyph"].cget("text")
+
+            # 4. CANCELLED
+            tracker.update_stage(
+                PipelineStage.SCRIPT_GENERATION,
+                StageStatus.CANCELLED,
+                0.35,
+                "Cancelled by user.",
+            )
+            state = tracker.get_stage_state(PipelineStage.SCRIPT_GENERATION)
+            assert state["status"] == StageStatus.CANCELLED
+            row_gen = tracker._stage_rows[PipelineStage.SCRIPT_GENERATION]
+            assert "⊘" in row_gen["glyph"].cget("text")
+        finally:
+            tracker.destroy()
+
+    def test_tracker_update_stage_polymorphism(self, headless_tk_root):
+        """Verifies update_stage accepts IntEnum, int, and string representations of stages."""
+        tracker = StageProgressTracker(headless_tk_root)
+        try:
+            # IntEnum
+            tracker.update_stage(PipelineStage.TTS_SYNTHESIS, StageStatus.IN_ACTION, 0.40)
+            assert tracker.get_stage_status(PipelineStage.TTS_SYNTHESIS) == StageStatus.IN_ACTION
+
+            # int
+            tracker.update_stage(4, StageStatus.COMPLETED, 1.0)
+            assert tracker.get_stage_status(PipelineStage.TTS_SYNTHESIS) == StageStatus.COMPLETED
+
+            # Upper string
+            tracker.update_stage("AUDIO_ASSEMBLY", StageStatus.IN_ACTION, 0.95)
+            assert tracker.get_stage_status(PipelineStage.AUDIO_ASSEMBLY) == StageStatus.IN_ACTION
+
+            # Lower string
+            tracker.update_stage("audio_assembly", StageStatus.COMPLETED, 1.0)
+            assert tracker.get_stage_status(PipelineStage.AUDIO_ASSEMBLY) == StageStatus.COMPLETED
+        finally:
+            tracker.destroy()
+
+    def test_tracker_thread_safety_off_thread(self, headless_tk_root):
+        """Verifies that calling update_stage from background thread safely defers via after(0, ...)."""
+        tracker = StageProgressTracker(headless_tk_root)
+        try:
+            with patch.object(tracker, "after") as mock_after:
+
+                def _bg_call():
+                    tracker.update_stage(
+                        PipelineStage.SCRIPT_GENERATION,
+                        StageStatus.IN_ACTION,
+                        0.30,
+                        "Generating from thread...",
+                    )
+
+                t = threading.Thread(target=_bg_call)
+                t.start()
+                t.join(timeout=2.0)
+
+                mock_after.assert_called_once()
+                args, _ = mock_after.call_args
+                assert args[0] == 0  # after(0, callback)
+        finally:
+            tracker.destroy()
+
+    def test_tracker_reset_and_set_all_pending(self, headless_tk_root):
+        """Verifies reset() restores all 5 stages to PENDING and 0%."""
+        tracker = StageProgressTracker(headless_tk_root)
+        try:
+            tracker.update_stage(PipelineStage.URL_INGESTION, StageStatus.COMPLETED, 1.0)
+            tracker.update_stage(PipelineStage.CONTENT_EXTRACTION, StageStatus.IN_ACTION, 0.5)
+
+            tracker.reset()
+
+            for stage in PipelineStage:
+                state = tracker.get_stage_state(stage)
+                assert state["status"] == StageStatus.PENDING
+                assert state["pct"] == 0.0
+                row = tracker._stage_rows[stage]
+                assert "⏳" in row["glyph"].cget("text")
+        finally:
+            tracker.destroy()
+
+
+# ==============================================================================
+# 11. Milestone 4: URLExtractionWorker Async Protocol Tests
+# ==============================================================================
+class TestURLExtractionWorker:
+    """Verifies background URL extraction, security validation, and queue notifications."""
+
+    def test_worker_successful_extraction(self):
+        """Verifies successful article extraction puts EXTRACTION_DONE into queue."""
+        q = queue.Queue()
+        cancel_evt = threading.Event()
+
+        fake_md = "# Title\n\nArticle markdown content from Wikipedia."
+        with patch("ui.main_window.extract_text", return_value=fake_md) as mock_extract:
+            worker = URLExtractionWorker(
+                url="https://en.wikipedia.org/wiki/Podcast",
+                msg_queue=q,
+                cancel_event=cancel_evt,
+            )
+            worker.start()
+            worker.join(timeout=3.0)
+
+            mock_extract.assert_called_once()
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
+
+            event_types = [e[0] for e in events]
+            assert "EXTRACTION_STARTING" in event_types
+            assert "EXTRACTION_DONE" in event_types
+            done_payload = [e[1] for e in events if e[0] == "EXTRACTION_DONE"][0]
+            assert done_payload["url"] == "https://en.wikipedia.org/wiki/Podcast"
+            assert done_payload["markdown"] == fake_md
+            assert done_payload["char_count"] == len(fake_md)
+
+    def test_worker_security_error_ssrf_blocked(self):
+        """Verifies SSRF SecurityError puts EXTRACTION_ERROR with security flag into queue."""
+        q = queue.Queue()
+        cancel_evt = threading.Event()
+
+        with patch(
+            "ui.main_window.extract_text",
+            side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+        ):
+            worker = URLExtractionWorker(
+                url="http://127.0.0.1:8080/admin",
+                msg_queue=q,
+                cancel_event=cancel_evt,
+            )
+            worker.start()
+            worker.join(timeout=3.0)
+
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
+
+            err_events = [e for e in events if e[0] == "EXTRACTION_ERROR"]
+            assert len(err_events) == 1
+            payload = err_events[0][1]
+            assert payload["is_security"] is True
+            assert "SSRF" in payload["title"] or "Security" in payload["title"]
+
+    def test_worker_document_extraction_error(self):
+        """Verifies DocumentExtractionError puts EXTRACTION_ERROR into queue."""
+        q = queue.Queue()
+        cancel_evt = threading.Event()
+
+        with patch(
+            "ui.main_window.extract_text",
+            side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+        ):
+            worker = URLExtractionWorker(
+                url="https://example.com/notfound",
+                msg_queue=q,
+                cancel_event=cancel_evt,
+            )
+            worker.start()
+            worker.join(timeout=3.0)
+
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
+
+            err_events = [e for e in events if e[0] == "EXTRACTION_ERROR"]
+            assert len(err_events) == 1
+            payload = err_events[0][1]
+            assert payload["is_security"] is False
+            assert "HTTP 404" in payload["error"]
+
+    def test_worker_cancellation(self):
+        """Verifies worker aborts cleanly when cancel_event is pre-set."""
+        q = queue.Queue()
+        cancel_evt = threading.Event()
+        cancel_evt.set()
+
+        with patch("ui.main_window.extract_text", return_value="Sample content"):
+            worker = URLExtractionWorker(
+                url="https://example.com",
+                msg_queue=q,
+                cancel_event=cancel_evt,
+            )
+            worker.start()
+            worker.join(timeout=3.0)
+
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
+
+            event_types = [e[0] for e in events]
+            assert "EXTRACTION_CANCELLED" in event_types
+            assert "EXTRACTION_DONE" not in event_types
+
+
+# ==============================================================================
+# 12. Milestone 4: MainWindow URL Ingestion Integration Tests
+# ==============================================================================
+class TestMainWindowURLIngestion:
+    """Verifies Website URL modality UI behavior, async extraction, and preview updates."""
+
+    def test_modality_switching_to_url(self, mock_main_window):
+        """Verifies selecting 'Website URL' modality packs url_container and hides others."""
+        MainWindow._on_modality_changed(mock_main_window, "Website URL")
+        mock_main_window.input_modality_var.set.assert_called_with("url")
+        mock_main_window.file_container.pack_forget.assert_called()
+        mock_main_window.text_container.pack_forget.assert_called()
+        mock_main_window.url_container.pack.assert_called()
+
+    def test_extract_url_async_validation_empty_and_scheme(self, mock_main_window):
+        """Verifies _extract_url_async validates empty URL and invalid scheme."""
+        with patch("ui.main_window.ActionableErrorDialog") as mock_dialog:
+            # 1. Empty URL
+            mock_main_window.url_entry.get.return_value = "   "
+            MainWindow._extract_url_async(mock_main_window)
+            mock_dialog.assert_called_once()
+            assert "Missing" in mock_dialog.call_args[1]["title"]
+
+            mock_dialog.reset_mock()
+
+            # 2. Invalid Scheme
+            mock_main_window.url_entry.get.return_value = "ftp://invalid-scheme.com"
+            MainWindow._extract_url_async(mock_main_window)
+            mock_dialog.assert_called_once()
+            assert "Scheme" in mock_dialog.call_args[1]["title"]
+
+    def test_extract_url_async_launches_worker(self, mock_main_window):
+        """Verifies _extract_url_async spawns URLExtractionWorker for valid URL."""
+        mock_main_window.url_entry.get.return_value = "https://en.wikipedia.org/wiki/Podcast"
+        with patch.object(URLExtractionWorker, "start") as mock_start:
+            MainWindow._extract_url_async(mock_main_window)
+            mock_main_window.btn_extract_url.configure.assert_called_with(state="disabled")
+            assert mock_main_window.current_url_worker is not None
+            mock_start.assert_called_once()
+
+    def test_handle_url_extraction_events(self, mock_main_window):
+        """Verifies _handle_event updates URL UI on EXTRACTION_DONE and EXTRACTION_ERROR."""
+        # 1. EXTRACTION_DONE
+        payload_done = {
+            "url": "https://example.com/article",
+            "markdown": "# Heading\n\nArticle content here.",
+            "char_count": 35,
+        }
+        MainWindow._handle_event(mock_main_window, "EXTRACTION_DONE", payload_done)
+        mock_main_window.btn_extract_url.configure.assert_called_with(state="normal")
+        mock_main_window.url_status_label.configure.assert_called()
+        mock_main_window.url_char_count_label.configure.assert_called_with(text="35 chars")
+        mock_main_window.url_preview_box.delete.assert_called_with("1.0", "end")
+        mock_main_window.url_preview_box.insert.assert_called_with(
+            "1.0", "# Heading\n\nArticle content here."
+        )
+
+        # 2. EXTRACTION_ERROR
+        with patch("ui.main_window.ActionableErrorDialog") as mock_dialog:
+            payload_err = {
+                "title": "Security Error: Blocked URL",
+                "message": "Blocked private IP",
+                "details": "Private IP not allowed.",
+                "is_security": True,
+                "dialog_type": "error",
+            }
+            MainWindow._handle_event(mock_main_window, "EXTRACTION_ERROR", payload_err)
+            mock_dialog.assert_called_once()
+            mock_main_window.url_status_label.configure.assert_called()
+
+    def test_start_generation_with_url_modality(self, mock_main_window):
+        """Verifies start_generation with url modality validates and passes url to GenerationWorker."""
+        mock_main_window.input_modality_var.get.return_value = "url"
+        mock_main_window.url_entry.get.return_value = "https://example.com/podcast"
+        mock_main_window.model_menu.get.return_value = "llama3.1:8b"
+        mock_main_window.lang_menu.get.return_value = "English (Jenny & Guy)"
+        mock_main_window.length_menu.get.return_value = "Standard Episode"
+        mock_main_window.tone_menu.get.return_value = "Casual"
+        mock_main_window.speed_slider.get.return_value = 0.0
+        mock_main_window.output_entry.get.return_value = "output"
+        mock_main_window.get_selected_grounding_mode.side_effect = None
+        mock_main_window.get_selected_grounding_mode.return_value = "strict"
+
+        with patch.object(GenerationWorker, "start") as mock_gen_start:
+            MainWindow.start_generation(mock_main_window, mode="full")
+            assert mock_main_window.current_worker is not None
+            assert mock_main_window.current_worker.input_type == "url"
+            assert mock_main_window.current_worker.input_data == "https://example.com/podcast"
+            mock_gen_start.assert_called_once()
+
+
+# ==============================================================================
+# 13. Milestone 4: MainWindow Episode Style & Voice Picker Tests
+# ==============================================================================
+class TestMainWindowEpisodeStyleAndVoice:
+    """Verifies Episode Style toggle (Dialogue vs Monologue), dynamic voice pickers, and worker options."""
+
+    def test_episode_style_toggle_switches_voice_frames(self, mock_main_window):
+        """Verifies toggling episode style switches dialogue vs monologue voice containers."""
+        # Switch to Monologue
+        MainWindow._on_style_changed(mock_main_window, "👤 Monologue (Solo Host)")
+        mock_main_window.episode_style_var.set.assert_called_with("monologue")
+        mock_main_window.dialogue_voice_frame.pack_forget.assert_called()
+        mock_main_window.monologue_voice_frame.pack.assert_called()
+
+        # Switch to Dialogue
+        mock_main_window.dialogue_voice_frame.reset_mock()
+        mock_main_window.monologue_voice_frame.reset_mock()
+        MainWindow._on_style_changed(mock_main_window, "🎙️ Dialogue (Two Hosts)")
+        mock_main_window.episode_style_var.set.assert_called_with("dialogue")
+        mock_main_window.monologue_voice_frame.pack_forget.assert_called()
+        mock_main_window.dialogue_voice_frame.pack.assert_called()
+
+    def test_voice_selectors_updated_on_language_change(self, mock_main_window):
+        """Verifies Norwegian and English voice lists populate correctly."""
+        # 1. English
+        mock_main_window.lang_menu.get.return_value = "English (Jenny & Guy)"
+        MainWindow._update_voice_selectors(mock_main_window)
+        mock_main_window.host1_voice_menu.set.assert_called_with("Jenny (Female)")
+        mock_main_window.host2_voice_menu.set.assert_called_with("Guy (Male)")
+        mock_main_window.solo_voice_menu.set.assert_called_with("Jenny (Female)")
+
+        # 2. Norwegian
+        mock_main_window.lang_menu.get.return_value = "Norwegian Bokmål (Kari & Ola)"
+        MainWindow._update_voice_selectors(mock_main_window)
+        mock_main_window.host1_voice_menu.set.assert_called_with("Kari (Female)")
+        mock_main_window.host2_voice_menu.set.assert_called_with("Ola (Male)")
+        mock_main_window.solo_voice_menu.set.assert_called_with("Kari (Female)")
+
+    def test_highway_preset_label_solo_vs_dual(self, mock_main_window):
+        """Verifies highway preset badge label reflects solo host vs dual host mode."""
+        # Dual host
+        mock_main_window.lang_menu.get.return_value = "English (Jenny & Guy)"
+        mock_main_window.episode_style_var.get.return_value = "dialogue"
+        mock_main_window.host1_voice_menu.get.return_value = "Jenny (Female)"
+        mock_main_window.host2_voice_menu.get.return_value = "Guy (Male)"
+        mock_main_window.length_menu.get.return_value = "Standard Episode"
+        mock_main_window.model_menu.get.return_value = "llama3.1:8b"
+
+        MainWindow._update_highway_preset_label(mock_main_window)
+        label_text = mock_main_window.highway_preset_label.configure.call_args[1]["text"]
+        assert "Jenny & Guy" in label_text
+
+        # Solo host
+        mock_main_window.episode_style_var.get.return_value = "monologue"
+        mock_main_window.solo_voice_menu.get.return_value = "Jenny (Female)"
+        MainWindow._update_highway_preset_label(mock_main_window)
+        label_text = mock_main_window.highway_preset_label.configure.call_args[1]["text"]
+        assert "Solo: Jenny" in label_text
+
+    def test_start_generation_passes_host_mode_and_solo_voice(self, mock_main_window):
+        """Verifies start_generation passes host_mode and solo_voice to GenerationWorker."""
+        mock_main_window.input_modality_var.get.return_value = "topic"
+        mock_main_window.text_input_box.get.return_value = "Topic description for solo podcast."
+        mock_main_window.model_menu.get.return_value = "llama3.1:8b"
+        mock_main_window.lang_menu.get.return_value = "English (Jenny & Guy)"
+        mock_main_window.length_menu.get.return_value = "Standard Episode"
+        mock_main_window.tone_menu.get.return_value = "Casual"
+        mock_main_window.speed_slider.get.return_value = 0.0
+        mock_main_window.output_entry.get.return_value = "output"
+        mock_main_window.get_selected_grounding_mode.side_effect = None
+        mock_main_window.get_selected_grounding_mode.return_value = "open_topic"
+        mock_main_window.episode_style_var.get.return_value = "monologue"
+        mock_main_window.solo_voice_menu.get.return_value = "Jenny (Female)"
+
+        with patch.object(GenerationWorker, "start"):
+            MainWindow.start_generation(mock_main_window, mode="full")
+            assert mock_main_window.current_worker is not None
+            assert mock_main_window.current_worker.host_mode == "monologue"
+            assert mock_main_window.current_worker.solo_voice == "Jenny (Female)"
+
+
+# ==============================================================================
+# 14. Milestone 4: MainWindow Stage Event Dispatching & Integration Tests
+# ==============================================================================
+class TestMainWindowStageEventDispatch:
+    """Verifies STAGE_UPDATE queue events route to StageProgressTracker and update UI."""
+
+    def test_handle_stage_update_tuple(self, mock_main_window):
+        """Verifies _handle_event handles 4-element STAGE_UPDATE tuple."""
+        stage_tuple = (
+            PipelineStage.CONTENT_EXTRACTION,
+            StageStatus.IN_ACTION,
+            0.20,
+            "Extracting text...",
+        )
+        MainWindow._handle_event(mock_main_window, "STAGE_UPDATE", stage_tuple)
+        mock_main_window.stage_tracker.update_stage.assert_called_with(
+            PipelineStage.CONTENT_EXTRACTION,
+            StageStatus.IN_ACTION,
+            0.20,
+            "Extracting text...",
+        )
+        mock_main_window.status_label.configure.assert_called_with(text="Extracting text...")
+        mock_main_window.progress_bar.set.assert_called_with(0.20)
+        mock_main_window.progress_pct_label.configure.assert_called_with(text="20%")
+
+    def test_handle_stage_update_dict(self, mock_main_window):
+        """Verifies _handle_event handles dict payload for STAGE_UPDATE."""
+        stage_dict = {
+            "stage": PipelineStage.SCRIPT_GENERATION,
+            "status": StageStatus.COMPLETED,
+            "pct": 0.60,
+            "message": "Script generation complete.",
+        }
+        MainWindow._handle_event(mock_main_window, "STAGE_UPDATE", stage_dict)
+        mock_main_window.stage_tracker.update_stage.assert_called_with(
+            PipelineStage.SCRIPT_GENERATION,
+            StageStatus.COMPLETED,
+            0.60,
+            "Script generation complete.",
+        )
+
+    def test_handle_error_and_cancelled_updates_stage_tracker(self, mock_main_window):
+        """Verifies ERROR and CANCELLED events update active stage in tracker."""
+        mock_main_window.stage_tracker.get_current_active_stage.return_value = (
+            PipelineStage.TTS_SYNTHESIS
+        )
+
+        # 1. CANCELLED event
+        MainWindow._handle_event(mock_main_window, "CANCELLED", "User clicked cancel.")
+        mock_main_window.stage_tracker.update_stage.assert_called_with(
+            PipelineStage.TTS_SYNTHESIS,
+            StageStatus.CANCELLED,
+            details="Cancelled by user.",
+        )
+
+        # 2. ERROR event with stage in payload
+        mock_main_window.stage_tracker.reset_mock()
+        err_payload = {
+            "title": "Voice Error",
+            "message": "Model missing",
+            "stage": PipelineStage.TTS_SYNTHESIS,
+        }
+        with patch("ui.main_window.ActionableErrorDialog"):
+            MainWindow._handle_event(mock_main_window, "ERROR", err_payload)
+            mock_main_window.stage_tracker.update_stage.assert_called_with(
+                PipelineStage.TTS_SYNTHESIS,
+                StageStatus.FAILED,
+                details="Error: Model missing",
+            )
+
+    def test_reset_form_resets_stage_tracker_and_url(self, mock_main_window):
+        """Verifies reset_form resets stage_tracker and clears URL fields."""
+        MainWindow.reset_form(mock_main_window)
+        mock_main_window.stage_tracker.reset.assert_called_once()
+        mock_main_window.url_entry.delete.assert_called_with(0, "end")
+        mock_main_window.url_preview_box.delete.assert_called_with("1.0", "end")

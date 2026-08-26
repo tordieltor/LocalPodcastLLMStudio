@@ -760,33 +760,41 @@ class TestTUITier5AdversarialResiliency:
         events = TUIEventQueue()
         cancel_evt = threading.Event()
 
-        workers = [
-            ExtractionWorker(
-                source="Concurrent extraction test",
-                state=state,
-                event_queue=events,
-                cancel_event=cancel_evt,
-            ),
-            OllamaProbeWorker(
-                server_url="http://localhost:11434",
-                state=state,
-                event_queue=events,
-                cancel_event=cancel_evt,
-            ),
-            ModelPullWorker(
-                model_name="test_model", state=state, event_queue=events, cancel_event=cancel_evt
-            ),
-        ]
+        mock_client = MagicMock()
+        mock_client.check_connection.return_value = False
+        mock_client.pull_model.return_value = iter([])
 
-        for w in workers:
-            w.start()
+        with patch("tui.workers.OllamaClient", return_value=mock_client):
+            workers = [
+                ExtractionWorker(
+                    source="Concurrent extraction test",
+                    state=state,
+                    event_queue=events,
+                    cancel_event=cancel_evt,
+                ),
+                OllamaProbeWorker(
+                    server_url="http://localhost:11434",
+                    state=state,
+                    event_queue=events,
+                    cancel_event=cancel_evt,
+                ),
+                ModelPullWorker(
+                    model_name="test_model",
+                    state=state,
+                    event_queue=events,
+                    cancel_event=cancel_evt,
+                ),
+            ]
 
-        # Rapid cooperative cancellation
-        cancel_evt.set()
+            for w in workers:
+                w.start()
 
-        for w in workers:
-            w.join(timeout=5.0)
-            assert not w.is_alive()
+            # Rapid cooperative cancellation
+            cancel_evt.set()
+
+            for w in workers:
+                w.join(timeout=5.0)
+                assert not w.is_alive()
 
     def test_repeated_session_reset_cycles_state_integrity(self) -> None:
         """Verifies repeatedly populating state and resetting 100 times maintains clean state."""

@@ -15,6 +15,7 @@ import sys
 from core.exceptions import (
     DocumentExtractionError,
     OllamaConnectionError,
+    SecurityError,
     StudioError,
 )
 from core.extractor import extract_text
@@ -22,9 +23,16 @@ from core.io_utils import atomic_write_file
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import OllamaClient, _validate_url, generate_podcast_script
 from core.parser import DialogueParser, dialogue_to_json
-from core.pipeline import GenerationOptions, GenerationResult, PodcastGeneratorService
+from core.pipeline import (
+    GenerationOptions,
+    GenerationResult,
+    PipelineStage,
+    PodcastGeneratorService,
+    StageStatus,
+)
 from core.prompts import (
     normalize_grounding_mode,
+    normalize_host_mode,
     normalize_language_code,
 )
 from core.tts import synthesize_dialogue_audio
@@ -43,19 +51,49 @@ class CLILogger:
 
     def info(self, msg: str) -> None:
         if not self.quiet and not self.json_mode:
-            print(f"[INFO] {msg}", file=sys.stderr)
+            print(f"[INFO] {msg}", file=sys.stderr, flush=True)
+
+    def stage(
+        self,
+        stage: PipelineStage | int,
+        status: StageStatus | str,
+        pct: float = 0.0,
+        msg: str = "",
+        message: str = "",
+    ) -> None:
+        """
+        Formats real-time stage progress transitions and writes strictly to stderr.
+
+        Format:
+            [STAGE <stage_num>/5] [<STATUS>] (<pct>%) <message>
+        """
+        if self.quiet:
+            return
+
+        try:
+            st_num = int(stage)
+        except Exception:
+            st_num = 1
+
+        raw_status = status.value if hasattr(status, "value") else str(status)
+        st_name = raw_status.upper().replace(" ", "_")
+        pct_val = max(0.0, min(1.0, float(pct)))
+        pct_str = f"{int(pct_val * 100):3d}%"
+        text_msg = msg or message
+
+        print(f"[STAGE {st_num}/5] [{st_name}] ({pct_str}) {text_msg}", file=sys.stderr, flush=True)
 
     def progress(self, pct: float, msg: str) -> None:
         if not self.quiet and not self.json_mode:
             pct_str = f"{int(pct * 100):3d}%"
-            print(f"[{pct_str}] {msg}", file=sys.stderr)
+            print(f"[{pct_str}] {msg}", file=sys.stderr, flush=True)
 
     def warn(self, msg: str) -> None:
         if not self.quiet:
-            print(f"[WARN] {msg}", file=sys.stderr)
+            print(f"[WARN] {msg}", file=sys.stderr, flush=True)
 
     def error(self, msg: str) -> None:
-        print(f"[ERROR] {msg}", file=sys.stderr)
+        print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
 
 def _read_stdin_or_file(path_or_stdin: str) -> str:
@@ -75,43 +113,72 @@ def _read_stdin_or_file(path_or_stdin: str) -> str:
 
 def run_extract(args: argparse.Namespace, logger: CLILogger) -> int:
     """
-    Subcommand 'extract': Extracts and normalizes text from a document or topic string.
+    Subcommand 'extract': Extracts and normalizes text from URL, document, or topic string.
     """
     source_content = ""
     is_raw = False
     is_topic = False
+    is_url = False
 
-    if args.file:
+    if getattr(args, "url", None):
+        source_content = args.url
+        is_url = True
+    elif getattr(args, "file", None):
         source_content = args.file
-    elif args.topic:
+    elif getattr(args, "topic", None):
         source_content = args.topic
         is_topic = True
-    elif args.text:
+    elif getattr(args, "text", None):
         if args.text == "-":
             source_content = sys.stdin.read()
         else:
             source_content = args.text
         is_raw = True
     else:
-        logger.error("No input source provided. Specify -f/--file, -t/--topic, or --text.")
+        logger.error("No input source provided. Specify --url, -f/--file, -t/--topic, or --text.")
         return 2
 
     if args.dry_run:
         logger.info("[Dry Run] Extraction validation passed.")
         if args.json:
-            print(json.dumps({"status": "valid", "command": "extract", "dry_run": True}, indent=2))
+            print(
+                json.dumps(
+                    {"status": "valid", "command": "extract", "is_url": is_url, "dry_run": True},
+                    indent=2,
+                )
+            )
         return 0
 
     try:
-        logger.info("Extracting text content...")
+        if is_url:
+            logger.stage(
+                PipelineStage.URL_INGESTION,
+                StageStatus.IN_ACTION,
+                0.0,
+                f"Validating and fetching URL: {source_content}",
+            )
+        else:
+            logger.info("Extracting text content...")
+
         text = extract_text(
             source=source_content,
             is_raw_text=is_raw,
             is_topic=is_topic,
+            is_url=is_url,
+            timeout=getattr(args, "timeout", 10.0),
+            max_size_bytes=getattr(args, "max_size", 5242880),
         )
 
         char_count = len(text)
         word_count = len(text.split()) if text else 0
+
+        if is_url:
+            logger.stage(
+                PipelineStage.CONTENT_EXTRACTION,
+                StageStatus.COMPLETED,
+                1.0,
+                f"Extracted {char_count:,} characters ({word_count:,} words)",
+            )
 
         if args.output:
             atomic_write_file(args.output, text)
@@ -124,6 +191,7 @@ def run_extract(args: argparse.Namespace, logger: CLILogger) -> int:
                 "word_count": word_count,
                 "output_file": args.output or None,
                 "text": text if not args.output else None,
+                "is_url": is_url,
             }
             print(json.dumps(res, indent=2))
         elif not args.output:
@@ -134,7 +202,7 @@ def run_extract(args: argparse.Namespace, logger: CLILogger) -> int:
 
         return 0
 
-    except (DocumentExtractionError, StudioError, ValueError, OSError) as exc:
+    except (DocumentExtractionError, SecurityError, StudioError, ValueError, OSError) as exc:
         logger.error(str(exc))
         if args.json:
             print(json.dumps({"success": False, "error": str(exc)}, indent=2))
@@ -143,35 +211,41 @@ def run_extract(args: argparse.Namespace, logger: CLILogger) -> int:
 
 def run_generate_script(args: argparse.Namespace, logger: CLILogger) -> int:
     """
-    Subcommand 'generate-script': Executes multi-act LLM dialogue generation via Ollama.
+    Subcommand 'generate-script': Executes multi-act LLM dialogue or monologue generation via Ollama.
     """
     source_content = ""
     is_topic = False
+    is_url = False
 
-    if args.topic:
+    if getattr(args, "url", None):
+        source_content = args.url
+        is_url = True
+    elif getattr(args, "topic", None):
         source_content = args.topic
         is_topic = True
-    elif args.file:
+    elif getattr(args, "file", None):
         source_content = args.file
-    elif args.input:
+    elif getattr(args, "input", None):
         source_content = _read_stdin_or_file(args.input)
-    elif args.text:
+    elif getattr(args, "text", None):
         source_content = sys.stdin.read() if args.text == "-" else args.text
     else:
         logger.error(
-            "No input content provided. Specify --topic, -f/--file, -i/--input, or --text."
+            "No input content provided. Specify --url, --topic, -f/--file, -i/--input, or --text."
         )
         return 2
 
     lang = normalize_language_code(args.language)
+    host_mode = normalize_host_mode(getattr(args, "host_mode", "dialogue"))
     grounding = (
         normalize_grounding_mode(args.grounding)
         if args.grounding
         else ("open_topic" if is_topic else "strict")
     )
+    ollama_endpoint = getattr(args, "ollama_url", "http://localhost:11434")
 
     if args.dry_run:
-        clean_url = _validate_url(args.url)
+        clean_url = _validate_url(ollama_endpoint)
         client = OllamaClient(base_url=clean_url)
         online = client.check_connection(timeout=3.0)
         logger.info(f"[Dry Run] Script generation options valid. Ollama online: {online}")
@@ -183,6 +257,8 @@ def run_generate_script(args: argparse.Namespace, logger: CLILogger) -> int:
                         "command": "generate-script",
                         "ollama_online": online,
                         "model": args.model,
+                        "host_mode": host_mode,
+                        "is_url": is_url,
                         "dry_run": True,
                     },
                     indent=2,
@@ -191,14 +267,19 @@ def run_generate_script(args: argparse.Namespace, logger: CLILogger) -> int:
         return 0
 
     try:
-        logger.info(f"Extracting source content (is_topic={is_topic})...")
+        logger.info(
+            f"Extracting source content (is_topic={is_topic}, is_url={is_url}, host_mode={host_mode})..."
+        )
         extracted_text = extract_text(
             source=source_content,
-            is_raw_text=not is_topic and not (args.file and os.path.isfile(source_content)),
+            is_raw_text=not is_topic
+            and not is_url
+            and not (args.file and os.path.isfile(source_content)),
             is_topic=is_topic,
+            is_url=is_url,
         )
 
-        logger.info(f"Generating dialogue script with Ollama model '{args.model}'...")
+        logger.info(f"Generating {host_mode} script with Ollama model '{args.model}'...")
 
         def _prog(msg: str) -> None:
             logger.info(msg)
@@ -210,8 +291,9 @@ def run_generate_script(args: argparse.Namespace, logger: CLILogger) -> int:
             tone_style=args.tone,
             grounding_mode=grounding,
             model=args.model,
-            ollama_url=args.url,
+            ollama_url=ollama_endpoint,
             is_topic=is_topic,
+            host_mode=host_mode,
             progress_callback=_prog,
         )
 
@@ -232,7 +314,14 @@ def run_generate_script(args: argparse.Namespace, logger: CLILogger) -> int:
 
         return 0
 
-    except (OllamaConnectionError, StudioError, ValueError, OSError) as exc:
+    except (
+        OllamaConnectionError,
+        SecurityError,
+        DocumentExtractionError,
+        StudioError,
+        ValueError,
+        OSError,
+    ) as exc:
         logger.error(str(exc))
         if args.json:
             print(json.dumps({"success": False, "error": str(exc)}, indent=2))
@@ -255,6 +344,7 @@ def run_synthesize_audio(args: argparse.Namespace, logger: CLILogger) -> int:
         return 1
 
     lang = normalize_language_code(args.language)
+    solo_voice = getattr(args, "solo_voice", None) or None
 
     if args.dry_run:
         logger.info(f"[Dry Run] Synthesize audio options valid for {len(dialogue)} turns.")
@@ -265,6 +355,7 @@ def run_synthesize_audio(args: argparse.Namespace, logger: CLILogger) -> int:
                         "status": "valid",
                         "command": "synthesize-audio",
                         "turns": len(dialogue),
+                        "solo_voice": solo_voice,
                         "dry_run": True,
                     },
                     indent=2,
@@ -286,6 +377,7 @@ def run_synthesize_audio(args: argparse.Namespace, logger: CLILogger) -> int:
             rate=args.speed,
             output_dir=out_dir,
             progress_cb=_tts_cb,
+            solo_voice=solo_voice,
         )
 
         logger.info(f"Synthesized {len(audio_files)} audio segment files in {out_dir}")
@@ -406,28 +498,34 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
     content = ""
     is_topic = False
     is_raw = False
+    is_url = False
 
-    if args.topic:
+    if getattr(args, "url", None):
+        content = args.url
+        is_url = True
+    elif getattr(args, "topic", None):
         content = args.topic
         is_topic = True
-    elif args.file:
+    elif getattr(args, "file", None):
         content = args.file
-    elif args.text:
+    elif getattr(args, "text", None):
         content = sys.stdin.read() if args.text == "-" else args.text
         is_raw = True
     else:
-        logger.error("No input content provided. Specify --topic, -f/--file, or --text.")
+        logger.error("No input content provided. Specify --url, --topic, -f/--file, or --text.")
         return 2
 
     lang = normalize_language_code(args.language)
+    host_mode = normalize_host_mode(getattr(args, "host_mode", "dialogue"))
     grounding = (
         normalize_grounding_mode(args.grounding)
         if args.grounding
         else ("open_topic" if is_topic else "strict")
     )
+    ollama_endpoint = getattr(args, "ollama_url", "http://localhost:11434")
 
     if args.dry_run:
-        clean_url = _validate_url(args.url)
+        clean_url = _validate_url(ollama_endpoint)
         client = OllamaClient(base_url=clean_url)
         online = client.check_connection(timeout=3.0)
         logger.info(f"[Dry Run] Full pipeline validation passed. Ollama online: {online}")
@@ -442,6 +540,8 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
                         "language": lang,
                         "format": args.length,
                         "grounding": grounding,
+                        "host_mode": host_mode,
+                        "is_url": is_url,
                         "dry_run": True,
                     },
                     indent=2,
@@ -460,20 +560,27 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
         output_dir=args.output_dir,
         is_topic=is_topic,
         is_raw_text=is_raw,
+        is_url=is_url,
+        host_mode=host_mode,
+        solo_voice=getattr(args, "solo_voice", None) or None,
     )
 
-    service = PodcastGeneratorService(ollama_url=args.url)
+    service = PodcastGeneratorService(ollama_url=ollama_endpoint)
 
     def _progress(pct: float, msg: str) -> None:
         logger.progress(pct, msg)
 
+    def _stage_cb(stage: PipelineStage, status: StageStatus, pct: float, msg: str) -> None:
+        logger.stage(stage, status, pct, msg)
+
     try:
         logger.info(
-            f"Starting end-to-end podcast generation ({lang}, model={args.model}, format={args.length})..."
+            f"Starting end-to-end podcast generation ({lang}, host_mode={host_mode}, model={args.model}, format={args.length})..."
         )
         result: GenerationResult = service.generate_podcast(
             options=options,
             progress_callback=_progress,
+            stage_callback=_stage_cb,
         )
 
         logger.info(f"Podcast generated successfully: {result.mp3_path}")
@@ -486,6 +593,8 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
                 "script_md_path": os.path.abspath(result.script_md_path),
                 "turns_count": len(result.dialogue),
                 "duration_estimate_sec": result.duration_estimate_sec,
+                "host_mode": host_mode,
+                "is_url": is_url,
             }
             print(json.dumps(res_dict, indent=2))
         else:
@@ -495,6 +604,7 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
 
     except (
         OllamaConnectionError,
+        SecurityError,
         DocumentExtractionError,
         StudioError,
         ValueError,
@@ -562,7 +672,14 @@ def build_parser() -> argparse.ArgumentParser:
     ext_parser = subparsers.add_parser(
         "extract",
         parents=[common_parser],
-        help="Extract & normalize text content from PDF, TXT, MD, or topic string",
+        help="Extract & normalize text content from URL, PDF, TXT, MD, or topic string",
+    )
+    ext_parser.add_argument(
+        "--url",
+        type=str,
+        default="",
+        dest="url",
+        help="Website or article URL to safely ingest and convert to Markdown",
     )
     ext_parser.add_argument("-f", "--file", type=str, default="", help="Path to input document")
     ext_parser.add_argument(
@@ -578,6 +695,19 @@ def build_parser() -> argparse.ArgumentParser:
     ext_parser.add_argument(
         "--text", type=str, default="", help="Raw text string (or '-' for stdin)"
     )
+    ext_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="Maximum HTTP fetch timeout in seconds (default: 10.0)",
+    )
+    ext_parser.add_argument(
+        "--max-size",
+        type=int,
+        default=5242880,
+        dest="max_size",
+        help="Maximum allowed web download size in bytes (default: 5242880 / 5MB)",
+    )
     ext_parser.add_argument("-o", "--output", type=str, default="", help="Output text file path")
 
     # --------------------------------------------------------------------------
@@ -586,7 +716,14 @@ def build_parser() -> argparse.ArgumentParser:
     gen_parser = subparsers.add_parser(
         "generate-script",
         parents=[common_parser],
-        help="Generate multi-act structured dialogue turns using Ollama LLM",
+        help="Generate multi-act structured dialogue or monologue turns using Ollama LLM",
+    )
+    gen_parser.add_argument(
+        "--url",
+        type=str,
+        default="",
+        dest="url",
+        help="Website URL to ingest and generate script from",
     )
     gen_parser.add_argument("-f", "--file", type=str, default="", help="Path to input document")
     gen_parser.add_argument(
@@ -612,7 +749,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-m", "--model", type=str, default="llama3.1:8b", help="Ollama LLM model name"
     )
     gen_parser.add_argument(
-        "-u", "--url", type=str, default="http://localhost:11434", help="Ollama API URL"
+        "-u",
+        "--ollama-url",
+        "--ollama-endpoint",
+        type=str,
+        default="http://localhost:11434",
+        dest="ollama_url",
+        help="Ollama host API endpoint URL (default: http://localhost:11434)",
     )
     gen_parser.add_argument(
         "-l",
@@ -622,6 +765,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="nb-NO",
         dest="language",
         help="Language code (nb-NO or en-US)",
+    )
+    gen_parser.add_argument(
+        "--host-mode",
+        "--mode",
+        type=str,
+        default="dialogue",
+        dest="host_mode",
+        choices=["dialogue", "monologue"],
+        help="Episode presentation mode: 'dialogue' (2 hosts) or 'monologue' (single host)",
+    )
+    gen_parser.add_argument(
+        "--solo-voice",
+        type=str,
+        default="",
+        dest="solo_voice",
+        help="Custom TTS voice identifier for solo host in monologue mode",
     )
     gen_parser.add_argument(
         "--length",
@@ -690,6 +849,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--speed", type=str, default="+0%", help="Speaking speed rate (e.g. +0%%, +5%%, -5%%)"
     )
     tts_parser.add_argument(
+        "--solo-voice",
+        type=str,
+        default="",
+        dest="solo_voice",
+        help="Custom TTS voice for solo host in monologue mode",
+    )
+    tts_parser.add_argument(
         "--host1-voice", type=str, default="", help="Custom TTS voice for Host 1"
     )
     tts_parser.add_argument(
@@ -745,6 +911,13 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
     """Adds common pipeline parameters to top-level or pipeline subparser."""
     parser.add_argument(
+        "--url",
+        type=str,
+        default="",
+        dest="url",
+        help="Source website or article URL to ingest and convert",
+    )
+    parser.add_argument(
         "-f", "--file", type=str, default="", help="Path to input document (PDF, TXT, MD)"
     )
     parser.add_argument(
@@ -768,7 +941,13 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         help="Ollama LLM model name (default: llama3.1:8b)",
     )
     parser.add_argument(
-        "-u", "--url", type=str, default="http://localhost:11434", help="Ollama host endpoint URL"
+        "-u",
+        "--ollama-url",
+        "--ollama-endpoint",
+        type=str,
+        default="http://localhost:11434",
+        dest="ollama_url",
+        help="Ollama host API endpoint URL (default: http://localhost:11434)",
     )
     parser.add_argument(
         "-l",
@@ -778,6 +957,22 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         default="nb-NO",
         dest="language",
         help="Dialogue language (nb-NO or en-US)",
+    )
+    parser.add_argument(
+        "--host-mode",
+        "--mode",
+        type=str,
+        default="dialogue",
+        dest="host_mode",
+        choices=["dialogue", "monologue"],
+        help="Episode style: 'dialogue' (2 hosts) or 'monologue' (single host)",
+    )
+    parser.add_argument(
+        "--solo-voice",
+        type=str,
+        default="",
+        dest="solo_voice",
+        help="Custom Piper TTS voice identifier for solo host in monologue mode",
     )
     parser.add_argument(
         "--length",

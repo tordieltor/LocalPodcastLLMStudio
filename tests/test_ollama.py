@@ -359,6 +359,98 @@ class TestOllamaGenerationAndErrors:
             assert act_updates[0] == (1, 1, 2)
 
 
+class TestOllamaMonologueGeneration:
+    """Milestone 2: Monologue script generation and multi-act pipeline verification."""
+
+    def test_generate_podcast_script_monologue_single_act(self):
+        act_turns = [
+            {"speaker": "Narrator", "text": "Opening audio essay statement."},
+            {"speaker": "Solo Host", "text": "Exploring the implications."},
+        ]
+        dialogue_json = json.dumps(act_turns)
+        chat_response = {"message": {"role": "assistant", "content": dialogue_json}}
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(chat_response).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            turns = generate_podcast_script(
+                content="Future of clean energy",
+                language="nb-NO",
+                format_type="quick",
+                tone_style="analytical",
+                grounding_mode="strict",
+                model="llama3.1:8b",
+                host_mode="monologue",
+            )
+            assert len(turns) == 2
+            for t in turns:
+                assert t.speaker == "Host 1"
+            assert "Opening audio essay statement." in turns[0].text
+            assert "Exploring the implications." in turns[1].text
+
+    def test_generate_podcast_script_monologue_multi_act_extended(self):
+        act_turns = [
+            {"speaker": "Host 1", "text": "Del avsnitt en."},
+            {"speaker": "Host 1", "text": "Del avsnitt to."},
+        ]
+        dialogue_json = json.dumps(act_turns)
+        chat_response = {"message": {"role": "assistant", "content": dialogue_json}}
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(chat_response).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            progress_messages = []
+            act_updates = []
+            turns = generate_podcast_script(
+                content="Deep dive into Scandinavian history",
+                language="nb-NO",
+                format_type="extended",
+                tone_style="analytical",
+                grounding_mode="creative",
+                model="mistral-nemo:latest",
+                progress_callback=lambda msg: progress_messages.append(msg),
+                act_callback=lambda act_idx, tot, act_t: act_updates.append(
+                    (act_idx, tot, len(act_t))
+                ),
+                host_mode="monologue",
+            )
+            # Monologue extended has 5 acts
+            assert len(turns) == 10
+            assert len(act_updates) == 5
+            for t in turns:
+                assert t.speaker == "Host 1"
+            assert any("Act 1" in m or "Akt 1" in m for m in progress_messages)
+            assert any("Act 5" in m or "Akt 5" in m for m in progress_messages)
+
+    def test_generate_podcast_script_monologue_aliases(self):
+        act_turns = [{"text": "Raw paragraph text without speaker tag."}]
+        dialogue_json = json.dumps(act_turns)
+        chat_response = {"message": {"role": "assistant", "content": dialogue_json}}
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(chat_response).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            for alias in ["solo", "single_host", "audio_essay", "lydessay"]:
+                turns = generate_podcast_script(
+                    content="Quantum computing overview",
+                    language="en-US",
+                    format_type="quick",
+                    host_mode=alias,
+                )
+                assert len(turns) == 1
+                assert turns[0].speaker == "Host 1"
+                assert "Raw paragraph text" in turns[0].text
+
+
 class TestModelPullProgressDataclass:
     """Validation of ModelPullProgress dataclass."""
 

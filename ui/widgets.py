@@ -4,12 +4,14 @@ Contains modern card frames, status badges, labeled sliders, audio timeline scru
 dialogue turn bubbles, and actionable error dialogs.
 """
 
+import threading
 from collections.abc import Callable
 from typing import Any
 
 import customtkinter as ctk
 
 from core.parser import SpeakerRole
+from core.pipeline import PipelineStage, StageStatus
 from ui.about_dialog import AboutDialog
 from ui.theme import (
     BADGE_RADIUS,
@@ -35,8 +37,10 @@ from ui.theme import (
     COLOR_INFO,
     COLOR_INPUT_BG,
     COLOR_INPUT_BORDER,
+    COLOR_PROGRESS_TRACK,
     COLOR_SUCCESS,
     COLOR_TEXT_DARK,
+    COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
     COLOR_WARNING,
@@ -44,6 +48,7 @@ from ui.theme import (
     get_font_body,
     get_font_body_bold,
     get_font_caption,
+    get_font_caption_bold,
     get_font_code,
     get_font_heading,
 )
@@ -56,6 +61,7 @@ __all__ = [
     "LabeledSlider",
     "LiveStreamingCard",
     "SectionHeader",
+    "StageProgressTracker",
     "StatusBadge",
     "TimeSlider",
 ]
@@ -722,3 +728,359 @@ class ActionableErrorDialog(ctk.CTkToplevel):
                 self.geometry(f"{width}x{height}")
             except (RuntimeError, AttributeError, ValueError, TypeError):
                 pass
+
+
+# ==============================================================================
+# 5-Stage Lifecycle Progress Tracker Widget (Milestone 4)
+# ==============================================================================
+
+GLYPH_COMPLETED = "[✓]"
+GLYPH_IN_ACTION = "[●]"
+GLYPH_PENDING = "[⏳]"
+GLYPH_FAILED = "[✗]"
+GLYPH_CANCELLED = "[⊘]"
+
+STAGE_DISPLAY_SPECS: dict[PipelineStage, dict[str, str]] = {
+    PipelineStage.URL_INGESTION: {
+        "title": "1. URL Ingestion & Security Validation",
+        "default_details": "SSRF validation, DNS check & streaming download",
+    },
+    PipelineStage.CONTENT_EXTRACTION: {
+        "title": "2. Article Sanitization & MarkItDown Conversion",
+        "default_details": "Boilerplate stripping & Markdown conversion",
+    },
+    PipelineStage.SCRIPT_GENERATION: {
+        "title": "3. Multi-Act LLM Generation",
+        "default_details": "Multi-act dialogue/monologue script generation",
+    },
+    PipelineStage.TTS_SYNTHESIS: {
+        "title": "4. Neural TTS Synthesis",
+        "default_details": "Local neural voice speech synthesis",
+    },
+    PipelineStage.AUDIO_ASSEMBLY: {
+        "title": "5. Audio Stitching & Master MP3 Assembly",
+        "default_details": "Zero-FFmpeg MP3 frame concatenation & ID3 tagging",
+    },
+}
+
+
+class StageProgressTracker(ctk.CTkFrame):
+    """
+    Windows 11 Fluent Dark 5-stage lifecycle progress tracker.
+    Renders visual status indicators, live percentage bars, and execution details
+    for all 5 sequential pipeline stages with two-tier thread safety.
+    """
+
+    def __init__(
+        self,
+        master: Any,
+        corner_radius: int = 8,
+        fg_color: str = "#1a1c29",
+        border_color: str = COLOR_CARD_BORDER,
+        border_width: int = 1,
+        **kwargs: Any,
+    ):
+        super().__init__(
+            master=master,
+            corner_radius=corner_radius,
+            fg_color=fg_color,
+            border_color=border_color,
+            border_width=border_width,
+            **kwargs,
+        )
+
+        self.stages: list[PipelineStage] = list(PipelineStage)
+        self._stages_state: dict[PipelineStage, dict[str, Any]] = {}
+        self._stage_widgets: dict[PipelineStage, dict[str, Any]] = {}
+        self._stage_rows = self._stage_widgets  # Compatibility alias
+
+        self._build_header()
+        self._build_stage_rows()
+        self.reset()
+
+    def _build_header(self) -> None:
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.pack(fill="x", padx=12, pady=(10, 6))
+
+        self.header_title = ctk.CTkLabel(
+            header_frame,
+            text="⚡ Generation Pipeline Stages",
+            font=get_font_heading(),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        )
+        self.header_title.pack(side="left")
+
+        self.header_summary = ctk.CTkLabel(
+            header_frame,
+            text="Ready",
+            font=get_font_caption_bold(),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="e",
+        )
+        self.header_summary.pack(side="right")
+
+    def _build_stage_rows(self) -> None:
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
+        for stage in PipelineStage:
+            spec = STAGE_DISPLAY_SPECS[stage]
+            row_frame = ctk.CTkFrame(container, fg_color="transparent")
+            row_frame.pack(fill="x", pady=3)
+
+            glyph_lbl = ctk.CTkLabel(
+                row_frame,
+                text=GLYPH_PENDING,
+                font=get_font_badge(),
+                text_color=COLOR_TEXT_MUTED,
+                width=28,
+            )
+            glyph_lbl.pack(side="left", padx=(0, 6), anchor="n")
+
+            content_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+            content_frame.pack(side="left", fill="x", expand=True)
+
+            title_row = ctk.CTkFrame(content_frame, fg_color="transparent")
+            title_row.pack(fill="x")
+
+            title_lbl = ctk.CTkLabel(
+                title_row,
+                text=spec["title"],
+                font=get_font_body_bold(),
+                text_color=COLOR_TEXT_SECONDARY,
+                anchor="w",
+            )
+            title_lbl.pack(side="left")
+
+            pct_lbl = ctk.CTkLabel(
+                title_row,
+                text="",
+                font=get_font_caption_bold(),
+                text_color=COLOR_ACCENT,
+                anchor="e",
+            )
+            pct_lbl.pack(side="right")
+
+            details_lbl = ctk.CTkLabel(
+                content_frame,
+                text=spec["default_details"],
+                font=get_font_caption(),
+                text_color=COLOR_TEXT_MUTED,
+                anchor="w",
+            )
+            details_lbl.pack(fill="x", pady=(1, 2))
+
+            pbar = ctk.CTkProgressBar(
+                content_frame,
+                height=4,
+                progress_color=COLOR_ACCENT,
+                fg_color=COLOR_PROGRESS_TRACK,
+            )
+            pbar.set(0.0)
+            pbar.pack(fill="x")
+
+            row_data: dict[str, Any] = {
+                "glyph": glyph_lbl,
+                "icon": glyph_lbl,
+                "title": title_lbl,
+                "label": title_lbl,
+                "pct": pct_lbl,
+                "status_label": pct_lbl,
+                "details": details_lbl,
+                "pbar": pbar,
+                "status": StageStatus.PENDING,
+            }
+            self._stage_widgets[stage] = row_data
+            self._stages_state[stage] = {
+                "status": StageStatus.PENDING,
+                "pct": 0.0,
+                "details": spec["default_details"],
+            }
+
+    def update_stage(
+        self,
+        stage: PipelineStage | int | str,
+        status: StageStatus | str,
+        pct: float = 0.0,
+        details: str = "",
+    ) -> None:
+        """
+        Updates visual state of a specific pipeline stage row.
+        Thread-safe: Schedules update on Tkinter main event loop if called off-thread.
+        """
+        try:
+            stage_enum = self._normalize_stage(stage)
+            status_enum = self._normalize_status(status)
+        except ValueError:
+            return
+
+        try:
+            val = float(pct)
+            if val > 1.0:
+                val = val / 100.0
+            clamped_pct = max(0.0, min(1.0, val))
+        except (ValueError, TypeError):
+            clamped_pct = 0.0
+
+        if threading.current_thread() is not threading.main_thread():
+            self.after(
+                0,
+                lambda: self._apply_update_stage(stage_enum, status_enum, clamped_pct, details),
+            )
+            return
+
+        self._apply_update_stage(stage_enum, status_enum, clamped_pct, details)
+
+    def _apply_update_stage(
+        self,
+        stage: PipelineStage,
+        status: StageStatus,
+        pct: float,
+        details: str,
+    ) -> None:
+        if stage not in self._stage_widgets:
+            return
+        widgets = self._stage_widgets[stage]
+        spec = STAGE_DISPLAY_SPECS.get(
+            stage, {"title": f"Stage {stage.value}", "default_details": ""}
+        )
+        display_details = (
+            details.strip() if details and details.strip() else spec["default_details"]
+        )
+
+        self._stages_state[stage] = {
+            "status": status,
+            "pct": pct,
+            "details": display_details,
+        }
+        widgets["status"] = status
+
+        if status == StageStatus.COMPLETED:
+            widgets["glyph"].configure(text=GLYPH_COMPLETED, text_color=COLOR_SUCCESS)
+            widgets["title"].configure(text_color=COLOR_TEXT_PRIMARY)
+            widgets["details"].configure(text=display_details, text_color=COLOR_SUCCESS)
+            widgets["pct"].configure(text="100%", text_color=COLOR_SUCCESS)
+            widgets["pbar"].configure(progress_color=COLOR_SUCCESS)
+            widgets["pbar"].set(1.0)
+        elif status == StageStatus.IN_ACTION:
+            widgets["glyph"].configure(text=GLYPH_IN_ACTION, text_color=COLOR_ACCENT)
+            widgets["title"].configure(text_color=COLOR_ACCENT)
+            widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_PRIMARY)
+            pct_int = int(pct * 100)
+            widgets["pct"].configure(text=f"{pct_int}%", text_color=COLOR_ACCENT)
+            widgets["pbar"].configure(progress_color=COLOR_ACCENT)
+            widgets["pbar"].set(pct)
+        elif status == StageStatus.FAILED:
+            widgets["glyph"].configure(text=GLYPH_FAILED, text_color=COLOR_ERROR)
+            widgets["title"].configure(text_color=COLOR_ERROR)
+            widgets["details"].configure(text=display_details, text_color=COLOR_ERROR)
+            widgets["pct"].configure(text="ERR", text_color=COLOR_ERROR)
+            widgets["pbar"].configure(progress_color=COLOR_ERROR)
+            widgets["pbar"].set(pct)
+        elif status == StageStatus.CANCELLED:
+            widgets["glyph"].configure(text=GLYPH_CANCELLED, text_color=COLOR_TEXT_MUTED)
+            widgets["title"].configure(text_color=COLOR_TEXT_MUTED)
+            widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_MUTED)
+            widgets["pct"].configure(text="ABORT", text_color=COLOR_TEXT_MUTED)
+            widgets["pbar"].configure(progress_color=COLOR_TEXT_MUTED)
+            widgets["pbar"].set(pct)
+        else:  # PENDING
+            widgets["glyph"].configure(text=GLYPH_PENDING, text_color=COLOR_TEXT_MUTED)
+            widgets["title"].configure(text_color=COLOR_TEXT_SECONDARY)
+            widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_MUTED)
+            widgets["pct"].configure(text="")
+            widgets["pbar"].configure(progress_color=COLOR_ACCENT)
+            widgets["pbar"].set(0.0)
+
+        self._update_header_summary()
+
+    def reset(self) -> None:
+        """Resets all 5 stages to PENDING state with 0.0% progress and default descriptions."""
+        for stage in PipelineStage:
+            spec = STAGE_DISPLAY_SPECS[stage]
+            self._apply_update_stage(stage, StageStatus.PENDING, 0.0, spec["default_details"])
+        if hasattr(self, "header_summary"):
+            self.header_summary.configure(text="Ready", text_color=COLOR_TEXT_SECONDARY)
+
+    def set_all_pending(self) -> None:
+        """Alias for reset(), restoring all stages to pending state."""
+        self.reset()
+
+    def get_stage_state(self, stage: PipelineStage | int | str) -> dict[str, Any]:
+        """Returns snapshot dictionary of the current state of the requested stage."""
+        try:
+            stage_enum = self._normalize_stage(stage)
+            return dict(self._stages_state.get(stage_enum, {}))
+        except ValueError:
+            return {}
+
+    def get_stage_status(self, stage: PipelineStage | int | str) -> StageStatus | None:
+        """Returns the StageStatus of the requested stage."""
+        try:
+            stage_enum = self._normalize_stage(stage)
+            return self._stages_state.get(stage_enum, {}).get("status")
+        except ValueError:
+            return None
+
+    def get_current_active_stage(self) -> PipelineStage | None:
+        """Returns the PipelineStage currently in IN_ACTION status, or None."""
+        for stage, state in self._stages_state.items():
+            if state.get("status") == StageStatus.IN_ACTION:
+                return stage
+        return None
+
+    def _update_header_summary(self) -> None:
+        if not hasattr(self, "header_summary"):
+            return
+        active = self.get_current_active_stage()
+        if active:
+            self.header_summary.configure(
+                text=f"Stage {active.value}/5: {active.name.replace('_', ' ').title()}",
+                text_color=COLOR_ACCENT,
+            )
+        else:
+            completed_count = sum(
+                1 for s in self._stages_state.values() if s.get("status") == StageStatus.COMPLETED
+            )
+            if completed_count == len(PipelineStage):
+                self.header_summary.configure(text="Completed (5/5)", text_color=COLOR_SUCCESS)
+            elif any(s.get("status") == StageStatus.FAILED for s in self._stages_state.values()):
+                self.header_summary.configure(text="Failed", text_color=COLOR_ERROR)
+            elif any(s.get("status") == StageStatus.CANCELLED for s in self._stages_state.values()):
+                self.header_summary.configure(text="Cancelled", text_color=COLOR_TEXT_MUTED)
+            else:
+                self.header_summary.configure(text="Ready", text_color=COLOR_TEXT_SECONDARY)
+
+    @staticmethod
+    def _normalize_stage(stage: PipelineStage | int | str) -> PipelineStage:
+        if isinstance(stage, PipelineStage):
+            return stage
+        if isinstance(stage, int):
+            try:
+                return PipelineStage(stage)
+            except ValueError:
+                raise ValueError(f"Invalid pipeline stage ordinal: {stage!r}") from None
+        if isinstance(stage, str):
+            clean = stage.strip().upper().replace(" ", "_").replace("-", "_")
+            if clean in PipelineStage.__members__:
+                return PipelineStage[clean]
+            try:
+                return PipelineStage(int(clean))
+            except ValueError:
+                pass
+            for member in PipelineStage:
+                if clean in member.name:
+                    return member
+        raise ValueError(f"Invalid pipeline stage specifier: {stage!r}")
+
+    @staticmethod
+    def _normalize_status(status: StageStatus | str) -> StageStatus:
+        if isinstance(status, StageStatus):
+            return status
+        if isinstance(status, str):
+            clean = status.strip().lower()
+            for s in StageStatus:
+                if s.value == clean or s.name.lower() == clean:
+                    return s
+        raise ValueError(f"Invalid stage status specifier: {status!r}")

@@ -267,3 +267,111 @@ class TestTTSSynthesisExecution:
                 voice="no_NO-torkil-medium",
                 output_path=bad_path,  # type: ignore[arg-type]
             )
+
+
+class TestTTSSoloVoiceAndMonologue:
+    """Milestone 2: Solo voice selection and monologue audio synthesis pipeline."""
+
+    @pytest.mark.parametrize(
+        "speaker",
+        [
+            "Host 1",
+            "Kari",
+            "Jenny",
+            "Host",
+            "host",
+            "Narrator",
+            "narrator",
+            "Solo Host",
+            "solo",
+            "Vert",
+            "Forteller",
+        ],
+    )
+    def test_tts_engine_solo_voice_override(self, speaker):
+        engine_nb = TTSEngine(language="nb-NO", solo_voice="no_NO-torkil-medium")
+        assert engine_nb.get_voice_for_speaker(speaker) == "no_NO-torkil-medium"
+
+        engine_en = TTSEngine(language="en-US", solo_voice="en_US-amy-medium")
+        assert engine_en.get_voice_for_speaker(speaker) == "en_US-amy-medium"
+
+    def test_tts_engine_solo_voice_default_fallback(self):
+        engine_nb = TTSEngine(language="nb-NO", solo_voice=None)
+        assert engine_nb.get_voice_for_speaker("Host 1") == "no_NO-torkil-medium"
+        assert engine_nb.get_voice_for_speaker("Narrator") == "no_NO-torkil-medium"
+
+        engine_en = TTSEngine(language="en-US", solo_voice=None)
+        assert engine_en.get_voice_for_speaker("Host 1") == "en_US-lessac-medium"
+        assert engine_en.get_voice_for_speaker("Solo Host") == "en_US-lessac-medium"
+
+    @pytest.mark.asyncio
+    async def test_synthesize_turn_direct_neural_edge_voice(self, single_frame_mp3):
+        import sys
+
+        async def mock_stream():
+            yield {"type": "audio", "data": single_frame_mp3}
+
+        mock_comm = MagicMock()
+        mock_comm.stream = mock_stream
+        mock_edge = MagicMock()
+        mock_edge.Communicate.return_value = mock_comm
+
+        with patch.dict(sys.modules, {"edge_tts": mock_edge}):
+            audio_bytes = await synthesize_turn(
+                text="Direct neural voice test.",
+                voice="nb-NO-FinnNeural",
+                speaker="Host 1",
+            )
+            assert audio_bytes == single_frame_mp3
+            mock_edge.Communicate.assert_called_once_with(
+                text="Direct neural voice test.",
+                voice="nb-NO-FinnNeural",
+                rate="+0%",
+            )
+
+    def test_synthesize_dialogue_audio_monologue_with_solo_voice(self, tmp_path, single_frame_mp3):
+        monologue_turns = [
+            DialogueTurn(speaker="Host 1", text="Opening audio essay paragraph."),
+            DialogueTurn(speaker="Host 1", text="Detailed technical analysis paragraph."),
+            DialogueTurn(speaker="Host 1", text="Closing reflective sign-off."),
+        ]
+
+        with patch(
+            "core.tts.TTSEngine.run_synthesis_sync",
+            return_value=[single_frame_mp3, single_frame_mp3, single_frame_mp3],
+        ):
+            out_dir = str(tmp_path / "monologue_audio")
+            files = synthesize_dialogue_audio(
+                dialogue=monologue_turns,
+                language="en-US",
+                output_dir=out_dir,
+                solo_voice="en_US-amy-medium",
+            )
+            assert len(files) == 3
+            for f in files:
+                import os
+
+                assert os.path.exists(f)
+                assert os.path.getsize(f) > 0
+
+    @pytest.mark.asyncio
+    async def test_synthesize_dialogue_pipeline_progress_monologue(self, single_frame_mp3):
+        engine = TTSEngine(language="nb-NO", solo_voice="no_NO-torkil-medium")
+        turns = [
+            DialogueTurn(speaker="Host 1", text="Avsnitt 1"),
+            DialogueTurn(speaker="Host 1", text="Avsnitt 2"),
+        ]
+
+        progress_calls = []
+
+        def on_progress(cur, total, msg):
+            progress_calls.append((cur, total, msg))
+
+        with patch.object(engine, "synthesize_turn_bytes", new_callable=AsyncMock) as mock_synth:
+            mock_synth.return_value = single_frame_mp3
+            res = await engine.synthesize_dialogue_pipeline(turns, progress_callback=on_progress)
+            assert len(res) == 2
+            assert len(progress_calls) == 2
+            assert progress_calls[0][0] == 1
+            assert progress_calls[1][0] == 2
+            assert progress_calls[0][1] == 2

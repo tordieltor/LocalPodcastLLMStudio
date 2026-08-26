@@ -257,7 +257,9 @@ async def synthesize_turn(
             if not audio_bytes and edge_engine is not None:
                 # Map voice names to Edge neural voice IDs
                 edge_voice = voice
-                if "torkil" in voice.lower():
+                if "neural" in voice.lower():
+                    edge_voice = voice
+                elif "torkil" in voice.lower():
                     edge_voice = (
                         "nb-NO-FinnNeural"
                         if SpeakerRole.from_speaker(speaker) == SpeakerRole.HOST_2
@@ -318,9 +320,19 @@ class TTSEngine:
     persona speed/pitch parameters, and batch async/sync generation workflows.
     """
 
-    def __init__(self, language: str = "nb-NO", rate: str | int | float = "+0%"):
+    def __init__(
+        self,
+        language: str = "nb-NO",
+        rate: str | int | float = "+0%",
+        solo_voice: str | None = None,
+    ):
         self.language = normalize_language_code(language)
         self.rate = format_rate_str(rate)
+        self.solo_voice = (
+            solo_voice.strip()
+            if (solo_voice and isinstance(solo_voice, str) and solo_voice.strip())
+            else None
+        )
 
     def get_voice(self, speaker: str) -> str:
         """Resolves speaker name to configured local neural voice ID."""
@@ -329,6 +341,8 @@ class TTSEngine:
     def get_voice_for_speaker(self, speaker: str) -> str:
         """Resolves speaker name to configured local neural voice ID."""
         norm_speaker = normalize_speaker(speaker)
+        if self.solo_voice and norm_speaker in (SpeakerRole.HOST_1.value, "Host 1", "Host", ""):
+            return self.solo_voice
         voices = VOICE_MAP.get(self.language, VOICE_MAP["en-US"])
         return voices.get(norm_speaker, voices.get("Host 1", "en_US-lessac-medium"))
 
@@ -406,6 +420,7 @@ def synthesize_dialogue_audio(
     output_dir: str | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
     cancel_event: threading.Event | None = None,
+    solo_voice: str | None = None,
 ) -> list[str]:
     """
     Synthesizes each dialogue turn to a temporary audio file on disk locally.
@@ -417,6 +432,7 @@ def synthesize_dialogue_audio(
         output_dir: Directory for temporary turn audio files.
         progress_cb: Callback function receiving (current_turn_index, total_turns).
         cancel_event: Threading event for aborting synthesis.
+        solo_voice: Optional voice ID override for solo host turns.
 
     Returns:
         List of paths to generated turn audio files.
@@ -434,7 +450,7 @@ def synthesize_dialogue_audio(
         target_dir = tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
     os.makedirs(target_dir, exist_ok=True)
 
-    engine = TTSEngine(language=language, rate=rate)
+    engine = TTSEngine(language=language, rate=rate, solo_voice=solo_voice)
     temp_file_paths: list[str] = []
 
     def handle_progress(current: int, total: int, msg: str) -> None:

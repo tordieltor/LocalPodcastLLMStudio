@@ -3,12 +3,19 @@ LocalPodcastLLMStudio - Core Subsystems Package
 Zero-cloud-cost, 100% local podcast generation and audio processing engines.
 """
 
+from core.exceptions import SecurityError
 from core.extractor import (
     DocumentExtractionError,
+    convert_html_to_markdown,
     extract_text,
     extract_text_from_file,
     extract_text_from_pdf,
+    extract_text_from_url,
+    fetch_url_content,
     normalize_extracted_text,
+    sanitize_html_boilerplate,
+    strip_html_boilerplate,
+    validate_url_target,
 )
 from core.logger import (
     get_log_file_path,
@@ -36,6 +43,14 @@ from core.parser import (
     normalize_speaker,
     parse_dialogue_json,
 )
+from core.pipeline import (
+    GenerationOptions,
+    GenerationResult,
+    PipelineStage,
+    PodcastGeneratorService,
+    StageProgressCallback,
+    StageStatus,
+)
 from core.player import (
     WindowsAudioPlayer,
     WindowsMCIPlayer,
@@ -44,13 +59,20 @@ from core.player import (
     parse_time_str,
 )
 from core.prompts import (
+    ACT_SPECS_MONOLOGUE_EN,
+    ACT_SPECS_MONOLOGUE_NB,
     FORMAT_PRESETS,
     GROUNDING_DIRECTIVES_EN,
     GROUNDING_DIRECTIVES_NB,
     GROUNDING_MODE_ALIASES,
     GROUNDING_MODE_PRESETS,
+    HOST_MODE_ALIASES,
+    HOST_MODE_PRESETS,
+    SYSTEM_PROMPT_MONOLOGUE_EN,
+    SYSTEM_PROMPT_MONOLOGUE_NB,
     TONE_DESCRIPTIONS,
     GroundingMode,
+    HostMode,
     build_act_system_prompt,
     build_act_user_prompt,
     build_system_prompt,
@@ -59,6 +81,7 @@ from core.prompts import (
     get_format_config,
     get_tone_description,
     normalize_grounding_mode,
+    normalize_host_mode,
     normalize_language_code,
 )
 from core.tts import (
@@ -79,12 +102,19 @@ __all__ = [
     "dialogue_to_json",
     "dialogue_from_json",
     "dialogue_to_markdown",
-    # Extractor
+    # Extractor & Security
+    "SecurityError",
+    "DocumentExtractionError",
     "extract_text",
     "extract_text_from_file",
     "extract_text_from_pdf",
+    "extract_text_from_url",
+    "fetch_url_content",
+    "validate_url_target",
+    "sanitize_html_boilerplate",
+    "strip_html_boilerplate",
+    "convert_html_to_markdown",
     "normalize_extracted_text",
-    "DocumentExtractionError",
     # Prompts & Grounding
     "GroundingMode",
     "GROUNDING_MODE_PRESETS",
@@ -92,6 +122,14 @@ __all__ = [
     "GROUNDING_DIRECTIVES_NB",
     "GROUNDING_DIRECTIVES_EN",
     "normalize_grounding_mode",
+    "HostMode",
+    "HOST_MODE_PRESETS",
+    "HOST_MODE_ALIASES",
+    "normalize_host_mode",
+    "SYSTEM_PROMPT_MONOLOGUE_NB",
+    "SYSTEM_PROMPT_MONOLOGUE_EN",
+    "ACT_SPECS_MONOLOGUE_NB",
+    "ACT_SPECS_MONOLOGUE_EN",
     "FORMAT_PRESETS",
     "TONE_DESCRIPTIONS",
     "build_system_prompt",
@@ -118,6 +156,13 @@ __all__ = [
     "MP3Stitcher",
     "stitch_mp3_files",
     "validate_safe_output_path",
+    # Pipeline & Lifecycle
+    "PipelineStage",
+    "StageStatus",
+    "StageProgressCallback",
+    "GenerationOptions",
+    "GenerationResult",
+    "PodcastGeneratorService",
     # Player
     "WindowsAudioPlayer",
     "WindowsMCIPlayer",

@@ -28,6 +28,7 @@ from core.prompts import (
     build_system_prompt,
     build_user_prompt,
     get_act_specs,
+    normalize_host_mode,
     normalize_language_code,
 )
 
@@ -1011,13 +1012,14 @@ def generate_podcast_script(
     progress_callback: Callable[[str], None] | None = None,
     stream_callback: Callable[[str], None] | None = None,
     act_callback: Callable[[int, int, list[DialogueTurn]], None] | None = None,
+    host_mode: str = "dialogue",
 ) -> list[DialogueTurn]:
     """
-    High-level dialogue generation pipeline with Multi-Act Structured Generation:
-    For short summaries: Generates single-shot dialogue.
+    High-level dialogue/monologue generation pipeline with Multi-Act Structured Generation:
+    For short summaries: Generates single-shot dialogue or audio essay.
     For standard, deep dive, and extended in-depth episodes:
       Executes sequential thematic acts (chapters) passing previous dialogue context,
-      guaranteeing authentic progression and reaching the target 45-60 turns.
+      guaranteeing authentic progression and reaching the target turn/paragraph counts.
 
     Args:
         content: Normalized source text or prompt.
@@ -1033,16 +1035,18 @@ def generate_podcast_script(
         progress_callback: Optional callback receiving high-level stage messages.
         stream_callback: Optional real-time streaming callback receiving token pieces.
         act_callback: Optional callback receiving (act_index, total_acts, act_turns).
+        host_mode: Host presentation mode ('dialogue' or 'monologue').
 
     Returns:
-        List[DialogueTurn] containing structured conversation.
+        List[DialogueTurn] containing structured conversation or monologue.
 
     Raises:
         OllamaConnectionError, OllamaModelNotFoundError, ValueError.
     """
     lang = normalize_language_code(language)
+    norm_host_mode = normalize_host_mode(host_mode)
     client = OllamaClient(base_url=ollama_url)
-    act_specs = get_act_specs(format_type=format_type, language=lang)
+    act_specs = get_act_specs(format_type=format_type, language=lang, host_mode=norm_host_mode)
 
     # 1. Single-Act Mode (Quick Summary)
     if len(act_specs) <= 1:
@@ -1054,12 +1058,14 @@ def generate_podcast_script(
             format_type=format_type,
             tone_style=tone_style,
             grounding_mode=grounding_mode,
+            host_mode=norm_host_mode,
         )
         user_prompt = build_user_prompt(
             content=content,
             language=lang,
             grounding_mode=grounding_mode,
             is_topic=is_topic,
+            host_mode=norm_host_mode,
         )
 
         raw_response = client.generate(
@@ -1076,6 +1082,9 @@ def generate_podcast_script(
             raise ValueError("Ollama returned an empty response.")
 
         parsed_turns = DialogueParser.parse(raw_response, default_language=lang)
+        if norm_host_mode == "monologue" and parsed_turns:
+            for t in parsed_turns:
+                t.speaker = SpeakerRole.HOST_1.value
         if act_callback and parsed_turns:
             act_callback(1, 1, parsed_turns)
         return parsed_turns
@@ -1091,10 +1100,13 @@ def generate_podcast_script(
         act_title = act.get("title", f"Act {act_idx}")
         target_turns = act.get("target_turns", 10)
 
-        # Determine speaker alternation across act boundary
-        next_speaker = SpeakerRole.HOST_1.value
-        if full_script:
-            next_speaker = SpeakerRole.get_alternate(full_script[-1].speaker)
+        # Monologue: Always Host 1; Dialogue: alternate across act boundaries
+        if norm_host_mode == "monologue":
+            next_speaker = SpeakerRole.HOST_1.value
+        else:
+            next_speaker = SpeakerRole.HOST_1.value
+            if full_script:
+                next_speaker = SpeakerRole.get_alternate(full_script[-1].speaker)
 
         if progress_callback:
             progress_callback(
@@ -1110,6 +1122,7 @@ def generate_podcast_script(
             tone_style=tone_style,
             grounding_mode=grounding_mode,
             next_speaker=next_speaker,
+            host_mode=norm_host_mode,
         )
         act_user_prompt = build_act_user_prompt(
             content=content,
@@ -1117,6 +1130,7 @@ def generate_podcast_script(
             language=lang,
             grounding_mode=grounding_mode,
             is_topic=is_topic,
+            host_mode=norm_host_mode,
         )
 
         raw_act_response = client.generate(
@@ -1134,6 +1148,8 @@ def generate_podcast_script(
                 act_turns = DialogueParser.parse(raw_act_response, default_language=lang)
                 if act_turns:
                     for t in act_turns:
+                        if norm_host_mode == "monologue":
+                            t.speaker = SpeakerRole.HOST_1.value
                         full_script.append(t)
                     if act_callback:
                         act_callback(act_idx, total_acts, act_turns)

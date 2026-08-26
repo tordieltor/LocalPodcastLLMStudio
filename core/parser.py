@@ -76,6 +76,8 @@ class DialogueTurn:
             or data.get("host")
             or data.get("name")
             or data.get("role")
+            or data.get("presenter")
+            or data.get("narrator")
             or "Host 1"
         )
         text = (
@@ -83,54 +85,134 @@ class DialogueTurn:
             or data.get("content")
             or data.get("dialogue")
             or data.get("line")
+            or data.get("paragraph")
+            or data.get("section")
             or ""
         )
         return cls(speaker=normalize_speaker(str(speaker)), text=str(text).strip())
 
 
+# Predefined persona sets for high-speed speaker normalization
+_HOST_1_SPECIFIC = (
+    "1",
+    "kari",
+    "jenny",
+    "host 1",
+    "host1",
+    "host_1",
+    "host a",
+    "host-a",
+    "speaker 1",
+    "speaker1",
+    "speaker_1",
+    "speaker a",
+    "vert 1",
+    "vert1",
+    "vert_1",
+    "programleder 1",
+    "programleder1",
+    "narrator",
+    "presenter",
+    "solo",
+    "forteller",
+    "oppleser",
+    "essayist",
+    "author",
+    "monologue",
+    "kåsør",
+    "foredragsholder",
+    "interviewer",
+)
+
+_HOST_2_SPECIFIC = (
+    "2",
+    "ola",
+    "guy",
+    "host 2",
+    "host2",
+    "host_2",
+    "host b",
+    "host-b",
+    "speaker 2",
+    "speaker2",
+    "speaker_2",
+    "speaker b",
+    "vert 2",
+    "vert2",
+    "vert_2",
+    "programleder 2",
+    "programleder2",
+    "co-host",
+    "cohost",
+)
+
+_GENERIC_HOST_KEYWORDS = (
+    "host",
+    "speaker",
+    "vert",
+    "programleder",
+)
+
+
 @lru_cache(maxsize=128)
 def normalize_speaker(raw_speaker: str) -> str:
     """
-    Normalizes speaker names across Norwegian and English personas:
-    Host 1 / Kari / Jenny / Speaker 1 -> 'Host 1'
-    Host 2 / Ola / Guy / Speaker 2 -> 'Host 2'
+    Normalizes speaker names across Norwegian and English personas for dialogue and monologue:
+    Host 1 / Kari / Jenny / Speaker 1 / Host / Narrator / Presenter / Solo -> 'Host 1'
+    Host 2 / Ola / Guy / Speaker 2 / Expert / Co-host -> 'Host 2'
 
     Memoized with LRU cache (maxsize=128) for high-throughput string parsing loops.
     """
-    if not raw_speaker:
+    if not raw_speaker or not isinstance(raw_speaker, str):
         return "Host 1"
 
-    s = raw_speaker.strip().lower()
+    s = raw_speaker.lower().strip()
 
-    # Host 1 patterns
-    if any(
-        k in s for k in ["1", "kari", "jenny", "host 1", "host1", "speaker 1", "host_1", "host a"]
-    ):
+    # 1. Host 1 specific patterns (e.g. '1', 'kari', 'jenny', 'narrator', 'solo', etc.)
+    if any(k in s for k in _HOST_1_SPECIFIC):
         return "Host 1"
 
-    # Host 2 patterns
-    if any(k in s for k in ["2", "ola", "guy", "host 2", "host2", "speaker 2", "host_2", "host b"]):
+    # 2. Host 2 specific patterns (e.g. '2', 'ola', 'guy', 'host b', etc.)
+    if any(k in s for k in _HOST_2_SPECIFIC):
         return "Host 2"
 
-    return "Host 1" if "host" in s else raw_speaker.strip()
+    # 3. Generic host keywords default to Host 1, otherwise preserve stripped raw string
+    return "Host 1" if any(k in s for k in _GENERIC_HOST_KEYWORDS) else raw_speaker.strip()
 
 
 # Precompiled regular expressions for parser performance
 _REGEX_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 _REGEX_TRAILING_COMMA = re.compile(r",\s*([\]}])")
-_REGEX_SINGLE_QUOTE_KEYS = re.compile(r"'(speaker|host|name|role|text|content|dialogue|line)'\s*:")
+_REGEX_SINGLE_QUOTE_KEYS = re.compile(
+    r"'(speaker|host|name|role|presenter|narrator|text|content|dialogue|line|paragraph|section|monologue|essay|turns)'\s*:"
+)
 _REGEX_SINGLE_QUOTE_VALS = re.compile(r":\s*'([^']*)'")
 _REGEX_CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
 _REGEX_OBJECT_PATTERN_1 = re.compile(
-    r'\{\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*,\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*\}',
+    r'\{\s*["\']?(?:speaker|host|name|role|presenter|narrator)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*,\s*["\']?(?:text|content|dialogue|line|paragraph|section)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*\}',
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
 _REGEX_OBJECT_PATTERN_2 = re.compile(
-    r'\{\s*["\']?(?:text|content|dialogue|line)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*,\s*["\']?(?:speaker|host|name|role)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*\}',
+    r'\{\s*["\']?(?:text|content|dialogue|line|paragraph|section)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*,\s*["\']?(?:speaker|host|name|role|presenter|narrator)["\']?\s*:\s*["\'](?P<speaker>[^"\']+)["\']\s*\}',
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+_REGEX_OBJECT_PATTERN_SINGLE = re.compile(
+    r'\{\s*["\']?(?:text|content|dialogue|line|paragraph|section)["\']?\s*:\s*["\'](?P<text>(?:\\.|[^"\\])*?)["\']\s*\}',
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
 _REGEX_TRANSCRIPT_LINE = re.compile(
-    r"^(?:[\*\-\#\_\[\s]*)(Host\s*[12]|Kari|Ola|Jenny|Guy|Speaker\s*[12])(?:[\*\_\]\s]*)\s*:\s*(?:\*{0,2})\s*(.+)$",
+    r"^(?:[\*\-\#\_\[\(\s]*)"
+    r"(Host(?:\s*[12]|\s*\([^\)]+\))?|"
+    r"Speaker(?:\s*[12]|\s*\([^\)]+\))?|"
+    r"Vert(?:\s*[12]|\s*\([^\)]+\))?|"
+    r"Programleder(?:\s*[12]|\s*\([^\)]+\))?|"
+    r"Solo(?:\s*Host)?|"
+    r"Narrator|Presenter|Forteller|Oppleser|"
+    r"Kari|Ola|Jenny|Guy)"
+    r"(?:[\*\_\]\)\s]*)"
+    r"\s*[:\-\u2013\u2014]\s*"
+    r"(?:\*{0,2})\s*"
+    r"(.+)$",
     re.IGNORECASE,
 )
 _REGEX_LINE_STARS = re.compile(r"^\*{1,2}|\*{1,2}$")
@@ -278,14 +360,36 @@ class DialogueParser:
     def _validate_and_convert(cls, data: Any) -> list[DialogueTurn] | None:
         """Converts raw parsed data into List[DialogueTurn]."""
         if isinstance(data, dict):
-            # Handle {"dialogue": [...]} or {"turns": [...]} or {"podcast": [...]}
-            for key in ["dialogue", "turns", "script", "podcast", "conversation", "episode"]:
+            # Handle {"dialogue": [...]}, {"turns": [...]}, {"monologue": [...]}, etc.
+            for key in [
+                "dialogue",
+                "turns",
+                "script",
+                "podcast",
+                "conversation",
+                "episode",
+                "monologue",
+                "essay",
+                "audio_essay",
+                "paragraphs",
+                "sections",
+            ]:
                 if key in data and isinstance(data[key], list):
                     data = data[key]
                     break
             else:
-                # Dict of single turn
-                if "speaker" in data and ("text" in data or "content" in data):
+                # Dict of single turn / paragraph
+                if any(
+                    k in data
+                    for k in (
+                        "text",
+                        "content",
+                        "dialogue",
+                        "line",
+                        "paragraph",
+                        "section",
+                    )
+                ):
                     data = [data]
                 else:
                     return None
@@ -304,23 +408,35 @@ class DialogueParser:
                 txt = str(item[1]).strip()
                 if txt:
                     turns.append(DialogueTurn(speaker=spk, text=txt))
+            elif isinstance(item, str) and item.strip():
+                # Monologue array of paragraph strings ["Paragraph 1...", "Paragraph 2..."]
+                turns.append(DialogueTurn(speaker="Host 1", text=item.strip()))
 
         return turns if turns else None
 
     @classmethod
     def _regex_object_parser(cls, text: str) -> list[DialogueTurn] | None:
-        """Extracts individual dialogue turn objects using regex."""
+        """Extracts individual dialogue or monologue turn objects using regex."""
         matches = list(_REGEX_OBJECT_PATTERN_1.finditer(text))
         if not matches:
             matches = list(_REGEX_OBJECT_PATTERN_2.finditer(text))
 
         turns: list[DialogueTurn] = []
-        for match in matches:
-            spk = normalize_speaker(match.group("speaker"))
-            raw_txt = match.group("text")
-            txt = _unescape_json_string(raw_txt).strip()
-            if txt:
-                turns.append(DialogueTurn(speaker=spk, text=txt))
+        if matches:
+            for match in matches:
+                spk = normalize_speaker(match.group("speaker"))
+                raw_txt = match.group("text")
+                txt = _unescape_json_string(raw_txt).strip()
+                if txt:
+                    turns.append(DialogueTurn(speaker=spk, text=txt))
+        else:
+            # Fallback for single-key monologue objects {"text": "..."} without speaker key
+            single_matches = list(_REGEX_OBJECT_PATTERN_SINGLE.finditer(text))
+            for match in single_matches:
+                raw_txt = match.group("text")
+                txt = _unescape_json_string(raw_txt).strip()
+                if txt:
+                    turns.append(DialogueTurn(speaker="Host 1", text=txt))
 
         return turns if turns else None
 
@@ -384,13 +500,32 @@ def dialogue_from_json(json_str: str) -> list[DialogueTurn]:
     return DialogueParser.parse(json_str)
 
 
-def dialogue_to_markdown(turns: list[DialogueTurn], language: str = "nb-NO") -> str:
-    """Formats dialogue turns into readable Markdown transcript."""
+def dialogue_to_markdown(
+    turns: list[DialogueTurn],
+    language: str = "nb-NO",
+    host_mode: str = "dialogue",
+) -> str:
+    """
+    Formats dialogue or monologue turns into readable Markdown transcript.
+
+    In dialogue mode (default):
+    - Norwegian: **Host 1 (Kari)** / **Host 2 (Ola)**
+    - English: **Host 1 (Jenny)** / **Host 2 (Guy)**
+
+    In monologue mode:
+    - Norwegian: **Host (Kari)**
+    - English: **Host (Jenny)**
+    """
+    is_monologue = str(host_mode).strip().lower() in ("monologue", "solo", "single")
+    is_norwegian = "nb" in language.lower() or "no" in language.lower()
+
     lines = ["# Podcast Transcript\n"]
     for _idx, turn in enumerate(turns, start=1):
-        if turn.speaker == "Host 1":
-            speaker_label = "Host 1 (Kari)" if "nb" in language.lower() else "Host 1 (Jenny)"
+        if is_monologue:
+            speaker_label = "Host (Kari)" if is_norwegian else "Host (Jenny)"
+        elif turn.speaker == "Host 1":
+            speaker_label = "Host 1 (Kari)" if is_norwegian else "Host 1 (Jenny)"
         else:
-            speaker_label = "Host 2 (Ola)" if "nb" in language.lower() else "Host 2 (Guy)"
+            speaker_label = "Host 2 (Ola)" if is_norwegian else "Host 2 (Guy)"
         lines.append(f"**{speaker_label}**: {turn.text}\n")
     return "\n".join(lines)

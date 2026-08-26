@@ -25,7 +25,12 @@ from core.exceptions import (
     OllamaConnectionError,
 )
 from core.parser import DialogueParser, DialogueTurn
-from core.pipeline import GenerationResult
+from core.pipeline import (
+    GenerationOptions,
+    GenerationResult,
+    PipelineStage,
+    StageStatus,
+)
 from tests.conftest import make_synthetic_mp3
 
 # ==============================================================================
@@ -257,6 +262,140 @@ class TestCLITier1FeatureCoverage:
         assert data["success"] is True
         assert data["turns_count"] == 2
         assert data["duration_estimate_sec"] == 12.5
+
+    @patch("cli.extract_text")
+    def test_extract_from_url_subcommand(self, mock_ext: MagicMock, capsys: Any) -> None:
+        """Verifies 'extract' subcommand with --url flag (F1, F5)."""
+        mock_ext.return_value = "Cleaned article text from website."
+        exit_code = cli.main(["extract", "--url", "https://example.com/article", "--json"])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is True
+        assert "Cleaned article" in data["text"]
+        mock_ext.assert_called_once()
+
+    @patch("cli.generate_podcast_script")
+    def test_generate_script_monologue_mode(
+        self, mock_gen_script: MagicMock, tmp_path: Any, capsys: Any
+    ) -> None:
+        """Verifies 'generate-script' with --host-mode monologue (F6, F7, F8, F9, F14)."""
+        mock_gen_script.return_value = [
+            DialogueTurn(speaker="Host 1", text="Welcome to today's solo audio essay."),
+            DialogueTurn(speaker="Host 1", text="Second act of the monologue."),
+        ]
+        out_json = tmp_path / "mono_script.json"
+        exit_code = cli.main(
+            [
+                "generate-script",
+                "--topic",
+                "History of Computing",
+                "--host-mode",
+                "monologue",
+                "--length",
+                "standard",
+                "-o",
+                str(out_json),
+                "--json",
+            ]
+        )
+        assert exit_code == 0
+        gen_kwargs = mock_gen_script.call_args[1]
+        assert gen_kwargs["host_mode"] == "monologue"
+
+    @patch("cli.synthesize_dialogue_audio")
+    def test_synthesize_audio_monologue_solo_voice(
+        self, mock_synth: MagicMock, tmp_path: Any, capsys: Any
+    ) -> None:
+        """Verifies 'synthesize-audio' passing custom --solo-voice (F10, F14)."""
+        script_file = tmp_path / "mono.json"
+        script_file.write_text(
+            json.dumps([{"speaker": "Host 1", "text": "Solo monologue line."}]),
+            encoding="utf-8",
+        )
+        mock_synth.return_value = [str(tmp_path / "mono_turn1.mp3")]
+        exit_code = cli.main(
+            [
+                "synthesize-audio",
+                "-i",
+                str(script_file),
+                "--solo-voice",
+                "no_NO-torkil-medium",
+                "-o",
+                str(tmp_path / "out"),
+                "--json",
+            ]
+        )
+        assert exit_code == 0
+        synth_kwargs = mock_synth.call_args[1]
+        assert synth_kwargs["solo_voice"] == "no_NO-torkil-medium"
+
+    @patch.object(cli.PodcastGeneratorService, "generate_podcast")
+    def test_pipeline_monologue_url_with_stage_logging(
+        self, mock_gen: MagicMock, tmp_path: Any, capsys: Any
+    ) -> None:
+        """Verifies pipeline with --url, --host-mode monologue, and CLILogger stage formatting (F12, F13, F14)."""
+        master_mp3 = str(tmp_path / "mono_final.mp3")
+        json_path = str(tmp_path / "mono.json")
+        md_path = str(tmp_path / "mono.md")
+
+        def _fake_generate(
+            options: GenerationOptions, stage_callback: Any = None, **kwargs: Any
+        ) -> GenerationResult:
+            if stage_callback:
+                stage_callback(
+                    PipelineStage.URL_INGESTION, StageStatus.IN_ACTION, 0.1, "Ingesting URL"
+                )
+                stage_callback(
+                    PipelineStage.URL_INGESTION, StageStatus.COMPLETED, 0.2, "URL Ingested"
+                )
+                stage_callback(
+                    PipelineStage.CONTENT_EXTRACTION,
+                    StageStatus.COMPLETED,
+                    0.4,
+                    "Content extracted",
+                )
+                stage_callback(
+                    PipelineStage.SCRIPT_GENERATION, StageStatus.COMPLETED, 0.6, "Script generated"
+                )
+                stage_callback(
+                    PipelineStage.TTS_SYNTHESIS, StageStatus.COMPLETED, 0.8, "TTS finished"
+                )
+                stage_callback(
+                    PipelineStage.AUDIO_ASSEMBLY, StageStatus.COMPLETED, 1.0, "Audio assembled"
+                )
+            return GenerationResult(
+                mp3_path=master_mp3,
+                script_json_path=json_path,
+                script_md_path=md_path,
+                dialogue=[DialogueTurn(speaker="Host 1", text="Solo essay line.")],
+                duration_estimate_sec=15.0,
+            )
+
+        mock_gen.side_effect = _fake_generate
+
+        exit_code = cli.main(
+            [
+                "pipeline",
+                "--url",
+                "https://example.com/ai-policy-paper",
+                "--host-mode",
+                "monologue",
+                "--solo-voice",
+                "no_NO-torkil-medium",
+                "-l",
+                "nb-NO",
+                "--outdir",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is True
+        assert "[STAGE 1/5] [IN_ACTION]" in captured.err
+        assert "[STAGE 5/5] [COMPLETED]" in captured.err
 
     @patch.object(cli.PodcastGeneratorService, "generate_podcast")
     def test_root_invocation_without_subcommand_defaults_to_pipeline(
