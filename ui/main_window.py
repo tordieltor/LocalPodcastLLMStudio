@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -3336,7 +3337,7 @@ class MainWindow(ctk.CTk):
                     os.startfile(log_dir)  # nosec: B606
             else:
                 if os.path.isdir(log_dir):
-                    os.system(f'xdg-open "{log_dir}"')  # nosec: B605
+                    subprocess.Popen(["xdg-open", log_dir])  # nosec: B603, B607
         except OSError as e:
             logger.warning("Could not open log file directly: %s", e)
             messagebox.showinfo("Log File Location", f"Application logs are stored at:\n{log_path}")
