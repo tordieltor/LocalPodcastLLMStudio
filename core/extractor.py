@@ -478,7 +478,7 @@ def fetch_url_content(
 class DOMNode:
     """Lightweight DOM node representing an element or text chunk."""
 
-    __slots__ = ("attrs", "children", "is_text", "parent", "tag", "text")
+    __slots__ = ("attrs", "children", "class_set", "is_text", "parent", "tag", "text")
 
     def __init__(
         self,
@@ -494,6 +494,11 @@ class DOMNode:
         self.text: str = text
         self.is_text: bool = is_text
 
+        # PERFORMANCE OPTIMIZATION: Pre-compute lowercased class set for O(1) matching
+        # during DOM traversal and container selection.
+        cls_attr = self.attrs.get("class")
+        self.class_set: set[str] = set(cls_attr.lower().split()) if cls_attr else set()
+
     def append_child(self, child: "DOMNode") -> None:
         child.parent = self
         self.children.append(child)
@@ -502,8 +507,12 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        """
+        PERFORMANCE OPTIMIZATION: O(1) set lookup for class names.
+        Avoids splitting 'class' attribute string and evaluating generator expressions
+        on repeated DOM traversal operations.
+        """
+        return class_name.lower() in self.class_set
 
     def get_text_content(self) -> str:
         if self.is_text:
