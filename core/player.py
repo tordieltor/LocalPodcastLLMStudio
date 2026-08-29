@@ -26,7 +26,9 @@ class WindowsAudioPlayer:
         else:
             # SECURITY: Sanitize alias to strictly alphanumeric and underscores to prevent MCI command injection
             clean_alias = re.sub(r"[^a-zA-Z0-9_]", "", str(alias))
-            self.alias = clean_alias if clean_alias else f"lp_mci_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+            self.alias = (
+                clean_alias if clean_alias else f"lp_mci_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+            )
         self.current_file: str | None = None
         self._is_opened = False
         self._length_ms = 0
