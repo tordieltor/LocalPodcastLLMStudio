@@ -55,6 +55,27 @@ class TestWindowsPlayerMCI:
         res = player.open("non_existent_file_123.mp3")
         assert res is False
 
+    def test_player_alias_sanitization(self):
+        from core.player import WindowsAudioPlayer
+
+        # Unsafe alias containing MCI injection attempt and spaces/quotes
+        unsafe_alias = 'my_alias"; closeall; "'
+        player = WindowsAudioPlayer(alias=unsafe_alias)
+        assert '"' not in player.alias
+        assert ";" not in player.alias
+        assert " " not in player.alias
+        assert player.alias == "my_aliascloseall"
+
+    def test_player_open_malformed_path_rejected(self):
+        from core.player import WindowsAudioPlayer
+
+        player = WindowsAudioPlayer()
+        # Unsafe file paths with quotes or control characters must be rejected
+        assert player.open('test"injection.mp3') is False
+        assert player.open("test\ninjection.mp3") is False
+        assert player.open("test\rinjection.mp3") is False
+        assert player.open("test\x00injection.mp3") is False
+
     def test_playback_controls(self, tmp_path, single_frame_mp3):
         from core.player import WindowsAudioPlayer
 

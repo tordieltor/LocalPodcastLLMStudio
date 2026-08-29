@@ -7,6 +7,7 @@ and export control using the Windows Multimedia Media Control Interface (MCI).
 import atexit
 import ctypes
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -23,7 +24,9 @@ class WindowsAudioPlayer:
         if alias is None:
             self.alias = f"lp_mci_{os.getpid()}_{uuid.uuid4().hex[:8]}"
         else:
-            self.alias = alias
+            # SECURITY: Sanitize alias to strictly alphanumeric and underscores to prevent MCI command injection
+            clean_alias = re.sub(r"[^a-zA-Z0-9_]", "", str(alias))
+            self.alias = clean_alias if clean_alias else f"lp_mci_{os.getpid()}_{uuid.uuid4().hex[:8]}"
         self.current_file: str | None = None
         self._is_opened = False
         self._length_ms = 0
@@ -87,7 +90,14 @@ class WindowsAudioPlayer:
         Returns:
             True if file opened successfully, False otherwise.
         """
-        if not file_path or not os.path.exists(file_path):
+        if not file_path or not isinstance(file_path, str):
+            return False
+
+        # SECURITY: Reject file paths containing double quotes or control characters to prevent MCI command injection
+        if any(c in file_path for c in ('"', "\n", "\r", "\x00")):
+            return False
+
+        if not os.path.exists(file_path):
             return False
 
         # Ensure clean close before opening
