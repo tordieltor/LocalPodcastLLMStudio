@@ -644,7 +644,10 @@ def sanitize_html_boilerplate(html_content: str) -> str:
     container = select_primary_container(builder.root)
     sanitized_html = serialize_node(container)
 
-    cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
+    cleaned_html = sanitized_html
+    if "[" in cleaned_html:
+        cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", cleaned_html)
+
     cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
 
     return cleaned_html.strip()
@@ -857,7 +860,12 @@ class HTMLToMarkdownParser(HTMLParser):
                 self._pieces.append(" ")
             return
 
-        cleaned = re.sub(r"[ \t\r\n]+", " ", data)
+        # PERFORMANCE OPTIMIZATION: Fast-path guard to bypass regex substitution when whitespace is normal
+        if "\t" in data or "\r" in data or "\n" in data or "  " in data:
+            cleaned = re.sub(r"[ \t\r\n]+", " ", data)
+        else:
+            cleaned = data
+
         if (
             data.startswith((" ", "\t", "\n"))
             and self._pieces
@@ -874,8 +882,22 @@ class HTMLToMarkdownParser(HTMLParser):
             return
         while self._pieces and self._pieces[-1] == " ":
             self._pieces.pop()
-        text = "".join(self._pieces)
-        trailing_newlines = len(text) - len(text.rstrip("\n"))
+
+        # PERFORMANCE OPTIMIZATION: Scan pieces backwards to count trailing newlines
+        # in O(1) instead of re-joining the entire self._pieces list O(N^2) on every tag.
+        trailing_newlines = 0
+        for piece in reversed(self._pieces):
+            if not piece:
+                continue
+            stripped = piece.rstrip("\n")
+            if stripped:
+                trailing_newlines += len(piece) - len(stripped)
+                break
+            else:
+                trailing_newlines += len(piece)
+            if trailing_newlines >= count:
+                break
+
         needed = count - trailing_newlines
         if needed > 0:
             self._pieces.append("\n" * needed)
