@@ -157,3 +157,11 @@ class TestPlayerHelpers:
 
         assert os.path.exists(res_path)
         assert os.path.getsize(res_path) == len(single_frame_mp3)
+
+    @pytest.mark.parametrize("invalid_path", [None, "", "   ", "out\x00file.mp3"])
+    def test_export_audio_file_invalid_destination(self, tmp_path, single_frame_mp3, invalid_path):
+        src = tmp_path / "original.mp3"
+        src.write_bytes(single_frame_mp3)
+
+        with pytest.raises(ValueError):
+            export_audio_file(str(src), invalid_path)
