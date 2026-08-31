@@ -7,6 +7,7 @@ Zero external ffmpeg binary dependencies.
 
 import io
 import os
+import re
 import struct
 import wave
 from collections.abc import Sequence
@@ -416,7 +417,8 @@ def validate_safe_output_path(
 ) -> str:
     """
     Validates that a file or directory path is safe for output operations.
-    Rejects non-string types, empty/whitespace strings, and strings with null bytes.
+    Rejects non-string types, empty/whitespace strings, strings with null bytes,
+    and path traversal sequences ('..').
 
     Args:
         path: The path object to validate.
@@ -428,7 +430,8 @@ def validate_safe_output_path(
 
     Raises:
         ValueError: If path is None (and allow_none=False), not a str instance,
-                    empty or whitespace-only, or contains null bytes (\x00).
+                    empty or whitespace-only, contains null bytes (\x00),
+                    or contains path traversal sequences ('..').
     """
     if path is None:
         if allow_none:
@@ -446,6 +449,10 @@ def validate_safe_output_path(
 
     if "\x00" in path:
         raise ValueError(f"{param_name} contains forbidden null byte (\\x00) character.")
+
+    parts = [p for p in re.split(r"[/\\]", clean_path) if p]
+    if ".." in parts:
+        raise ValueError(f"{param_name} contains forbidden path traversal ('..') sequence.")
 
     return clean_path
 
