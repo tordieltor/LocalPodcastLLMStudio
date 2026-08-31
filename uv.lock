@@ -682,6 +682,7 @@ dependencies = [
     { name = "customtkinter" },
     { name = "pypdf" },
     { name = "requests" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -710,6 +711,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "requests", specifier = ">=2.31.0" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
 ]
 provides-extras = ["dev"]
