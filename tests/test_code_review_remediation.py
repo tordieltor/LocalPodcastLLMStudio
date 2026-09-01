@@ -136,6 +136,22 @@ class TestAtomicWriteUtils:
         with open(out, "rb") as f:
             assert f.read() == b"Memory View Data"
 
+    @pytest.mark.parametrize(
+        "invalid_path",
+        [
+            None,
+            "",
+            "   ",
+            "\t\n",
+            "output\x00file.txt",
+            12345,
+        ],
+    )
+    def test_atomic_write_invalid_path_rejection(self, invalid_path):
+        """Verify atomic_write_file rejects null bytes, empty/whitespace paths, and non-strings."""
+        with pytest.raises(ValueError):
+            atomic_write_file(invalid_path, "test data")
+
 
 class TestDomainExceptionHierarchy:
     """ARCH-04: Verify unified StudioError domain exception hierarchy."""
