@@ -146,6 +146,11 @@ class URLExtractionWorker(threading.Thread):
         self.max_size_bytes = max_size_bytes
 
     def run(self):
+        if self.cancel_event.is_set():
+            self.msg_queue.put(("EXTRACTION_CANCELLED", {"url": self.url}))
+            self.msg_queue.put(("URL_EXTRACTION_CANCELLED", {"url": self.url}))
+            return
+
         try:
             self.msg_queue.put(("EXTRACTION_STARTING", {"url": self.url}))
             self.msg_queue.put(("URL_EXTRACTION_STARTING", {"url": self.url}))
