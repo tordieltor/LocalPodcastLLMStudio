@@ -3,11 +3,13 @@ LocalPodcastLLMStudio - Document Ingestion & Text Extraction Engine
 Supports .txt, .md, .pdf files, pasted raw text, scratch topic prompts, and safe website URL ingestion.
 """
 
+import importlib.util
 import io
 import ipaddress
 import os
 import re
 import socket
+import sys
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -138,6 +140,9 @@ WIKIPEDIA_CITATION_PATTERN: re.Pattern[str] = re.compile(
 )
 
 _RE_ORPHAN_PUNCTUATION_SPACE: re.Pattern[str] = re.compile(r" +([.,;:!?])")
+
+# Global module-level cached check for optional markitdown package
+_MARKITDOWN_AVAILABLE: bool = importlib.util.find_spec("markitdown") is not None
 
 
 def normalize_extracted_text(raw_text: str) -> str:
@@ -478,7 +483,7 @@ def fetch_url_content(
 class DOMNode:
     """Lightweight DOM node representing an element or text chunk."""
 
-    __slots__ = ("attrs", "children", "is_text", "parent", "tag", "text")
+    __slots__ = ("attrs", "children", "class_set", "is_noise", "is_text", "parent", "tag", "text")
 
     def __init__(
         self,
@@ -488,11 +493,31 @@ class DOMNode:
         text: str = "",
     ):
         self.tag: str = tag.lower() if tag else ""
-        self.attrs: dict[str, str] = {k.lower(): (v or "") for k, v in attrs} if attrs else {}
+        self.is_text: bool = is_text
+        self.text: str = text
         self.parent: DOMNode | None = None
         self.children: list[DOMNode] = []
-        self.text: str = text
-        self.is_text: bool = is_text
+
+        if attrs:
+            self.attrs: dict[str, str] = {k.lower(): (v or "") for k, v in attrs}
+            cls_attr = self.attrs.get("class")
+            self.class_set: set[str] = set(cls_attr.lower().split()) if cls_attr else set()
+        else:
+            self.attrs = {}
+            self.class_set = set()
+
+        # PERFORMANCE OPTIMIZATION: Compute static noise classification once on creation
+        if is_text or not self.tag:
+            self.is_noise: bool = False
+        elif self.tag in NOISE_TAGS:
+            self.is_noise = True
+        else:
+            cls_val = self.attrs.get("class")
+            if cls_val and NOISE_ATTR_PATTERN.search(cls_val):
+                self.is_noise = True
+            else:
+                id_val = self.attrs.get("id")
+                self.is_noise = bool(id_val and NOISE_ATTR_PATTERN.search(id_val))
 
     def append_child(self, child: "DOMNode") -> None:
         child.parent = self
@@ -502,13 +527,12 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        return class_name.lower() in self.class_set
 
     def get_text_content(self) -> str:
         if self.is_text:
             return self.text
-        if _is_noise_node(self):
+        if self.is_noise:
             return ""
         return "".join(c.get_text_content() for c in self.children)
 
@@ -544,17 +568,7 @@ class DOMTreeBuilder(HTMLParser):
 
 def _is_noise_node(node: DOMNode) -> bool:
     """Checks whether a DOM node represents boilerplate noise."""
-    if node.is_text:
-        return False
-    if node.tag in NOISE_TAGS:
-        return True
-    class_val = node.get_attr("class")
-    if class_val and NOISE_ATTR_PATTERN.search(class_val):
-        return True
-    id_val = node.get_attr("id")
-    if id_val and NOISE_ATTR_PATTERN.search(id_val):
-        return True
-    return False
+    return node.is_noise
 
 
 def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOMNode]:
@@ -605,7 +619,7 @@ def serialize_node(node: DOMNode) -> str:
     """Serializes a DOM node back to HTML while discarding noise subtrees."""
     if node.is_text:
         return node.text
-    if _is_noise_node(node):
+    if node.is_noise:
         return ""
 
     if node.tag in VOID_TAGS:
@@ -644,8 +658,11 @@ def sanitize_html_boilerplate(html_content: str) -> str:
     container = select_primary_container(builder.root)
     sanitized_html = serialize_node(container)
 
-    cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
-    cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
+    cleaned_html = sanitized_html
+    if "[" in cleaned_html:
+        cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", cleaned_html)
+    if " " in cleaned_html:
+        cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
 
     return cleaned_html.strip()
 
@@ -898,17 +915,18 @@ def convert_html_to_markdown(html_content: str) -> str:
     if not html_content or not html_content.strip():
         return ""
 
-    # Tier 1: Dynamic MarkItDown if installed
-    try:
-        from markitdown import MarkItDown  # type: ignore[import-not-found]
+    # Tier 1: Dynamic MarkItDown if installed or available in sys.modules
+    if _MARKITDOWN_AVAILABLE or "markitdown" in sys.modules:
+        try:
+            from markitdown import MarkItDown  # type: ignore[import-not-found]
 
-        md = MarkItDown()
-        stream = io.BytesIO(html_content.encode("utf-8", errors="replace"))
-        result = md.convert_stream(stream, file_extension=".html")
-        if result and getattr(result, "text_content", None) and result.text_content.strip():
-            return normalize_extracted_text(result.text_content)
-    except (ImportError, Exception):
-        pass
+            md = MarkItDown()
+            stream = io.BytesIO(html_content.encode("utf-8", errors="replace"))
+            result = md.convert_stream(stream, file_extension=".html")
+            if result and getattr(result, "text_content", None) and result.text_content.strip():
+                return normalize_extracted_text(result.text_content)
+        except (ImportError, Exception):
+            pass
 
     # Tier 2: Built-in HTMLToMarkdownParser fallback
     try:
