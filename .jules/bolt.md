@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-09-02 - Control Character Regex Pattern Exclusion & Fast-Path Sanitization
+**Learning:** Matching ASCII control characters `[\x00-\x1f]` on large text streams without excluding valid whitespace control characters (`\r`, `\n`, `\t`) forces regex substitution engines to invoke callbacks and perform no-op replacements on every newline/tab. Filtering control characters at the regex pattern level (`[\x00-\x08\x0b\x0c\x0e-\x1f]`) and guarding `.sub()` with `.search()` yields a ~3.3x speedup on JSON sanitization.
+**Action:** Exclude valid whitespace from control character regex patterns and guard regex `.sub()` invocations with fast `.search()` checks.
