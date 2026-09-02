@@ -408,8 +408,6 @@ class WAVStitcher:
         return out_buf.getvalue()
 
 
-
-
 def stitch_mp3_files(
     input_files_or_bytes: Sequence[str | bytes | bytearray],
     output_file_path: str,
