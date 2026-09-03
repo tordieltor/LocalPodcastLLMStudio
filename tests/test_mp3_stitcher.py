@@ -16,6 +16,7 @@ import os
 
 import pytest
 
+from core.io_utils import atomic_write_file
 from core.mp3_stitcher import MP3Stitcher, stitch_mp3_files, validate_safe_output_path
 
 
@@ -172,3 +173,8 @@ class TestValidateSafeOutputPath:
         b1 = synthetic_mp3_factory(num_frames=2)
         with pytest.raises(ValueError):
             stitch_mp3_files([b1], bad_out)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("bad_path", ["", "   ", None, 12345, "bad\x00path.txt"])
+    def test_atomic_write_file_rejects_invalid_path(self, bad_path):
+        with pytest.raises(ValueError):
+            atomic_write_file(bad_path, "test data")  # type: ignore[arg-type]
