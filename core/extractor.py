@@ -64,6 +64,7 @@ _RE_HYPHEN_BREAK = re.compile(r"(\b\w+)-\n(\w+\b)")
 _RE_HORIZONTAL_WHITESPACE = re.compile(r"[ \t]+")
 _RE_LINE_WHITESPACE = re.compile(r" ?\n ?")
 _RE_CONSECUTIVE_NEWLINES = re.compile(r"\n{3,}")
+_RE_WHITESPACE = re.compile(r"[ \t\r\n]+")
 
 # Void HTML tags with no closing tag in HTML5
 VOID_TAGS: set[str] = {
@@ -857,7 +858,7 @@ class HTMLToMarkdownParser(HTMLParser):
                 self._pieces.append(" ")
             return
 
-        cleaned = re.sub(r"[ \t\r\n]+", " ", data)
+        cleaned = _RE_WHITESPACE.sub(" ", data)
         if (
             data.startswith((" ", "\t", "\n"))
             and self._pieces
@@ -874,8 +875,17 @@ class HTMLToMarkdownParser(HTMLParser):
             return
         while self._pieces and self._pieces[-1] == " ":
             self._pieces.pop()
-        text = "".join(self._pieces)
-        trailing_newlines = len(text) - len(text.rstrip("\n"))
+
+        # PERFORMANCE OPTIMIZATION: Count trailing newlines by inspecting self._pieces
+        # in reverse order rather than joining the entire accumulated text list (O(N^2) -> O(N)).
+        trailing_newlines = 0
+        for piece in reversed(self._pieces):
+            stripped = piece.rstrip("\n")
+            if stripped:
+                trailing_newlines += len(piece) - len(stripped)
+                break
+            trailing_newlines += len(piece)
+
         needed = count - trailing_newlines
         if needed > 0:
             self._pieces.append("\n" * needed)
