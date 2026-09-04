@@ -12,6 +12,8 @@ import sys
 import uuid
 from typing import Any
 
+from core.io_utils import validate_safe_output_path
+
 
 class WindowsAudioPlayer:
     """
@@ -341,11 +343,12 @@ def export_audio_file(source_path: str, destination_path: str) -> str:
     Returns:
         Absolute path to the exported file.
     """
+    safe_dest = validate_safe_output_path(destination_path, param_name="destination_path")
     if not os.path.exists(source_path):
         raise FileNotFoundError(f"Source audio file not found: {source_path}")
 
-    dest_dir = os.path.dirname(os.path.abspath(destination_path))
+    dest_dir = os.path.dirname(os.path.abspath(safe_dest))
     os.makedirs(dest_dir, exist_ok=True)
 
-    shutil.copy2(source_path, destination_path)
-    return os.path.abspath(destination_path)
+    shutil.copy2(source_path, safe_dest)
+    return os.path.abspath(safe_dest)

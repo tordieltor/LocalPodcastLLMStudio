@@ -43,7 +43,7 @@ from core.parser import (
     _unescape_json_string,
 )
 from core.pipeline import GenerationOptions, GenerationResult, PodcastGeneratorService
-from core.player import WindowsAudioPlayer
+from core.player import WindowsAudioPlayer, export_audio_file
 from core.prompts import ActSpec, EpisodeFormatConfig
 
 
@@ -135,6 +135,24 @@ class TestAtomicWriteUtils:
         assert os.path.exists(out)
         with open(out, "rb") as f:
             assert f.read() == b"Memory View Data"
+
+    @pytest.mark.parametrize(
+        "invalid_path",
+        [None, 123, "", "   ", "bad_file\x00.txt"],
+    )
+    def test_atomic_write_file_path_validation_rejections(self, invalid_path):
+        with pytest.raises(ValueError):
+            atomic_write_file(invalid_path, "data")
+
+    @pytest.mark.parametrize(
+        "invalid_path",
+        [None, 123, "", "   ", "export\x00.mp3"],
+    )
+    def test_export_audio_file_path_validation_rejections(self, tmp_path, invalid_path):
+        source = tmp_path / "source.mp3"
+        source.write_bytes(b"audio data")
+        with pytest.raises(ValueError):
+            export_audio_file(str(source), invalid_path)
 
 
 class TestDomainExceptionHierarchy:
