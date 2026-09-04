@@ -874,8 +874,20 @@ class HTMLToMarkdownParser(HTMLParser):
             return
         while self._pieces and self._pieces[-1] == " ":
             self._pieces.pop()
-        text = "".join(self._pieces)
-        trailing_newlines = len(text) - len(text.rstrip("\n"))
+
+        # PERFORMANCE OPTIMIZATION: Scan pieces backwards to count trailing newlines
+        # instead of joining the entire text buffer (`"".join(self._pieces)`), avoiding O(N^2) allocations.
+        trailing_newlines = 0
+        for piece in reversed(self._pieces):
+            if not piece:
+                continue
+            stripped = piece.rstrip("\n")
+            if stripped:
+                trailing_newlines += len(piece) - len(stripped)
+                break
+            else:
+                trailing_newlines += len(piece)
+
         needed = count - trailing_newlines
         if needed > 0:
             self._pieces.append("\n" * needed)

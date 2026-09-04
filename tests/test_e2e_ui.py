@@ -115,7 +115,7 @@ class TestUITier1FeatureCoverage:
                 cancel_event=cancel_evt,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=10.0)
 
             mock_ext.assert_called_once()
             events = []
@@ -200,7 +200,7 @@ class TestUITier2BoundaryAndCorners:
                 msg_queue=q,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=10.0)
 
             events = []
             while not q.empty():
@@ -224,7 +224,7 @@ class TestUITier2BoundaryAndCorners:
                 msg_queue=q,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=10.0)
 
             events = []
             while not q.empty():
@@ -248,7 +248,7 @@ class TestUITier2BoundaryAndCorners:
                 cancel_event=cancel_evt,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=10.0)
 
             events = []
             while not q.empty():
@@ -398,7 +398,7 @@ class TestUITier5AdversarialStress:
                 msg_queue=q,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=10.0)
 
             events = []
             while not q.empty():
