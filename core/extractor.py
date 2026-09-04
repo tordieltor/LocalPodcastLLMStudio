@@ -857,7 +857,14 @@ class HTMLToMarkdownParser(HTMLParser):
                 self._pieces.append(" ")
             return
 
-        cleaned = re.sub(r"[ \t\r\n]+", " ", data)
+        # PERFORMANCE OPTIMIZATION: Avoid calling regex substitution engine re.sub
+        # on text chunks that do not contain multiple spaces, tabs, or newlines.
+        # Fast-path C-string check avoids expensive C-regex engine invocation.
+        if "  " in data or "\t" in data or "\r" in data or "\n" in data:
+            cleaned = re.sub(r"[ \t\r\n]+", " ", data)
+        else:
+            cleaned = data
+
         if (
             data.startswith((" ", "\t", "\n"))
             and self._pieces
