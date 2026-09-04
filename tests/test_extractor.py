@@ -743,6 +743,23 @@ class TestHTMLToMarkdownParser:
         assert "Unclosed paragraph" in md
         assert "Second line" in md
 
+    def test_ensure_newlines_trailing_scenarios(self) -> None:
+        """Verifies _ensure_newlines correctness across different piece configurations."""
+        parser = HTMLToMarkdownParser()
+        parser._pieces = ["Hello", "world", " "]
+        parser._ensure_newlines(2)
+        assert parser._pieces == ["Hello", "world", "\n\n"]
+
+        parser = HTMLToMarkdownParser()
+        parser._pieces = ["Hello\n", "\n"]
+        parser._ensure_newlines(2)
+        assert parser._pieces == ["Hello\n", "\n"]
+
+        parser = HTMLToMarkdownParser()
+        parser._pieces = ["Line 1\n"]
+        parser._ensure_newlines(2)
+        assert parser._pieces == ["Line 1\n", "\n"]
+
 
 class TestMarkItDownConversion:
     """Tests for convert_html_to_markdown dynamic import and fallback."""
