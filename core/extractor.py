@@ -510,7 +510,20 @@ class DOMNode:
             return self.text
         if _is_noise_node(self):
             return ""
-        return "".join(c.get_text_content() for c in self.children)
+
+        # PERFORMANCE OPTIMIZATION: Iterative stack-based text collection
+        # Prevents RecursionError call stack overflow on deeply nested HTML DOM trees
+        parts: list[str] = []
+        stack: list[DOMNode] = list(reversed(self.children))
+        while stack:
+            curr = stack.pop()
+            if curr.is_text:
+                parts.append(curr.text)
+            elif not _is_noise_node(curr):
+                for child in reversed(curr.children):
+                    stack.append(child)
+
+        return "".join(parts)
 
 
 class DOMTreeBuilder(HTMLParser):
@@ -558,16 +571,17 @@ def _is_noise_node(node: DOMNode) -> bool:
 
 
 def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOMNode]:
-    """Depth-first search collecting nodes matching the given predicate."""
+    """Depth-first search collecting nodes matching the given predicate (iterative stack-based)."""
     results: list[DOMNode] = []
-
-    def _walk(node: DOMNode) -> None:
+    # PERFORMANCE OPTIMIZATION: Iterative DFS traversal to prevent RecursionError on deep DOMs
+    stack: list[DOMNode] = [root]
+    while stack:
+        node = stack.pop()
         if predicate(node):
             results.append(node)
-        for child in node.children:
-            _walk(child)
+        for child in reversed(node.children):
+            stack.append(child)
 
-    _walk(root)
     return results
 
 
@@ -602,22 +616,43 @@ def select_primary_container(root: DOMNode) -> DOMNode:
 
 
 def serialize_node(node: DOMNode) -> str:
-    """Serializes a DOM node back to HTML while discarding noise subtrees."""
+    """Serializes a DOM node back to HTML while discarding noise subtrees (iterative stack-based)."""
     if node.is_text:
         return node.text
     if _is_noise_node(node):
         return ""
 
-    if node.tag in VOID_TAGS:
-        attr_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
-        return f"<{node.tag}{attr_str} />"
+    # PERFORMANCE OPTIMIZATION: Iterative stack-based HTML serialization
+    # Eliminates RecursionError call stack overflow on deeply nested HTML DOM structures
+    parts: list[str] = []
+    # Stack stores tuples of (node, entering_flag)
+    stack: list[tuple[DOMNode, bool]] = [(node, True)]
 
-    inner_html = "".join(serialize_node(c) for c in node.children)
-    if node.tag.startswith("["):
-        return inner_html
+    while stack:
+        curr, entering = stack.pop()
+        if curr.is_text:
+            parts.append(curr.text)
+            continue
 
-    attr_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
-    return f"<{node.tag}{attr_str}>{inner_html}</{node.tag}>"
+        if _is_noise_node(curr):
+            continue
+
+        if entering:
+            if curr.tag in VOID_TAGS:
+                attr_str = "".join(f' {k}="{v}"' for k, v in curr.attrs.items())
+                parts.append(f"<{curr.tag}{attr_str} />")
+            else:
+                if not curr.tag.startswith("["):
+                    attr_str = "".join(f' {k}="{v}"' for k, v in curr.attrs.items())
+                    parts.append(f"<{curr.tag}{attr_str}>")
+                    stack.append((curr, False))
+
+                for child in reversed(curr.children):
+                    stack.append((child, True))
+        else:
+            parts.append(f"</{curr.tag}>")
+
+    return "".join(parts)
 
 
 def sanitize_html_boilerplate(html_content: str) -> str:
