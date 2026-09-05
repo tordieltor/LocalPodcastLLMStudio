@@ -104,7 +104,7 @@ class TestSpeakerRole:
 
 
 class TestAtomicWriteUtils:
-    """ARCH-02: Verify atomic_write_file across all supported data buffer types."""
+    """ARCH-02: Verify atomic_write_file across all supported data buffer types and path validation."""
 
     def test_atomic_write_string(self, tmp_path):
         target = tmp_path / "test.txt"
@@ -135,6 +135,20 @@ class TestAtomicWriteUtils:
         assert os.path.exists(out)
         with open(out, "rb") as f:
             assert f.read() == b"Memory View Data"
+
+    @pytest.mark.parametrize(
+        "invalid_path",
+        [
+            None,
+            "",
+            "   ",
+            123,
+            "test\x00file.txt",
+        ],
+    )
+    def test_atomic_write_invalid_paths_raises_value_error(self, invalid_path):
+        with pytest.raises(ValueError):
+            atomic_write_file(invalid_path, "test data")
 
 
 class TestDomainExceptionHierarchy:
