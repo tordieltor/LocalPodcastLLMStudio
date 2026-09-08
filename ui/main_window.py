@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import shutil
+import subprocess  # nosec: B404
 import sys
 import tempfile
 import threading
@@ -3334,9 +3335,14 @@ class MainWindow(ctk.CTk):
                     os.startfile(log_path)  # nosec: B606
                 elif os.path.isdir(log_dir):
                     os.startfile(log_dir)  # nosec: B606
+            elif sys.platform == "darwin":
+                target = log_path if os.path.isfile(log_path) else log_dir
+                if os.path.exists(target):
+                    subprocess.Popen(["open", target])  # nosec: B603, B607
             else:
-                if os.path.isdir(log_dir):
-                    os.system(f'xdg-open "{log_dir}"')  # nosec: B605
+                target = log_path if os.path.isfile(log_path) else log_dir
+                if os.path.exists(target):
+                    subprocess.Popen(["xdg-open", target])  # nosec: B603, B607
         except OSError as e:
             logger.warning("Could not open log file directly: %s", e)
             messagebox.showinfo("Log File Location", f"Application logs are stored at:\n{log_path}")
