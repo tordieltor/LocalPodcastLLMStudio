@@ -644,8 +644,12 @@ def sanitize_html_boilerplate(html_content: str) -> str:
     container = select_primary_container(builder.root)
     sanitized_html = serialize_node(container)
 
-    cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
-    cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
+    # Fast-path optimization: guard regex substitutions with fast substring presence / regex search checks
+    cleaned_html = sanitized_html
+    if "[" in cleaned_html:
+        cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", cleaned_html)
+    if _RE_ORPHAN_PUNCTUATION_SPACE.search(cleaned_html):
+        cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
 
     return cleaned_html.strip()
 
@@ -857,7 +861,12 @@ class HTMLToMarkdownParser(HTMLParser):
                 self._pieces.append(" ")
             return
 
-        cleaned = re.sub(r"[ \t\r\n]+", " ", data)
+        # Fast-path optimization: guard whitespace collapse regex with substring presence check
+        if "  " in data or "\t" in data or "\r" in data or "\n" in data:
+            cleaned = re.sub(r"[ \t\r\n]+", " ", data)
+        else:
+            cleaned = data
+
         if (
             data.startswith((" ", "\t", "\n"))
             and self._pieces
