@@ -155,7 +155,11 @@ def normalize_extracted_text(raw_text: str) -> str:
     # PERFORMANCE OPTIMIZATION: Normalize line breaks first so hyphenated breaks
     # with \r\n are handled consistently, and use fast-path substring checks before
     # executing expensive C-regex pattern substitutions (up to 2-3x speedup on large text).
-    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    # Guard carriage return replacements with an 'in' check to avoid string copying
+    # when processing text that already uses Unix line endings (\n).
+    text = raw_text
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     # Rejoin hyphenated line-breaks only if hyphen-newline sequence exists
     if "-\n" in text:
