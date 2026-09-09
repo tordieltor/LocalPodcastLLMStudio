@@ -194,6 +194,9 @@ class TestUITier2BoundaryAndCorners:
         with patch(
             "ui.main_window.extract_text",
             side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+        ), patch(
+            "core.extractor.extract_text",
+            side_effect=SecurityError("Blocked private IP 127.0.0.1"),
         ):
             worker = URLExtractionWorker(
                 url="http://127.0.0.1:11434",
@@ -217,6 +220,9 @@ class TestUITier2BoundaryAndCorners:
         q: queue.Queue = queue.Queue()
         with patch(
             "ui.main_window.extract_text",
+            side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+        ), patch(
+            "core.extractor.extract_text",
             side_effect=DocumentExtractionError("HTTP 404: Not Found"),
         ):
             worker = URLExtractionWorker(
