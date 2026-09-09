@@ -191,12 +191,15 @@ class TestUITier2BoundaryAndCorners:
     def test_ui_boundary_ssrf_security_error_queue_event(self) -> None:
         """Verifies SSRF SecurityError triggers EXTRACTION_ERROR with is_security=True."""
         q: queue.Queue = queue.Queue()
-        with patch(
-            "ui.main_window.extract_text",
-            side_effect=SecurityError("Blocked private IP 127.0.0.1"),
-        ), patch(
-            "core.extractor.extract_text",
-            side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+        with (
+            patch(
+                "ui.main_window.extract_text",
+                side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+            ),
+            patch(
+                "core.extractor.extract_text",
+                side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+            ),
         ):
             worker = URLExtractionWorker(
                 url="http://127.0.0.1:11434",
@@ -218,12 +221,15 @@ class TestUITier2BoundaryAndCorners:
     def test_ui_boundary_http_error_queue_event(self) -> None:
         """Verifies DocumentExtractionError triggers EXTRACTION_ERROR with is_security=False."""
         q: queue.Queue = queue.Queue()
-        with patch(
-            "ui.main_window.extract_text",
-            side_effect=DocumentExtractionError("HTTP 404: Not Found"),
-        ), patch(
-            "core.extractor.extract_text",
-            side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+        with (
+            patch(
+                "ui.main_window.extract_text",
+                side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+            ),
+            patch(
+                "core.extractor.extract_text",
+                side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+            ),
         ):
             worker = URLExtractionWorker(
                 url="https://example.com/notfound",
