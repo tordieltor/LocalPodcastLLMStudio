@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-09-09 - Avoid Full-Buffer String Joining in Streaming Node Handlers
+**Learning:** Re-joining an accumulated string buffer (`"".join(self._pieces)`) inside repeated node boundaries or helpers (such as HTML tag whitespace normalizers) causes quadratic O(N^2) memory allocations and CPU overhead on large documents.
+**Action:** Inspect accumulated piece lists in reverse from right to left (`reversed(self._pieces)`) to inspect trailing characters without triggering O(N) buffer joins on every tag transition.
