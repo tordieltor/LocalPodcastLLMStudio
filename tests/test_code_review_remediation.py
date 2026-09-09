@@ -136,6 +136,19 @@ class TestAtomicWriteUtils:
         with open(out, "rb") as f:
             assert f.read() == b"Memory View Data"
 
+    def test_atomic_write_path_validation_rejections(self):
+        with pytest.raises(ValueError, match="file_path cannot be None"):
+            atomic_write_file(None, "data")
+
+        with pytest.raises(ValueError, match="file_path must be a str instance"):
+            atomic_write_file(12345, "data")
+
+        with pytest.raises(ValueError, match="file_path cannot be empty or whitespace-only"):
+            atomic_write_file("   ", "data")
+
+        with pytest.raises(ValueError, match="file_path contains forbidden null byte"):
+            atomic_write_file("out\x00file.txt", "data")
+
 
 class TestDomainExceptionHierarchy:
     """ARCH-04: Verify unified StudioError domain exception hierarchy."""
