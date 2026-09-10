@@ -17,6 +17,10 @@ from core.extractor import (
     strip_html_boilerplate,
     validate_url_target,
 )
+from core.io_utils import (
+    atomic_write_file,
+    validate_safe_output_path,
+)
 from core.logger import (
     get_log_file_path,
     get_logger,
@@ -26,7 +30,6 @@ from core.logger import (
 from core.mp3_stitcher import (
     MP3Stitcher,
     stitch_mp3_files,
-    validate_safe_output_path,
 )
 from core.ollama import (
     OllamaClient,
@@ -152,10 +155,12 @@ __all__ = [
     "synthesize_dialogue_audio",
     "format_rate_str",
     "VOICE_MAP",
+    # Shared I/O Utilities
+    "atomic_write_file",
+    "validate_safe_output_path",
     # MP3 Stitcher
     "MP3Stitcher",
     "stitch_mp3_files",
-    "validate_safe_output_path",
     # Pipeline & Lifecycle
     "PipelineStage",
     "StageStatus",

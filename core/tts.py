@@ -16,8 +16,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.io_utils import validate_safe_output_path
 from core.logger import get_logger
-from core.mp3_stitcher import validate_safe_output_path
 from core.parser import DialogueTurn, SpeakerRole, normalize_speaker
 from core.prompts import normalize_language_code
 
