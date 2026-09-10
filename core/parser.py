@@ -337,22 +337,31 @@ class DialogueParser:
     @classmethod
     def _sanitize_json_string(cls, text: str) -> str:
         """Fixes common LLM JSON syntax errors."""
-        # Replace smart/curly quotes with standard double/single quotes
-        s = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+        s = text
 
-        # Strip trailing commas before closing brackets or braces
-        s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
+        # PERFORMANCE OPTIMIZATION: Guard expensive string replacements and C-regex executions
+        # with fast C-level substring checks. Avoids redundant regex engine invocations when
+        # targets (curly quotes, trailing commas, single-quoted keys, control chars) are absent.
+        # 1. Replace smart/curly quotes with standard double/single quotes only if present
+        if "“" in s or "”" in s or "‘" in s or "’" in s:
+            s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
-        # Fix single-quoted keys and values
+        # 2. Strip trailing commas before closing brackets or braces
+        if "," in s:
+            s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
+
+        # 3. Fix single-quoted keys and values
         # e.g. {'speaker': 'Host 1', 'text': 'Hello'}
-        s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
-        s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
+        if "'" in s:
+            s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
+            s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
 
-        # Clean unescaped ASCII control characters in strings
-        s = _REGEX_CONTROL_CHARS.sub(
-            lambda m: f"\\u{ord(m.group(0)):04x}" if m.group(0) not in "\r\n\t" else m.group(0),
-            s,
-        )
+        # 4. Clean unescaped ASCII control characters in strings if search matches
+        if _REGEX_CONTROL_CHARS.search(s):
+            s = _REGEX_CONTROL_CHARS.sub(
+                lambda m: f"\\u{ord(m.group(0)):04x}" if m.group(0) not in "\r\n\t" else m.group(0),
+                s,
+            )
 
         return s
 
