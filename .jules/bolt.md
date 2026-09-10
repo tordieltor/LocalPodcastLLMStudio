@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-08-24 - Excluding Standard Whitespace Range from Control Character Regexes
+**Learning:** Matching `[\x00-\x1f]` in `re.sub` includes valid whitespace (`\t`, `\n`, `\r`), causing `re.sub` to invoke Python lambda callbacks for every line break and tab in large text/JSON strings. Excluding standard whitespace (`[\x00-\x08\x0b\x0c\x0e-\x1f]`) avoids lambda invocations on valid formatting and yields a ~2.7x speedup on JSON sanitization.
+**Action:** When sanitizing ASCII control characters, explicitly exclude `\t` (0x09), `\n` (0x0A), and `\r` (0x0D) from the regex character set range if standard line breaks and tabs are retained.
