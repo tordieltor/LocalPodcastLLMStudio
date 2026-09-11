@@ -340,13 +340,18 @@ class DialogueParser:
         # Replace smart/curly quotes with standard double/single quotes
         s = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
+        # PERFORMANCE OPTIMIZATION: Guard regex substitution methods with fast substring checks
+        # Avoids expensive C-regex engine invocations when target tokens are absent
+
         # Strip trailing commas before closing brackets or braces
-        s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
+        if "," in s:
+            s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
 
         # Fix single-quoted keys and values
         # e.g. {'speaker': 'Host 1', 'text': 'Hello'}
-        s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
-        s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
+        if "'" in s:
+            s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
+            s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
 
         # Clean unescaped ASCII control characters in strings
         s = _REGEX_CONTROL_CHARS.sub(
@@ -470,7 +475,9 @@ class DialogueParser:
                 flush_current()
                 current_speaker = normalize_speaker(match.group(1))
                 line_content = match.group(2).strip()
-                line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
+                # PERFORMANCE OPTIMIZATION: Fast-path substring guard before regex substitution
+                if "*" in line_content:
+                    line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
                 if line_content:
                     current_lines.append(line_content)
             elif current_speaker is not None:

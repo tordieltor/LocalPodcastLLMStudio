@@ -644,8 +644,14 @@ def sanitize_html_boilerplate(html_content: str) -> str:
     container = select_primary_container(builder.root)
     sanitized_html = serialize_node(container)
 
-    cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
-    cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
+    # PERFORMANCE OPTIMIZATION: Fast-path substring guards before executing C-regex engine substitutions
+    cleaned_html = (
+        WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
+        if "[" in sanitized_html
+        else sanitized_html
+    )
+    if " " in cleaned_html:
+        cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
 
     return cleaned_html.strip()
 
@@ -922,7 +928,8 @@ def convert_html_to_markdown(html_content: str) -> str:
         pass
 
     # Tier 3: Regex tag strip fallback
-    fallback_text = re.sub(r"<[^>]+>", " ", html_content)
+    # PERFORMANCE OPTIMIZATION: Guard regex substitution with fast '<' presence check
+    fallback_text = re.sub(r"<[^>]+>", " ", html_content) if "<" in html_content else html_content
     return normalize_extracted_text(fallback_text)
 
 
