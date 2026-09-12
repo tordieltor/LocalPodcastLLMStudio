@@ -65,3 +65,15 @@ class TestLoggerSubsystem:
         ):
             MainWindow._open_logs(mock_win)
             mock_startfile.assert_called_once()
+
+    def test_main_window_open_logs_non_windows(self):
+        mock_win = MagicMock(spec=MainWindow)
+        with (
+            patch("sys.platform", "linux"),
+            patch("os.path.isdir", return_value=True),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            MainWindow._open_logs(mock_win)
+            mock_popen.assert_called_once()
+            args = mock_popen.call_args[0][0]
+            assert args[0] == "xdg-open"
