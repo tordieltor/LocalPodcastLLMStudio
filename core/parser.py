@@ -51,12 +51,14 @@ def _unescape_json_string(s: str) -> str:
         }
         for escaped, unescaped in replacements.items():
             s = s.replace(escaped, unescaped)
-        # Decode explicit \uXXXX unicode escape sequences
-        return re.sub(
-            r"\\u([0-9a-fA-F]{4})",
-            lambda m: chr(int(m.group(1), 16)),
-            s,
-        )
+        # PERFORMANCE OPTIMIZATION: Fast-path check before regex substitution for unicode escape sequences
+        if r"\u" in s:
+            return re.sub(
+                r"\\u([0-9a-fA-F]{4})",
+                lambda m: chr(int(m.group(1), 16)),
+                s,
+            )
+        return s
 
 
 @dataclass
@@ -259,19 +261,21 @@ class DialogueParser:
         # ======================================================================
         # Tier 2: Markdown Code Fence Extraction (```json ... ``` or ``` ... ```)
         # ======================================================================
-        fence_matches = _REGEX_FENCE.findall(cleaned)
-        for fence_content in fence_matches:
-            fence_content = fence_content.strip()
-            try:
-                data = json.loads(fence_content)
-                turns = cls._validate_and_convert(data)
-                if turns:
-                    return turns
-            except (json.JSONDecodeError, TypeError, ValueError):
-                # Try bracket trimming on fence content
-                sub_turns = cls._try_bracket_parse(fence_content)
-                if sub_turns:
-                    return sub_turns
+        # PERFORMANCE OPTIMIZATION: Fast-path substring guard before regex fence extraction
+        if "```" in cleaned:
+            fence_matches = _REGEX_FENCE.findall(cleaned)
+            for fence_content in fence_matches:
+                fence_content = fence_content.strip()
+                try:
+                    data = json.loads(fence_content)
+                    turns = cls._validate_and_convert(data)
+                    if turns:
+                        return turns
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    # Try bracket trimming on fence content
+                    sub_turns = cls._try_bracket_parse(fence_content)
+                    if sub_turns:
+                        return sub_turns
 
         # ======================================================================
         # Tier 3: Substring Outer Bracket Trimming
@@ -337,16 +341,20 @@ class DialogueParser:
     @classmethod
     def _sanitize_json_string(cls, text: str) -> str:
         """Fixes common LLM JSON syntax errors."""
-        # Replace smart/curly quotes with standard double/single quotes
-        s = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+        s = text
+        # PERFORMANCE OPTIMIZATION: Fast-path substring guards before string replacements & regexes
+        if any(q in s for q in ("“", "”", "‘", "’")):
+            s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
         # Strip trailing commas before closing brackets or braces
-        s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
+        if "," in s:
+            s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
 
         # Fix single-quoted keys and values
         # e.g. {'speaker': 'Host 1', 'text': 'Hello'}
-        s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
-        s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
+        if "'" in s:
+            s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
+            s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
 
         # Clean unescaped ASCII control characters in strings
         s = _REGEX_CONTROL_CHARS.sub(
@@ -417,6 +425,10 @@ class DialogueParser:
     @classmethod
     def _regex_object_parser(cls, text: str) -> list[DialogueTurn] | None:
         """Extracts individual dialogue or monologue turn objects using regex."""
+        # PERFORMANCE OPTIMIZATION: Fast-path check for object brace before running regexes
+        if "{" not in text:
+            return None
+
         matches = list(_REGEX_OBJECT_PATTERN_1.finditer(text))
         if not matches:
             matches = list(_REGEX_OBJECT_PATTERN_2.finditer(text))
