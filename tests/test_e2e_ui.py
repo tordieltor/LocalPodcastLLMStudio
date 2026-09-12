@@ -200,7 +200,8 @@ class TestUITier2BoundaryAndCorners:
                 msg_queue=q,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=5.0)
+            assert not worker.is_alive()
 
             events = []
             while not q.empty():
@@ -224,7 +225,8 @@ class TestUITier2BoundaryAndCorners:
                 msg_queue=q,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=5.0)
+            assert not worker.is_alive()
 
             events = []
             while not q.empty():

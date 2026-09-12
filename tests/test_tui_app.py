@@ -191,10 +191,15 @@ class TestAudioPlayerScreen:
         assert os.path.exists(dest_mp3)
 
         # Open folder
-        with patch("os.startfile", create=True) as mock_startfile:
+        with (
+            patch("os.startfile", create=True) as mock_startfile,
+            patch("subprocess.Popen") as mock_popen,
+        ):
             assert screen.open_containing_folder() is True
             if sys.platform == "win32":
                 mock_startfile.assert_called_once()
+            else:
+                mock_popen.assert_called_once()
 
     def test_player_key_handlers(self, tmp_path: Any) -> None:
         state = TUIState()
