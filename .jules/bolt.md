@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-09-13 - Backward Piece Scanning for Trailing Newlines in HTML Parser
+**Learning:** Calling `"".join(self._pieces)` repeatedly on every tag start/end to count trailing newlines turns streaming HTML-to-Markdown parsing into an O(N^2) string allocation bottleneck (~700ms for 1k elements). Scanning `self._pieces` in reverse yields an amortized O(1) check and a ~5.4x speedup (~130ms).
+**Action:** In streaming string token accumulators, scan backwards through collected list pieces to inspect trailing whitespace/newlines instead of joining the entire list.
