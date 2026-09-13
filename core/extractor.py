@@ -548,10 +548,13 @@ def _is_noise_node(node: DOMNode) -> bool:
         return False
     if node.tag in NOISE_TAGS:
         return True
-    class_val = node.get_attr("class")
+    # Fast path: nodes without attributes cannot match class or ID noise patterns
+    if not node.attrs:
+        return False
+    class_val = node.attrs.get("class", "")
     if class_val and NOISE_ATTR_PATTERN.search(class_val):
         return True
-    id_val = node.get_attr("id")
+    id_val = node.attrs.get("id", "")
     if id_val and NOISE_ATTR_PATTERN.search(id_val):
         return True
     return False
@@ -608,15 +611,24 @@ def serialize_node(node: DOMNode) -> str:
     if _is_noise_node(node):
         return ""
 
+    # PERFORMANCE OPTIMIZATION: Fast path for nodes without HTML attributes.
+    # Bypasses dictionary iterator, generator comprehension, and string interpolation overhead.
+    if not node.attrs:
+        if node.tag in VOID_TAGS:
+            return f"<{node.tag} />"
+        inner_html = "".join(serialize_node(c) for c in node.children)
+        if node.tag.startswith("["):
+            return inner_html
+        return f"<{node.tag}>{inner_html}</{node.tag}>"
+
+    attr_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
     if node.tag in VOID_TAGS:
-        attr_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
         return f"<{node.tag}{attr_str} />"
 
     inner_html = "".join(serialize_node(c) for c in node.children)
     if node.tag.startswith("["):
         return inner_html
 
-    attr_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
     return f"<{node.tag}{attr_str}>{inner_html}</{node.tag}>"
 
 
