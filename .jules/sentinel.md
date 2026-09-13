@@ -1,0 +1,4 @@
+## 2026-09-13 - Output Path Validation Centralization in Atomic I/O Utilities
+**Vulnerability:** Core atomic file writing (`atomic_write_file` in `core/io_utils.py`) accepted unvalidated destination paths, exposing file write operations to null byte injection (`\x00`), empty/whitespace strings, and type errors when called directly without prior path sanitization.
+**Learning:** `validate_safe_output_path` was previously located in `core/mp3_stitcher.py`, leaving other modules that invoked `atomic_write_file` reliant on manual caller-side validation.
+**Prevention:** Centralize output path validation directly inside `core/io_utils.py` and enforce `validate_safe_output_path` within `atomic_write_file` before creating temporary files or directory structures. Re-export in domain modules for backward compatibility.
