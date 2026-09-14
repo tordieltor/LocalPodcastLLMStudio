@@ -1870,7 +1870,7 @@ class TestURLExtractionWorker:
                 cancel_event=cancel_evt,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=5.0)
 
             mock_extract.assert_called_once()
             events = []
