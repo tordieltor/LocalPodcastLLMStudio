@@ -19,6 +19,7 @@ import concurrent.futures
 import email.message
 import io
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -82,22 +83,27 @@ class TestConcurrencyAndThreadSafety:
             mock_resp.status = 200
             return mock_resp
 
-        def worker(idx):
-            mock_resp = mock_urlopen_for_thread(idx)
-            with patch("urllib.request.urlopen", return_value=mock_resp):
-                success = pull_model_stream(
-                    model=f"model-worker-{idx}:latest",
-                    base_url="http://localhost:11434",
-                    progress_callback=lambda p: thread_callbacks[idx].append(p),
-                )
-                results[idx] = success
+        def dispatch_urlopen(req, *args, **kwargs):
+            raw = req.data if hasattr(req, "data") and req.data else b""
+            match = re.search(r"model-worker-(\d+)", raw.decode("utf-8", errors="ignore"))
+            idx = int(match.group(1)) if match else 0
+            return mock_urlopen_for_thread(idx)
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10.0)
-            assert not t.is_alive(), "Worker thread timed out or deadlocked"
+        def worker(idx):
+            success = pull_model_stream(
+                model=f"model-worker-{idx}:latest",
+                base_url="http://localhost:11434",
+                progress_callback=lambda p: thread_callbacks[idx].append(p),
+            )
+            results[idx] = success
+
+        with patch("urllib.request.urlopen", side_effect=dispatch_urlopen):
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10.0)
+                assert not t.is_alive(), "Worker thread timed out or deadlocked"
 
         # Assertions on thread isolation
         for idx in range(num_threads):
@@ -121,26 +127,32 @@ class TestConcurrencyAndThreadSafety:
         """
         num_threads = 25
         results = [None] * num_threads
+        thread_map = {}
+
+        def mock_list_models(*args, **kwargs):
+            idx = thread_map.get(threading.get_ident(), 0)
+            return [f"model_{idx}:latest", "llama3.1:8b"]
 
         def mock_worker(idx):
-            with (
-                patch(
-                    "core.ollama.find_ollama_binary",
-                    return_value=r"C:\Program Files\Ollama\ollama.exe",
-                ),
-                patch("core.ollama.OllamaClient.check_connection", return_value=True),
-                patch(
-                    "core.ollama.OllamaClient.list_models",
-                    return_value=[f"model_{idx}:latest", "llama3.1:8b"],
-                ),
-                patch("core.ollama.check_edge_tts_reachability", return_value=(True, "Connected")),
-            ):
-                status = check_prerequisites(recommended_model="llama3.1:8b")
-                results[idx] = status
+            thread_map[threading.get_ident()] = idx
+            status = check_prerequisites(recommended_model="llama3.1:8b")
+            results[idx] = status
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(mock_worker, i) for i in range(num_threads)]
-            concurrent.futures.wait(futures, timeout=10.0)
+        with (
+            patch(
+                "core.ollama.find_ollama_binary",
+                return_value=r"C:\Program Files\Ollama\ollama.exe",
+            ),
+            patch("core.ollama.OllamaClient.check_connection", return_value=True),
+            patch(
+                "core.ollama.OllamaClient.list_models",
+                side_effect=mock_list_models,
+            ),
+            patch("core.ollama.check_edge_tts_reachability", return_value=(True, "Connected")),
+        ):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+                futures = [executor.submit(mock_worker, i) for i in range(num_threads)]
+                concurrent.futures.wait(futures, timeout=10.0)
 
         for idx, status in enumerate(results):
             assert status is not None
@@ -159,25 +171,26 @@ class TestConcurrencyAndThreadSafety:
         results = [None] * num_threads
 
         def worker(idx):
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            with (
-                patch(
-                    "core.ollama.OllamaClient.check_connection",
-                    side_effect=lambda *a, **k: True,
-                ),
-                patch("core.ollama.find_ollama_binary", return_value=r"C:\Ollama\ollama.exe"),
-                patch("subprocess.Popen", return_value=mock_proc),
-                patch("time.sleep"),
-            ):
-                success, msg = start_ollama_service(timeout=5.0)
-                results[idx] = (success, msg)
+            success, msg = start_ollama_service(timeout=5.0)
+            results[idx] = (success, msg)
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5.0)
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        with (
+            patch(
+                "core.ollama.OllamaClient.check_connection",
+                side_effect=lambda *a, **k: True,
+            ),
+            patch("core.ollama.find_ollama_binary", return_value=r"C:\Ollama\ollama.exe"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("time.sleep"),
+        ):
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5.0)
+                assert not t.is_alive(), f"Worker {t.name} timed out or deadlocked"
 
         for idx, (success, msg) in enumerate(results):
             assert success is True, f"Thread {idx} failed to start service"
@@ -190,8 +203,16 @@ class TestConcurrencyAndThreadSafety:
         num_threads = 12
         modes = ["strict", "creative", "open_topic"]
         results = [None] * num_threads
+        thread_map = {}
 
-        def worker(idx):
+        def mock_urlopen(req, *args, **kwargs):
+            raw = req.data if hasattr(req, "data") and req.data else b""
+            match = re.search(r"Content for thread (\d+)", raw.decode("utf-8", errors="ignore"))
+            if match:
+                idx = int(match.group(1))
+            else:
+                idx = thread_map.get(threading.get_ident(), 0)
+
             mode = modes[idx % len(modes)]
             dialogue = [
                 {"speaker": "Host 1", "text": f"Welcome from thread {idx} in mode {mode}!"},
@@ -202,21 +223,26 @@ class TestConcurrencyAndThreadSafety:
             mock_resp.status = 200
             mock_resp.read.return_value = json.dumps(chat_resp).encode("utf-8")
             mock_resp.__enter__.return_value = mock_resp
+            return mock_resp
 
-            with patch("urllib.request.urlopen", return_value=mock_resp):
-                turns = generate_podcast_script(
-                    content=f"Content for thread {idx}",
-                    language="en-US",
-                    format_type="quick",
-                    grounding_mode=mode,
-                )
-                results[idx] = (mode, turns)
+        def worker(idx):
+            thread_map[threading.get_ident()] = idx
+            mode = modes[idx % len(modes)]
+            turns = generate_podcast_script(
+                content=f"Content for thread {idx}",
+                language="en-US",
+                format_type="quick",
+                grounding_mode=mode,
+            )
+            results[idx] = (mode, turns)
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10.0)
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10.0)
+                assert not t.is_alive(), f"Worker {t.name} timed out or deadlocked"
 
         for idx, res in enumerate(results):
             assert res is not None
