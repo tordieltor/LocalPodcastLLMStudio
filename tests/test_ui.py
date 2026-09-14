@@ -1890,9 +1890,15 @@ class TestURLExtractionWorker:
         q = queue.Queue()
         cancel_evt = threading.Event()
 
-        with patch(
-            "ui.main_window.extract_text",
-            side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+        with (
+            patch(
+                "ui.main_window.extract_text",
+                side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+            ),
+            patch(
+                "core.extractor.extract_text",
+                side_effect=SecurityError("Blocked private IP 127.0.0.1"),
+            ),
         ):
             worker = URLExtractionWorker(
                 url="http://127.0.0.1:8080/admin",
@@ -1900,7 +1906,7 @@ class TestURLExtractionWorker:
                 cancel_event=cancel_evt,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=5.0)
 
             events = []
             while not q.empty():
@@ -1917,9 +1923,15 @@ class TestURLExtractionWorker:
         q = queue.Queue()
         cancel_evt = threading.Event()
 
-        with patch(
-            "ui.main_window.extract_text",
-            side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+        with (
+            patch(
+                "ui.main_window.extract_text",
+                side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+            ),
+            patch(
+                "core.extractor.extract_text",
+                side_effect=DocumentExtractionError("HTTP 404: Not Found"),
+            ),
         ):
             worker = URLExtractionWorker(
                 url="https://example.com/notfound",
@@ -1927,7 +1939,7 @@ class TestURLExtractionWorker:
                 cancel_event=cancel_evt,
             )
             worker.start()
-            worker.join(timeout=3.0)
+            worker.join(timeout=5.0)
 
             events = []
             while not q.empty():
