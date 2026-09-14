@@ -1,0 +1,4 @@
+## 2026-09-14 - UID Isolation and Restricted Permissions for Temp Log Directories
+**Vulnerability:** In multi-user environments, creating fallback log directories in shared temporary storage (e.g. `/tmp/LocalPodcastLLMStudio_logs`) without UID isolation or restricted access permissions allows local unprivileged users to inspect sensitive log traces or collide on directory paths.
+**Learning:** Default directory creation in system temp folders inherits default umask settings (`0755` or `0777`). On POSIX multi-user workstations, fallback temp paths must incorporate user-specific identifiers (`os.getuid()`) and explicit `0o700` permission masks.
+**Prevention:** Always append UID to shared temp paths on POSIX systems and enforce restrictive directory (`0o700`) and file (`0o600`) permissions upon creation.

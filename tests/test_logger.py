@@ -56,6 +56,16 @@ class TestLoggerSubsystem:
         l2 = get_logger("subsystem")
         assert l2.name == "localpodcastllmstudio.subsystem"
 
+    def test_resolve_log_directory_uid_isolation_and_permissions(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.getcwd", lambda: "/nonexistent_write_protected_dir")
+        monkeypatch.setenv("LOCALAPPDATA", "")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+        d = resolve_log_directory()
+        if hasattr(os, "getuid"):
+            assert f"_{os.getuid()}" in d
+        assert os.path.exists(d)
+
     def test_main_window_open_logs(self):
         mock_win = MagicMock(spec=MainWindow)
         with (

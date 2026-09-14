@@ -32,13 +32,22 @@ def resolve_log_directory() -> str:
         candidates.append(
             os.path.abspath(os.path.join(local_app_data, "LocalPodcastLLMStudio", "logs"))
         )
+    uid_suffix = f"_{os.getuid()}" if hasattr(os, "getuid") else ""
     candidates.append(
-        os.path.abspath(os.path.join(tempfile.gettempdir(), "LocalPodcastLLMStudio_logs"))
+        os.path.abspath(
+            os.path.join(tempfile.gettempdir(), f"LocalPodcastLLMStudio_logs{uid_suffix}")
+        )
     )
 
     for d in candidates:
         try:
-            os.makedirs(d, exist_ok=True)
+            # Enforce 0o700 directory permissions to prevent local log tampering / disclosure
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            if hasattr(os, "chmod") and os.name != "nt":
+                try:
+                    os.chmod(d, 0o700)
+                except OSError:
+                    pass
             # Verify write access with a dummy probe
             test_probe = os.path.join(d, ".write_probe")
             with open(test_probe, "w", encoding="utf-8") as f:
@@ -105,7 +114,13 @@ def setup_logging(
         target_path = log_file or get_log_file_path()
         _RESOLVED_LOG_PATH = target_path
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+            log_dir = os.path.dirname(os.path.abspath(target_path))
+            os.makedirs(log_dir, mode=0o700, exist_ok=True)
+            if hasattr(os, "chmod") and os.name != "nt":
+                try:
+                    os.chmod(log_dir, 0o700)
+                except OSError:
+                    pass
             file_handler = RotatingFileHandler(
                 filename=target_path,
                 maxBytes=max_bytes,
@@ -115,6 +130,11 @@ def setup_logging(
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
+            if hasattr(os, "chmod") and os.name != "nt" and os.path.exists(target_path):
+                try:
+                    os.chmod(target_path, 0o600)
+                except OSError:
+                    pass
         except OSError as e:
             sys.stderr.write(f"[WARNING] Could not initialize file logger at {target_path}: {e}\n")
 
