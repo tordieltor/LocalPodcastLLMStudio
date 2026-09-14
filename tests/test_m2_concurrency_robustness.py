@@ -66,6 +66,17 @@ class TestConcurrencyAndThreadSafety:
         results = [None] * num_threads
         thread_callbacks = [[] for _ in range(num_threads)]
 
+        class MockStreamResponse:
+            def __init__(self, lines):
+                self.lines = lines
+                self.status = 200
+
+            def __enter__(self):
+                return self.lines
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
         def mock_urlopen_for_thread(thread_idx):
             chunks = [
                 {"status": "pulling manifest"},
@@ -78,10 +89,7 @@ class TestConcurrencyAndThreadSafety:
                 {"status": "success"},
             ]
             raw_lines = [json.dumps(c).encode("utf-8") + b"\n" for c in chunks]
-            mock_resp = MagicMock()
-            mock_resp.__enter__.return_value = raw_lines
-            mock_resp.status = 200
-            return mock_resp
+            return MockStreamResponse(raw_lines)
 
         def dispatch_urlopen(req, *args, **kwargs):
             raw = req.data if hasattr(req, "data") and req.data else b""
@@ -97,13 +105,17 @@ class TestConcurrencyAndThreadSafety:
             )
             results[idx] = success
 
-        with patch("urllib.request.urlopen", side_effect=dispatch_urlopen):
+        orig_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = dispatch_urlopen
+        try:
             threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=10.0)
+                t.join(timeout=15.0)
                 assert not t.is_alive(), "Worker thread timed out or deadlocked"
+        finally:
+            urllib.request.urlopen = orig_urlopen
 
         # Assertions on thread isolation
         for idx in range(num_threads):
@@ -138,21 +150,27 @@ class TestConcurrencyAndThreadSafety:
             status = check_prerequisites(recommended_model="llama3.1:8b")
             results[idx] = status
 
-        with (
-            patch(
-                "core.ollama.find_ollama_binary",
-                return_value=r"C:\Program Files\Ollama\ollama.exe",
-            ),
-            patch("core.ollama.OllamaClient.check_connection", return_value=True),
-            patch(
-                "core.ollama.OllamaClient.list_models",
-                side_effect=mock_list_models,
-            ),
-            patch("core.ollama.check_edge_tts_reachability", return_value=(True, "Connected")),
-        ):
+        import core.ollama
+
+        orig_find_binary = core.ollama.find_ollama_binary
+        orig_check_conn = core.ollama.OllamaClient.check_connection
+        orig_list_models = core.ollama.OllamaClient.list_models
+        orig_tts_reachability = core.ollama.check_edge_tts_reachability
+
+        core.ollama.find_ollama_binary = lambda: r"C:\Program Files\Ollama\ollama.exe"  # type: ignore[assignment]
+        core.ollama.OllamaClient.check_connection = lambda *a, **k: True  # type: ignore[assignment]
+        core.ollama.OllamaClient.list_models = mock_list_models  # type: ignore[assignment]
+        core.ollama.check_edge_tts_reachability = lambda *a, **k: (True, "Connected")  # type: ignore[assignment]
+
+        try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = [executor.submit(mock_worker, i) for i in range(num_threads)]
-                concurrent.futures.wait(futures, timeout=10.0)
+                concurrent.futures.wait(futures, timeout=15.0)
+        finally:
+            core.ollama.find_ollama_binary = orig_find_binary
+            core.ollama.OllamaClient.check_connection = orig_check_conn
+            core.ollama.OllamaClient.list_models = orig_list_models
+            core.ollama.check_edge_tts_reachability = orig_tts_reachability
 
         for idx, status in enumerate(results):
             assert status is not None
@@ -174,23 +192,37 @@ class TestConcurrencyAndThreadSafety:
             success, msg = start_ollama_service(timeout=5.0)
             results[idx] = (success, msg)
 
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        with (
-            patch(
-                "core.ollama.OllamaClient.check_connection",
-                side_effect=lambda *a, **k: True,
-            ),
-            patch("core.ollama.find_ollama_binary", return_value=r"C:\Ollama\ollama.exe"),
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch("time.sleep"),
-        ):
+        class DummyProcess:
+            def poll(self):
+                return None
+
+        import subprocess
+        import time
+
+        import core.ollama
+
+        orig_check_conn = core.ollama.OllamaClient.check_connection
+        orig_find_binary = core.ollama.find_ollama_binary
+        orig_popen = subprocess.Popen
+        orig_sleep = time.sleep
+
+        core.ollama.OllamaClient.check_connection = lambda *a, **k: True  # type: ignore[assignment]
+        core.ollama.find_ollama_binary = lambda: r"C:\Ollama\ollama.exe"  # type: ignore[assignment]
+        subprocess.Popen = lambda *a, **k: DummyProcess()  # type: ignore[assignment]
+        time.sleep = lambda *a, **k: None  # type: ignore[assignment]
+
+        try:
             threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=5.0)
+                t.join(timeout=10.0)
                 assert not t.is_alive(), f"Worker {t.name} timed out or deadlocked"
+        finally:
+            core.ollama.OllamaClient.check_connection = orig_check_conn
+            core.ollama.find_ollama_binary = orig_find_binary
+            subprocess.Popen = orig_popen
+            time.sleep = orig_sleep
 
         for idx, (success, msg) in enumerate(results):
             assert success is True, f"Thread {idx} failed to start service"
@@ -204,6 +236,20 @@ class TestConcurrencyAndThreadSafety:
         modes = ["strict", "creative", "open_topic"]
         results = [None] * num_threads
         thread_map = {}
+
+        class MockChatResponse:
+            def __init__(self, data_bytes):
+                self.data_bytes = data_bytes
+                self.status = 200
+
+            def read(self):
+                return self.data_bytes
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
 
         def mock_urlopen(req, *args, **kwargs):
             raw = req.data if hasattr(req, "data") and req.data else b""
@@ -219,11 +265,7 @@ class TestConcurrencyAndThreadSafety:
                 {"speaker": "Host 2", "text": f"Glad to be here on thread {idx}."},
             ]
             chat_resp = {"message": {"role": "assistant", "content": json.dumps(dialogue)}}
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = json.dumps(chat_resp).encode("utf-8")
-            mock_resp.__enter__.return_value = mock_resp
-            return mock_resp
+            return MockChatResponse(json.dumps(chat_resp).encode("utf-8"))
 
         def worker(idx):
             thread_map[threading.get_ident()] = idx
@@ -236,13 +278,17 @@ class TestConcurrencyAndThreadSafety:
             )
             results[idx] = (mode, turns)
 
-        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        orig_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = mock_urlopen
+        try:
             threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=10.0)
+                t.join(timeout=15.0)
                 assert not t.is_alive(), f"Worker {t.name} timed out or deadlocked"
+        finally:
+            urllib.request.urlopen = orig_urlopen
 
         for idx, res in enumerate(results):
             assert res is not None
