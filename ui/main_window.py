@@ -147,6 +147,11 @@ class URLExtractionWorker(threading.Thread):
 
     def run(self):
         try:
+            if self.cancel_event.is_set():
+                self.msg_queue.put(("EXTRACTION_CANCELLED", {"url": self.url}))
+                self.msg_queue.put(("URL_EXTRACTION_CANCELLED", {"url": self.url}))
+                return
+
             self.msg_queue.put(("EXTRACTION_STARTING", {"url": self.url}))
             self.msg_queue.put(("URL_EXTRACTION_STARTING", {"url": self.url}))
 
