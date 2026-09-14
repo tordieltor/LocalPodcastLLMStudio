@@ -453,5 +453,41 @@ Ensure implementation supports:
      - Custom system prompts and direct instructions.
 3. Unit and integration tests covering both minimal topic-only generation and fully customized fine-grained configurations.
 
+## 2026-09-09T18:49:08Z
 
+<USER_REQUEST>
+Audit and empirically assess all open GitHub pull requests on `tordieltor/LocalPodcastLLMStudio`, evaluating code correctness, security impact, project quality gate compliance, and redundancy to deliver an actionable triage and assessment report.
 
+Working directory: c:\Users\torpr\Documents\antigravity\epic-hubble
+Integrity mode: development
+
+## Requirements
+
+### R1. PR Inventory and Redundancy Clustering
+Enumerate all open GitHub pull requests for the repository, categorize them by theme (e.g., performance optimizations, security hardening, bug fixes), and identify overlapping or duplicate submissions targeting the same code paths.
+
+### R2. Empirical Quality Gate and Code Safety Audit
+Review the diffs of each open PR or clustered group against code correctness, security implications, edge-case risks, and the repository's verification quality gates (Ruff linting/formatting, Mypy type-checking, Bandit security scanning, and Pytest test suite).
+
+### R3. Comprehensive Assessment Matrix & Recommendations
+Generate a complete, structured assessment report (`PR_ASSESSMENT_REPORT.md`) containing an executive triage table with clear verdicts (`MERGE`, `CLOSE - SUPERSEDED`, `CLOSE - INVALID/RISKY`, `NEEDS REWORK`) and detailed technical assessments for every open PR.
+
+### R4. Non-Destructive Operational Safety
+Perform all evaluations and checkouts safely without making destructive modifications to the local workspace state or executing unapproved remote write operations against GitHub.
+
+## Acceptance Criteria
+
+### PR Coverage & Clustering
+- [ ] 100% of currently open PRs listed by `gh pr list` are accounted for in the assessment.
+- [ ] Duplicate or overlapping PRs (e.g., repetitive Sentinel atomic write validations or Bolt parser optimizations) are clustered with explicit superseding recommendations.
+
+### Quality & Safety Verification
+- [ ] Each PR or PR cluster includes an evaluation against project standards (`ruff`, `mypy`, `bandit`, `pytest`).
+- [ ] Security and performance claims in PRs are verified for validity and potential unintended side effects.
+
+### Report Completeness
+- [ ] Report file `PR_ASSESSMENT_REPORT.md` is generated in the repository root.
+- [ ] Report contains a summary matrix table (PR #, Author/Branch, Category, Verdict, Risk Level, Superseded By/Notes).
+- [ ] Each PR entry provides concrete technical rationale supporting the recommended action.
+
+</USER_REQUEST>

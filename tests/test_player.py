@@ -55,6 +55,27 @@ class TestWindowsPlayerMCI:
         res = player.open("non_existent_file_123.mp3")
         assert res is False
 
+    def test_player_alias_sanitization(self):
+        from core.player import WindowsAudioPlayer
+
+        # Unsafe alias containing MCI injection attempt and spaces/quotes
+        unsafe_alias = 'my_alias"; closeall; "'
+        player = WindowsAudioPlayer(alias=unsafe_alias)
+        assert '"' not in player.alias
+        assert ";" not in player.alias
+        assert " " not in player.alias
+        assert player.alias == "my_aliascloseall"
+
+    def test_player_open_malformed_path_rejected(self):
+        from core.player import WindowsAudioPlayer
+
+        player = WindowsAudioPlayer()
+        # Unsafe file paths with quotes or control characters must be rejected
+        assert player.open('test"injection.mp3') is False
+        assert player.open("test\ninjection.mp3") is False
+        assert player.open("test\rinjection.mp3") is False
+        assert player.open("test\x00injection.mp3") is False
+
     def test_playback_controls(self, tmp_path, single_frame_mp3):
         from core.player import WindowsAudioPlayer
 
@@ -157,3 +178,11 @@ class TestPlayerHelpers:
 
         assert os.path.exists(res_path)
         assert os.path.getsize(res_path) == len(single_frame_mp3)
+
+    @pytest.mark.parametrize("invalid_path", [None, "", "   ", "out\x00file.mp3"])
+    def test_export_audio_file_invalid_destination(self, tmp_path, single_frame_mp3, invalid_path):
+        src = tmp_path / "original.mp3"
+        src.write_bytes(single_frame_mp3)
+
+        with pytest.raises(ValueError):
+            export_audio_file(str(src), invalid_path)

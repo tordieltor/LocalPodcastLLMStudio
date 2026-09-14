@@ -7,23 +7,31 @@ and export control using the Windows Multimedia Media Control Interface (MCI).
 import atexit
 import ctypes
 import os
+import re
 import shutil
 import sys
 import uuid
 from typing import Any
 
+from core.io_utils import validate_safe_output_path
+
 
 class WindowsAudioPlayer:
     """
-    Windows Native MCI Audio Player using ctypes and winmm.dll.
-    Supports MP3 playback, pause, resume, stop, position seeking, volume, and length queries.
+    Native Windows winmm.dll Media Control Interface (MCI) Audio Player.
+    Provides non-blocking, asynchronous MP3 and WAV playback, pause, resume,
+    seeking, volume control, and status polling without third-party libraries.
     """
 
     def __init__(self, alias: str | None = None):
         if alias is None:
             self.alias = f"lp_mci_{os.getpid()}_{uuid.uuid4().hex[:8]}"
         else:
-            self.alias = alias
+            # SECURITY: Sanitize alias to strictly alphanumeric and underscores to prevent MCI command injection
+            clean_alias = re.sub(r"[^a-zA-Z0-9_]", "", str(alias))
+            self.alias = (
+                clean_alias if clean_alias else f"lp_mci_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+            )
         self.current_file: str | None = None
         self._is_opened = False
         self._length_ms = 0
@@ -87,7 +95,14 @@ class WindowsAudioPlayer:
         Returns:
             True if file opened successfully, False otherwise.
         """
-        if not file_path or not os.path.exists(file_path):
+        if not file_path or not isinstance(file_path, str):
+            return False
+
+        # SECURITY: Reject file paths containing double quotes or control characters to prevent MCI command injection
+        if any(c in file_path for c in ('"', "\n", "\r", "\x00")):
+            return False
+
+        if not os.path.exists(file_path):
             return False
 
         # Ensure clean close before opening
@@ -344,8 +359,9 @@ def export_audio_file(source_path: str, destination_path: str) -> str:
     if not os.path.exists(source_path):
         raise FileNotFoundError(f"Source audio file not found: {source_path}")
 
-    dest_dir = os.path.dirname(os.path.abspath(destination_path))
+    safe_dest_path = validate_safe_output_path(destination_path, param_name="destination_path")
+    dest_dir = os.path.dirname(os.path.abspath(safe_dest_path))
     os.makedirs(dest_dir, exist_ok=True)
 
-    shutil.copy2(source_path, destination_path)
-    return os.path.abspath(destination_path)
+    shutil.copy2(source_path, safe_dest_path)
+    return os.path.abspath(safe_dest_path)
