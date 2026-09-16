@@ -44,9 +44,9 @@ def validate_safe_output_path(
         raise ValueError(f"{param_name} cannot be empty or whitespace-only.")
 
     # SECURITY HARDENING: Reject any ASCII control characters (\x00-\x1f, \x7f) including null bytes,
-    # line breaks (\n, \r), tabs (\t), or unprintable controls to prevent CRLF injection, null byte
-    # truncation, and path corruption across output operations.
-    if any(ord(c) < 32 or ord(c) == 127 for c in path):
+    # embedded line breaks (\n, \r), tabs (\t), or unprintable controls in clean_path to prevent
+    # CRLF injection, null byte truncation, and path corruption across output operations.
+    if any(ord(c) < 32 or ord(c) == 127 for c in clean_path):
         raise ValueError(f"{param_name} contains forbidden control character(s).")
 
     return clean_path
