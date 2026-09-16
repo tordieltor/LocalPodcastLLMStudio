@@ -27,7 +27,7 @@ def validate_safe_output_path(
 
     Raises:
         ValueError: If path is None (and allow_none=False), not a str instance,
-                    empty or whitespace-only, or contains null bytes (\\x00).
+                    empty or whitespace-only, or contains control characters.
     """
     if path is None:
         if allow_none:
@@ -43,8 +43,11 @@ def validate_safe_output_path(
     if not clean_path:
         raise ValueError(f"{param_name} cannot be empty or whitespace-only.")
 
-    if "\x00" in path:
-        raise ValueError(f"{param_name} contains forbidden null byte (\\x00) character.")
+    # SECURITY HARDENING: Reject any ASCII control characters (\x00-\x1f, \x7f) including null bytes,
+    # embedded line breaks (\n, \r), tabs (\t), or unprintable controls in clean_path to prevent
+    # CRLF injection, null byte truncation, and path corruption across output operations.
+    if any(ord(c) < 32 or ord(c) == 127 for c in clean_path):
+        raise ValueError(f"{param_name} contains forbidden control character(s).")
 
     return clean_path
 
