@@ -4,6 +4,7 @@ Provides safe atomic file persistence with PID/thread-isolated temp files, fsync
 """
 
 import os
+import re
 import threading
 from typing import Any
 
@@ -15,7 +16,8 @@ def validate_safe_output_path(
 ) -> str:
     """
     Validates that a file or directory path is safe for output operations.
-    Rejects non-string types, empty/whitespace strings, and strings with null bytes.
+    Rejects non-string types, empty/whitespace strings, strings with null bytes,
+    and path traversal sequences ('..').
 
     Args:
         path: The path object to validate.
@@ -45,6 +47,10 @@ def validate_safe_output_path(
 
     if "\x00" in path:
         raise ValueError(f"{param_name} contains forbidden null byte (\\x00) character.")
+
+    parts = [p for p in re.split(r"[/\\]", clean_path) if p]
+    if ".." in parts:
+        raise ValueError(f"{param_name} contains forbidden path traversal ('..') sequence.")
 
     return clean_path
 
