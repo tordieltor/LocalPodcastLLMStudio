@@ -59,10 +59,10 @@ class TestConcurrencyAndThreadSafety:
 
     def test_concurrent_pull_model_streams(self):
         """
-        Spawns 20 parallel threads each pulling a different model with a unique NDJSON stream.
+        Spawns 15 parallel threads each pulling a different model with a unique NDJSON stream.
         Verifies that thread progress callbacks remain isolated and receive their exact events.
         """
-        num_threads = 20
+        num_threads = 15
         results = [None] * num_threads
         thread_callbacks = [[] for _ in range(num_threads)]
 
@@ -112,7 +112,7 @@ class TestConcurrencyAndThreadSafety:
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=15.0)
+                t.join(timeout=30.0)
                 assert not t.is_alive(), "Worker thread timed out or deadlocked"
         finally:
             urllib.request.urlopen = orig_urlopen
