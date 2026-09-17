@@ -578,21 +578,43 @@ def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOM
 def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
+    Uses a single-pass DFS traversal to collect candidate matches in priority order,
+    avoiding 9 redundant O(N) tree walks (O(N) vs O(9*N)).
     """
-    selectors: list[Callable[[DOMNode], bool]] = [
-        lambda n: n.tag == "article",
-        lambda n: n.tag == "main",
-        lambda n: n.get_attr("role") == "main",
-        lambda n: n.get_attr("id") == "mw-content-text",
-        lambda n: n.has_class("mw-parser-output"),
-        lambda n: n.has_class("post-content"),
-        lambda n: n.has_class("article-body"),
-        lambda n: n.has_class("entry-content"),
-        lambda n: n.tag == "body",
-    ]
+    # Priority buckets for candidate containers:
+    # 0: article, 1: main, 2: role=main, 3: id=mw-content-text,
+    # 4: .mw-parser-output, 5: .post-content, 6: .article-body, 7: .entry-content, 8: body
+    buckets: list[list[DOMNode]] = [[] for _ in range(9)]
 
-    for sel in selectors:
-        matches = _find_nodes(root, sel)
+    def _walk(node: DOMNode) -> None:
+        tag = node.tag
+
+        if tag == "article":
+            buckets[0].append(node)
+        elif tag == "main":
+            buckets[1].append(node)
+        elif tag == "body":
+            buckets[8].append(node)
+
+        if node.get_attr("role") == "main":
+            buckets[2].append(node)
+        if node.get_attr("id") == "mw-content-text":
+            buckets[3].append(node)
+        if node.has_class("mw-parser-output"):
+            buckets[4].append(node)
+        if node.has_class("post-content"):
+            buckets[5].append(node)
+        if node.has_class("article-body"):
+            buckets[6].append(node)
+        if node.has_class("entry-content"):
+            buckets[7].append(node)
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+
+    for matches in buckets:
         if matches:
             if len(matches) == 1:
                 if len(matches[0].get_text_content().strip()) > 30:
