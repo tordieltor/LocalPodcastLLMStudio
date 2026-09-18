@@ -182,13 +182,13 @@ class MP3Stitcher:
             valid = True
             while pos <= total_len - 4:
                 if clean_data[pos : pos + 4] == first_hdr:
-                    flen = first_frame_len
-                else:
-                    flen = cls.parse_frame_length(clean_data, offset=pos)
-                    if flen is None or abs(flen - first_frame_len) > 1:
-                        valid = False
-                        break
-                pos += flen
+                    pos += first_frame_len
+                    continue
+                parsed_flen = cls.parse_frame_length(clean_data, offset=pos)
+                if parsed_flen is None or abs(parsed_flen - first_frame_len) > 1:
+                    valid = False
+                    break
+                pos += parsed_flen
 
             if valid and pos == total_len:
                 return clean_data
