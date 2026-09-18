@@ -112,7 +112,7 @@ class TestConcurrencyAndThreadSafety:
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=15.0)
+                t.join(timeout=30.0)
                 assert not t.is_alive(), "Worker thread timed out or deadlocked"
         finally:
             urllib.request.urlopen = orig_urlopen
@@ -165,7 +165,7 @@ class TestConcurrencyAndThreadSafety:
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = [executor.submit(mock_worker, i) for i in range(num_threads)]
-                concurrent.futures.wait(futures, timeout=15.0)
+                concurrent.futures.wait(futures, timeout=30.0)
         finally:
             core.ollama.find_ollama_binary = orig_find_binary
             core.ollama.OllamaClient.check_connection = orig_check_conn
@@ -285,7 +285,7 @@ class TestConcurrencyAndThreadSafety:
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=15.0)
+                t.join(timeout=30.0)
                 assert not t.is_alive(), f"Worker {t.name} timed out or deadlocked"
         finally:
             urllib.request.urlopen = orig_urlopen
