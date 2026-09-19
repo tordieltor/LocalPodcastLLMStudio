@@ -154,6 +154,15 @@ class TestValidateSafeOutputPath:
             "out.mp3\x00",
             "folder\x00/test.mp3",
             "\x00test.mp3",
+            "out\n.mp3",
+            "out\r.mp3",
+            "out\x07.mp3",
+            "out\x1f.mp3",
+            "out\x7f.mp3",
+            "../etc/passwd",
+            "..\\windows\\system32",
+            "folder/../secret.txt",
+            "folder\\..\\secret.txt",
         ],
     )
     def test_validate_safe_output_path_rejections(self, invalid_path):
