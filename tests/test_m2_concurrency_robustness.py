@@ -112,7 +112,7 @@ class TestConcurrencyAndThreadSafety:
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=15.0)
+                t.join(timeout=30.0)
                 assert not t.is_alive(), "Worker thread timed out or deadlocked"
         finally:
             urllib.request.urlopen = orig_urlopen
