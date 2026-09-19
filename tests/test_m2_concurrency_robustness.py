@@ -24,6 +24,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -111,8 +112,10 @@ class TestConcurrencyAndThreadSafety:
             threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
             for t in threads:
                 t.start()
+            deadline = time.time() + 60.0
             for t in threads:
-                t.join(timeout=15.0)
+                rem = max(1.0, deadline - time.time())
+                t.join(timeout=rem)
                 assert not t.is_alive(), "Worker thread timed out or deadlocked"
         finally:
             urllib.request.urlopen = orig_urlopen
