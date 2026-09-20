@@ -83,6 +83,14 @@ def _validate_url(url: str) -> str:
         raise ValueError(f"Invalid Ollama URL '{url}': missing hostname or network location.")
     if "@" in parsed.netloc or parsed.username or parsed.password:
         raise ValueError("Invalid Ollama URL: user credentials in URL are not supported.")
+
+    try:
+        port = parsed.port
+        if port is not None and (port <= 0 or port > 65535):
+            raise ValueError(f"Invalid port number {port}: must be between 1 and 65535.")
+    except ValueError as e:
+        raise ValueError(f"Invalid Ollama URL '{url}': invalid port specification ({e}).") from e
+
     return clean
 
 
