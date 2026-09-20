@@ -108,6 +108,16 @@ class TestOllamaClientUnit:
         with pytest.raises(ValueError, match="user credentials in URL are not supported"):
             _validate_url("http://user@127.0.0.1:11434")
 
+    def test_validate_url_disallows_invalid_ports(self):
+        with pytest.raises(ValueError, match="invalid port specification"):
+            _validate_url("http://localhost:0")
+
+        with pytest.raises(ValueError, match="invalid port specification"):
+            _validate_url("http://localhost:70000")
+
+        with pytest.raises(ValueError, match="invalid port specification"):
+            _validate_url("http://localhost:-100")
+
     def test_check_connection_success(self):
         mock_resp = MagicMock()
         mock_resp.status = 200
