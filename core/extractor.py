@@ -64,9 +64,9 @@ BLOCKED_IP_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] =
 # Pre-separating by IP version avoids cross-version comparisons and eliminates ~14 redundant network containment
 # checks on public IPs (~3.3x speedup on IP address validation loops).
 _NON_STANDARD_IPV4_NETWORKS: tuple[ipaddress.IPv4Network, ...] = tuple(
-    net  # type: ignore[misc]
+    net
     for net in BLOCKED_IP_NETWORKS
-    if net.version == 4
+    if isinstance(net, ipaddress.IPv4Network)
     and not (
         net.network_address.is_loopback
         or net.network_address.is_private
@@ -78,9 +78,9 @@ _NON_STANDARD_IPV4_NETWORKS: tuple[ipaddress.IPv4Network, ...] = tuple(
 )
 
 _NON_STANDARD_IPV6_NETWORKS: tuple[ipaddress.IPv6Network, ...] = tuple(
-    net  # type: ignore[misc]
+    net
     for net in BLOCKED_IP_NETWORKS
-    if net.version == 6
+    if isinstance(net, ipaddress.IPv6Network)
     and not (
         net.network_address.is_loopback
         or net.network_address.is_private
