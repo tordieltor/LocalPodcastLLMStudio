@@ -46,6 +46,11 @@ def validate_safe_output_path(
     if "\x00" in path:
         raise ValueError(f"{param_name} contains forbidden null byte (\\x00) character.")
 
+    # SECURITY: Reject path traversal sequences ("..") to prevent arbitrary file overwrites
+    normalized_path = clean_path.replace("\\", "/")
+    if ".." in normalized_path.split("/"):
+        raise ValueError(f"{param_name} contains forbidden path traversal sequence ('..').")
+
     return clean_path
 
 
