@@ -80,6 +80,11 @@ class MP3Stitcher:
         if pos >= end_pos:
             return b""
 
+        # PERFORMANCE OPTIMIZATION: Return mp3_data directly when no ID3 tags were present
+        # to avoid unnecessary bytes slice object creation and buffer copying.
+        if pos == 0 and end_pos == total_len:
+            return mp3_data
+
         return mp3_data[pos:end_pos]
 
     @classmethod
@@ -173,10 +178,10 @@ class MP3Stitcher:
         # PERFORMANCE OPTIMIZATION (Fast-Path):
         # Clean synthetic TTS streams (e.g. Edge-TTS) contain contiguous valid frames.
         # Check if entire buffer consists of valid frames matching initial frame size (+/-1 byte for padding).
-        # This reduces per-frame extraction time by ~40-50% while guaranteeing binary validity.
+        # Initialize pos = first_frame_len to eliminate redundant re-parsing of frame 0 at offset 0.
         first_frame_len = cls.parse_frame_length(clean_data, offset=0)
         if first_frame_len:
-            pos = 0
+            pos = first_frame_len
             valid = True
             while pos <= total_len - 4:
                 flen = cls.parse_frame_length(clean_data, offset=pos)
