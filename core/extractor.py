@@ -870,20 +870,17 @@ class HTMLToMarkdownParser(HTMLParser):
                 self._pieces.append(" ")
             return
 
-        # PERFORMANCE OPTIMIZATION: Fast-path substring guard before invoking
-        # expensive regex substitutions on single text nodes.
+        # PERFORMANCE OPTIMIZATION: Fast C-accelerated str.split() + ' '.join() replaces
+        # expensive C-regex substitutions (_RE_MULTI_WHITESPACE.sub).
+        # Fast string indexing (data[0], data[-1]) replaces tuple startswith/endswith scans.
         if "  " in data or "\t" in data or "\n" in data or "\r" in data:
-            cleaned = _RE_MULTI_WHITESPACE.sub(" ", data)
+            cleaned = " ".join(data.split())
         else:
             cleaned = data
 
-        if (
-            data.startswith((" ", "\t", "\n"))
-            and self._pieces
-            and not self._pieces[-1].endswith((" ", "\n"))
-        ):
+        if data[0] in " \t\r\n" and self._pieces and not self._pieces[-1].endswith((" ", "\n")):
             cleaned = " " + cleaned.lstrip()
-        if data.endswith((" ", "\t", "\n")) and not cleaned.endswith(" "):
+        if data[-1] in " \t\r\n" and not cleaned.endswith(" "):
             cleaned = cleaned.rstrip() + " "
 
         self._pieces.append(cleaned)
