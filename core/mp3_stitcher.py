@@ -213,7 +213,17 @@ class MP3Stitcher:
             idx = sync_pos
 
         if seg_start != -1:
+            # PERFORMANCE OPTIMIZATION (Zero-Copy Fast Path):
+            # If the entire clean_data buffer is contiguous without corrupt bytes,
+            # return clean_data directly without intermediate slicing or b"".join copies.
+            if seg_start == 0 and idx == total_len:
+                return clean_data
             chunks.append(clean_data[seg_start:idx])
+
+        if not chunks:
+            return b""
+        if len(chunks) == 1:
+            return chunks[0]
 
         return b"".join(chunks)
 
