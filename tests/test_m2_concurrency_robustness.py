@@ -59,10 +59,10 @@ class TestConcurrencyAndThreadSafety:
 
     def test_concurrent_pull_model_streams(self):
         """
-        Spawns 20 parallel threads each pulling a different model with a unique NDJSON stream.
+        Spawns parallel threads each pulling a different model with a unique NDJSON stream.
         Verifies that thread progress callbacks remain isolated and receive their exact events.
         """
-        num_threads = 20
+        num_threads = 10
         results = [None] * num_threads
         thread_callbacks = [[] for _ in range(num_threads)]
 

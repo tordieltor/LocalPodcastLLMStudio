@@ -154,6 +154,11 @@ class TestValidateSafeOutputPath:
             "out.mp3\x00",
             "folder\x00/test.mp3",
             "\x00test.mp3",
+            "out\n.mp3",
+            "out\r\n.mp3",
+            "folder\t/test.mp3",
+            "out\x07.mp3",
+            "out\x7f.mp3",
         ],
     )
     def test_validate_safe_output_path_rejections(self, invalid_path):
@@ -167,7 +172,9 @@ class TestValidateSafeOutputPath:
         assert validate_safe_output_path("  podcast.mp3  ") == "podcast.mp3"
         assert validate_safe_output_path("output/test.mp3") == "output/test.mp3"
 
-    @pytest.mark.parametrize("bad_out", ["", "   ", None, 12345, "bad\x00path.mp3"])
+    @pytest.mark.parametrize(
+        "bad_out", ["", "   ", None, 12345, "bad\x00path.mp3", "bad\npath.mp3"]
+    )
     def test_stitch_mp3_files_rejects_invalid_output_path(self, bad_out, synthetic_mp3_factory):
         b1 = synthetic_mp3_factory(num_frames=2)
         with pytest.raises(ValueError):
