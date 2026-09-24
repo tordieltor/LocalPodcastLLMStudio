@@ -56,12 +56,14 @@ def _unescape_json_string(s: str) -> str:
         }
         for escaped, unescaped in replacements.items():
             s = s.replace(escaped, unescaped)
-        # Decode explicit \uXXXX unicode escape sequences
-        return re.sub(
-            r"\\u([0-9a-fA-F]{4})",
-            lambda m: chr(int(m.group(1), 16)),
-            s,
-        )
+        # Decode explicit \uXXXX unicode escape sequences only if present
+        if r"\u" in s or r"\U" in s:
+            return re.sub(
+                r"\\u([0-9a-fA-F]{4})",
+                lambda m: chr(int(m.group(1), 16)),
+                s,
+            )
+        return s
 
 
 @dataclass
@@ -495,7 +497,8 @@ class DialogueParser:
                 flush_current()
                 current_speaker = normalize_speaker(match.group(1))
                 line_content = match.group(2).strip()
-                line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
+                if "*" in line_content:
+                    line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
                 if line_content:
                     current_lines.append(line_content)
             elif current_speaker is not None:
@@ -544,13 +547,15 @@ def dialogue_to_markdown(
     is_monologue = str(host_mode).strip().lower() in ("monologue", "solo", "single")
     is_norwegian = "nb" in language.lower() or "no" in language.lower()
 
+    # Pre-resolve speaker labels outside the formatting loop for higher speed
+    if is_monologue:
+        h1_label = h2_label = "Host (Kari)" if is_norwegian else "Host (Jenny)"
+    else:
+        h1_label = "Host 1 (Kari)" if is_norwegian else "Host 1 (Jenny)"
+        h2_label = "Host 2 (Ola)" if is_norwegian else "Host 2 (Guy)"
+
     lines = ["# Podcast Transcript\n"]
-    for _idx, turn in enumerate(turns, start=1):
-        if is_monologue:
-            speaker_label = "Host (Kari)" if is_norwegian else "Host (Jenny)"
-        elif turn.speaker == "Host 1":
-            speaker_label = "Host 1 (Kari)" if is_norwegian else "Host 1 (Jenny)"
-        else:
-            speaker_label = "Host 2 (Ola)" if is_norwegian else "Host 2 (Guy)"
+    for turn in turns:
+        speaker_label = h1_label if turn.speaker == "Host 1" else h2_label
         lines.append(f"**{speaker_label}**: {turn.text}\n")
     return "\n".join(lines)
