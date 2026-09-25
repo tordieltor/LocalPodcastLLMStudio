@@ -479,7 +479,7 @@ def fetch_url_content(
 class DOMNode:
     """Lightweight DOM node representing an element or text chunk."""
 
-    __slots__ = ("attrs", "children", "is_text", "parent", "tag", "text")
+    __slots__ = ("attrs", "children", "is_noise", "is_text", "parent", "tag", "text")
 
     def __init__(
         self,
@@ -494,17 +494,22 @@ class DOMNode:
         self.children: list[DOMNode] = []
         self.text: str = text
         self.is_text: bool = is_text
+        self.is_noise: bool | None = None
 
     def append_child(self, child: "DOMNode") -> None:
         child.parent = self
         self.children.append(child)
 
     def get_attr(self, key: str) -> str:
-        return self.attrs.get(key.lower(), "")
+        # PERFORMANCE OPTIMIZATION: Fast path for lowercased attribute keys (bypasses key.lower() string allocation)
+        return self.attrs.get(key) or self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        # PERFORMANCE OPTIMIZATION: Bypasses generator expression & per-element .lower() calls
+        cls = self.attrs.get("class")
+        if not cls:
+            return False
+        return class_name.lower() in cls.lower().split()
 
     def get_text_content(self) -> str:
         if self.is_text:
@@ -544,20 +549,35 @@ class DOMTreeBuilder(HTMLParser):
 
 
 def _is_noise_node(node: DOMNode) -> bool:
-    """Checks whether a DOM node represents boilerplate noise."""
+    """
+    Checks whether a DOM node represents boilerplate noise.
+    Memoizes results on node.is_noise to eliminate redundant regex evaluation overhead across DOM traversals.
+    """
+    if node.is_noise is not None:
+        return node.is_noise
+
     if node.is_text:
+        node.is_noise = False
         return False
     if node.tag in NOISE_TAGS:
+        node.is_noise = True
         return True
     # Fast path: nodes without attributes cannot match class or ID noise patterns
     if not node.attrs:
+        node.is_noise = False
         return False
+
     class_val = node.attrs.get("class", "")
     if class_val and NOISE_ATTR_PATTERN.search(class_val):
+        node.is_noise = True
         return True
+
     id_val = node.attrs.get("id", "")
     if id_val and NOISE_ATTR_PATTERN.search(id_val):
+        node.is_noise = True
         return True
+
+    node.is_noise = False
     return False
 
 
@@ -598,8 +618,12 @@ def select_primary_container(root: DOMNode) -> DOMNode:
                 if len(matches[0].get_text_content().strip()) > 30:
                     return matches[0]
             else:
-                best = max(matches, key=lambda m: len(m.get_text_content().strip()))
-                if len(best.get_text_content().strip()) > 30:
+                # PERFORMANCE OPTIMIZATION: Compute text length once per candidate to avoid duplicate tree traversals
+                best, best_len = max(
+                    ((m, len(m.get_text_content().strip())) for m in matches),
+                    key=lambda item: item[1],
+                )
+                if best_len > 30:
                     return best
 
     return root

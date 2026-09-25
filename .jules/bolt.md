@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-09-25 - Memoizing Node Properties in Multi-Pass DOM Traversals
+**Learning:** During HTML sanitization and container extraction, tree nodes are traversed multiple times (for container identification, noise filtering, and text extraction). Re-evaluating regex patterns (`NOISE_ATTR_PATTERN.search`) on every traversal causes significant CPU overhead. Memoizing node-level classification results on `__slots__` attributes (`node.is_noise`) eliminates redundant regex invocations.
+**Action:** Memoize immutable classification results directly on tree node instances when nodes are traversed across multiple extraction pipelines.
