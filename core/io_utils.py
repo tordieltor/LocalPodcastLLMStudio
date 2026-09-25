@@ -15,7 +15,7 @@ def validate_safe_output_path(
 ) -> str:
     """
     Validates that a file or directory path is safe for output operations.
-    Rejects non-string types, empty/whitespace strings, and strings with null bytes.
+    Rejects non-string types, empty/whitespace strings, and strings with null bytes or control characters.
 
     Args:
         path: The path object to validate.
@@ -27,7 +27,7 @@ def validate_safe_output_path(
 
     Raises:
         ValueError: If path is None (and allow_none=False), not a str instance,
-                    empty or whitespace-only, or contains null bytes (\\x00).
+                    empty or whitespace-only, or contains forbidden control characters or null bytes.
     """
     if path is None:
         if allow_none:
@@ -43,8 +43,8 @@ def validate_safe_output_path(
     if not clean_path:
         raise ValueError(f"{param_name} cannot be empty or whitespace-only.")
 
-    if "\x00" in path:
-        raise ValueError(f"{param_name} contains forbidden null byte (\\x00) character.")
+    if any(ord(c) < 32 or ord(c) == 127 for c in path) or "\x00" in path:
+        raise ValueError(f"{param_name} contains forbidden control characters or null bytes.")
 
     return clean_path
 
