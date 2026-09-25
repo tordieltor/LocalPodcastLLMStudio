@@ -146,7 +146,9 @@ class TestAtomicWriteUtils:
         with pytest.raises(ValueError, match="file_path cannot be empty or whitespace-only"):
             atomic_write_file("   ", "data")
 
-        with pytest.raises(ValueError, match="file_path contains forbidden null byte"):
+        with pytest.raises(
+            ValueError, match="file_path contains forbidden control characters or null bytes"
+        ):
             atomic_write_file("out\x00file.txt", "data")
 
 
