@@ -154,11 +154,30 @@ class TestValidateSafeOutputPath:
             "out.mp3\x00",
             "folder\x00/test.mp3",
             "\x00test.mp3",
+            "../podcast.mp3",
+            "folder/../out.mp3",
+            "c:\\path\\..\\file.mp3",
+            "..",
+            "a/b/../../c",
         ],
     )
     def test_validate_safe_output_path_rejections(self, invalid_path):
         with pytest.raises(ValueError):
             validate_safe_output_path(invalid_path)
+
+    @pytest.mark.parametrize(
+        "traversal_path",
+        [
+            "../podcast.mp3",
+            "folder/../out.mp3",
+            "c:\\path\\..\\file.mp3",
+            "..",
+            "sub/../../secret.txt",
+        ],
+    )
+    def test_validate_safe_output_path_path_traversal_rejection(self, traversal_path):
+        with pytest.raises(ValueError, match="path traversal"):
+            validate_safe_output_path(traversal_path)
 
     def test_validate_safe_output_path_allow_none(self):
         assert validate_safe_output_path(None, allow_none=True) == ""
