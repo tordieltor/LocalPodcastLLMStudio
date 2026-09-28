@@ -1,0 +1,4 @@
+## 2026-09-28 - Path Traversal Protection during Utility Refactoring
+**Vulnerability:** Directory traversal sequence (`..`) check was missing from `core.io_utils.validate_safe_output_path` after relocating path validation from `core.mp3_stitcher`.
+**Learning:** Architectural refactoring (moving helper methods between modules) risks dropping security boundary checks if validation functions are rewritten without consolidating all previously enforced safety rules.
+**Prevention:** Always verify that security-critical validation functions (such as `validate_safe_output_path`) preserve all rejection criteria (null bytes, whitespace, types, and path traversal sequences) when refactored across modules. Perform path segment splitting (`re.split(r"[/\\]", clean_path)`) before calling `os.path.normpath` or `os.path.abspath` to prevent normalization from bypassing `..` detection.
