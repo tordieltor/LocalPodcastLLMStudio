@@ -46,6 +46,12 @@ def validate_safe_output_path(
     if "\x00" in path:
         raise ValueError(f"{param_name} contains forbidden null byte (\\x00) character.")
 
+    # Security check: Prevent path traversal vulnerabilities by rejecting '..' path components
+    if ".." in clean_path.replace("\\", "/").split("/"):
+        raise ValueError(
+            f"{param_name} contains forbidden path traversal sequence ('..'): {clean_path!r}"
+        )
+
     return clean_path
 
 
