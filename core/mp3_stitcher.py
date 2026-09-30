@@ -80,6 +80,11 @@ class MP3Stitcher:
         if pos >= end_pos:
             return b""
 
+        # PERFORMANCE OPTIMIZATION: Return mp3_data directly when no ID3 headers/trailers were stripped.
+        # Bypasses bytes slice allocation when input buffer is already clean audio frames.
+        if pos == 0 and end_pos == total_len:
+            return mp3_data
+
         return mp3_data[pos:end_pos]
 
     @classmethod
