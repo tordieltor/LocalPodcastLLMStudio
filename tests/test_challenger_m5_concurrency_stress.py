@@ -203,6 +203,9 @@ class TestPathSanitizationConcurrencyStress:
             ("audio\x00file.mp3", False, ValueError),
             (12345, False, ValueError),
             ([1, 2, 3], False, ValueError),
+            ("../audio.mp3", False, ValueError),
+            ("output/../audio.mp3", False, ValueError),
+            ("folder\\..\\audio.mp3", False, ValueError),
         ]
 
         def worker(tid: int):
