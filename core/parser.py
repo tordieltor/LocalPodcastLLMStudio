@@ -177,6 +177,13 @@ def normalize_speaker(raw_speaker: str) -> str:
     if not raw_speaker or not isinstance(raw_speaker, str):
         return "Host 1"
 
+    # PERFORMANCE OPTIMIZATION: Immediate fast-path check for canonical speaker names
+    # Bypasses string lowercasing, stripping, and LRU cache lookup on frequent hits.
+    if raw_speaker == "Host 1":
+        return "Host 1"
+    if raw_speaker == "Host 2":
+        return "Host 2"
+
     s = raw_speaker.lower().strip()
 
     # Fast-path: O(1) exact match lookup before tuple scan

@@ -169,6 +169,8 @@ def normalize_grounding_mode(mode: str | GroundingMode | Any) -> str:
         return mode.value
     if mode is None:
         return GroundingMode.STRICT.value
+    if mode in ("strict", "creative", "open_topic"):
+        return mode
     try:
         return _cached_normalize_grounding_mode(str(mode))
     except Exception:
@@ -271,6 +273,8 @@ def normalize_host_mode(mode: str | HostMode | Any) -> str:
         return mode.value
     if mode is None:
         return HostMode.DIALOGUE.value
+    if mode in ("dialogue", "monologue"):
+        return mode
     try:
         return _cached_normalize_host_mode(str(mode))
     except Exception:
@@ -445,6 +449,8 @@ def normalize_language_code(language: Any) -> str:
     """
     if language is None:
         return "en-US"
+    if language in ("nb-NO", "en-US"):
+        return language
     try:
         return _cached_normalize_language_code(str(language))
     except Exception:
