@@ -56,12 +56,15 @@ def _unescape_json_string(s: str) -> str:
         }
         for escaped, unescaped in replacements.items():
             s = s.replace(escaped, unescaped)
-        # Decode explicit \uXXXX unicode escape sequences
-        return re.sub(
-            r"\\u([0-9a-fA-F]{4})",
-            lambda m: chr(int(m.group(1), 16)),
-            s,
-        )
+        # PERFORMANCE OPTIMIZATION: Guard regex substitution with fast substring check
+        # to avoid C-regex engine invocation when no unicode escapes exist in fallback
+        if "\\u" in s:
+            return re.sub(
+                r"\\u([0-9a-fA-F]{4})",
+                lambda m: chr(int(m.group(1), 16)),
+                s,
+            )
+        return s
 
 
 @dataclass
@@ -495,7 +498,9 @@ class DialogueParser:
                 flush_current()
                 current_speaker = normalize_speaker(match.group(1))
                 line_content = match.group(2).strip()
-                line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
+                # PERFORMANCE OPTIMIZATION: Fast-path substring guard avoids regex substitution on clean lines
+                if "*" in line_content:
+                    line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
                 if line_content:
                     current_lines.append(line_content)
             elif current_speaker is not None:
