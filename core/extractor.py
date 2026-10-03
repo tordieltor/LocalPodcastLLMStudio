@@ -255,6 +255,9 @@ def validate_url_target(url: str) -> str:
     if not cleaned_url:
         raise SecurityError("Invalid URL: URL must be a non-empty string.")
 
+    if any(ord(c) < 32 or ord(c) == 127 for c in url):
+        raise SecurityError(f"Invalid URL '{url}': contains forbidden control characters.")
+
     try:
         parsed = urllib.parse.urlsplit(cleaned_url)
     except Exception as exc:

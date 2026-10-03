@@ -245,6 +245,20 @@ class TestSSRFDefenseAndURLValidation:
         with pytest.raises(SecurityError, match="Invalid URL"):
             validate_url_target(empty_url)
 
+    @pytest.mark.parametrize(
+        "control_char_url",
+        [
+            "http://example.com/page\r\nHeader: value",
+            "http://example.com/page\n",
+            "http://example.com/page\x00",
+            "http://example.com/page\x07",
+            "http://example.com/page\x1b",
+        ],
+    )
+    def test_reject_control_characters_in_url(self, control_char_url: str) -> None:
+        with pytest.raises(SecurityError, match="contains forbidden control characters"):
+            validate_url_target(control_char_url)
+
     def test_reject_url_missing_hostname(self) -> None:
         with pytest.raises(SecurityError, match="missing or invalid hostname"):
             validate_url_target("http://")
