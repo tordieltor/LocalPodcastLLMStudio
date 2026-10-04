@@ -108,6 +108,26 @@ class TestOllamaClientUnit:
         with pytest.raises(ValueError, match="user credentials in URL are not supported"):
             _validate_url("http://user@127.0.0.1:11434")
 
+    def test_validate_url_port_range_validation(self):
+        # Valid ports
+        assert _validate_url("http://localhost:1") == "http://localhost:1"
+        assert _validate_url("http://localhost:65535") == "http://localhost:65535"
+        assert _validate_url("http://localhost:11434") == "http://localhost:11434"
+
+        # Invalid port range (< 1 or > 65535)
+        with pytest.raises(ValueError, match="port must be between 1 and 65535"):
+            _validate_url("http://localhost:0")
+
+        with pytest.raises(ValueError, match="Invalid Ollama URL port"):
+            _validate_url("http://localhost:65536")
+
+        with pytest.raises(ValueError, match="Invalid Ollama URL port"):
+            _validate_url("http://localhost:99999")
+
+        # Malformed non-numeric port in URL
+        with pytest.raises(ValueError, match="Invalid Ollama URL port"):
+            _validate_url("http://localhost:abc")
+
     def test_check_connection_success(self):
         mock_resp = MagicMock()
         mock_resp.status = 200
