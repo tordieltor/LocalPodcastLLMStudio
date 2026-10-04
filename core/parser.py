@@ -158,11 +158,39 @@ _GENERIC_HOST_KEYWORDS = (
     "programleder",
 )
 
+_FORMATTED_HOST_1 = (
+    "host 1 (kari)",
+    "host 1 (jenny)",
+    "host (kari)",
+    "host (jenny)",
+    "**host 1**",
+    "**host 1 (kari)**",
+    "**host 1 (jenny)**",
+    "**kari**",
+    "**jenny**",
+    "host 1:",
+    "speaker 1:",
+)
+
+_FORMATTED_HOST_2 = (
+    "host 2 (ola)",
+    "host 2 (guy)",
+    "**host 2**",
+    "**host 2 (ola)**",
+    "**host 2 (guy)**",
+    "**ola**",
+    "**guy**",
+    "host 2:",
+    "speaker 2:",
+)
+
 # PERFORMANCE OPTIMIZATION: Pre-populated O(1) dictionary for exact speaker key lookups.
 # Bypasses linear sequence scans for common speaker strings (~8.5x throughput gain on uncached hits).
 # Host 1 keys are updated after Host 2 to strictly preserve original Host 1 evaluation precedence.
 _EXACT_SPEAKER_MAP: dict[str, str] = dict.fromkeys(_HOST_2_SPECIFIC, "Host 2")
+_EXACT_SPEAKER_MAP.update(dict.fromkeys(_FORMATTED_HOST_2, "Host 2"))
 _EXACT_SPEAKER_MAP.update(dict.fromkeys(_HOST_1_SPECIFIC, "Host 1"))
+_EXACT_SPEAKER_MAP.update(dict.fromkeys(_FORMATTED_HOST_1, "Host 1"))
 
 
 @lru_cache(maxsize=128)
@@ -176,6 +204,12 @@ def normalize_speaker(raw_speaker: str) -> str:
     """
     if not raw_speaker or not isinstance(raw_speaker, str):
         return "Host 1"
+
+    # Fast-path for already normalized canonical speaker strings
+    if raw_speaker == "Host 1":
+        return "Host 1"
+    if raw_speaker == "Host 2":
+        return "Host 2"
 
     s = raw_speaker.lower().strip()
 
@@ -495,7 +529,8 @@ class DialogueParser:
                 flush_current()
                 current_speaker = normalize_speaker(match.group(1))
                 line_content = match.group(2).strip()
-                line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
+                if "*" in line_content:
+                    line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
                 if line_content:
                     current_lines.append(line_content)
             elif current_speaker is not None:
