@@ -74,7 +74,12 @@ def _validate_url(url: str) -> str:
         clean = f"http://{clean}"
 
     clean = clean.rstrip("/")
-    parsed = urlparse(clean)
+    try:
+        parsed = urlparse(clean)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Invalid Ollama URL port in '{url}': {exc}") from exc
+
     if parsed.scheme.lower() not in ("http", "https"):
         raise ValueError(
             f"Invalid URL scheme '{parsed.scheme}': only 'http' and 'https' are supported for Ollama service."
@@ -83,6 +88,10 @@ def _validate_url(url: str) -> str:
         raise ValueError(f"Invalid Ollama URL '{url}': missing hostname or network location.")
     if "@" in parsed.netloc or parsed.username or parsed.password:
         raise ValueError("Invalid Ollama URL: user credentials in URL are not supported.")
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError(
+            f"Invalid Ollama URL port '{port}' in '{url}': port must be between 1 and 65535."
+        )
     return clean
 
 
