@@ -294,12 +294,31 @@ class TestWindowsAudioPlayerResilience:
 
 
 class TestCrashDumpLogResilience:
-    """SEC-05: Verify crash dump path resolution."""
+    """SEC-05: Verify crash dump path resolution and secure permissions."""
 
     def test_resolve_crash_log_path(self):
         path = _resolve_crash_log_path()
         assert path.endswith(".log")
         assert os.path.isabs(path)
+
+    def test_resolve_crash_log_path_temp_fallback_uid_isolation(self, monkeypatch, tmp_path):
+        real_open = open
+
+        def mock_open(file, mode="r", *args, **kwargs):
+            file_str = str(file)
+            if not file_str.startswith(str(tmp_path)):
+                raise OSError("Permission denied for testing fallback")
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", mock_open)
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+        path = _resolve_crash_log_path()
+        assert path.startswith(str(tmp_path))
+        if hasattr(os, "getuid"):
+            uid_str = f"_{os.getuid()}"
+            assert uid_str in os.path.basename(path)
+        assert os.path.exists(path)
 
 
 class TestPromptDataclasses:
