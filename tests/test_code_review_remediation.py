@@ -302,9 +302,15 @@ class TestCrashDumpLogResilience:
         assert os.path.isabs(path)
 
     def test_resolve_crash_log_path_temp_fallback_uid_isolation(self, monkeypatch, tmp_path):
-        # Force candidate directories in cwd and localappdata to fail write test
-        monkeypatch.setattr("os.getcwd", lambda: "/nonexistent_dir_12345")
-        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        real_open = open
+
+        def mock_open(file, mode="r", *args, **kwargs):
+            file_str = str(file)
+            if not file_str.startswith(str(tmp_path)):
+                raise OSError("Permission denied for testing fallback")
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", mock_open)
         monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
 
         path = _resolve_crash_log_path()
