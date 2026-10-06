@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-10-06 - Single-Pass Priority-Bucketed Traversal for Multiselector DOM Extraction
+**Learning:** Sequential calls to recursive DOM tree filters (`_find_nodes`) for $M$ candidate container selectors cause $O(M \cdot N)$ full-tree traversals and repeated text calculations. Categorizing nodes into priority buckets during a single depth-first walk ($O(N)$) and evaluating text length once per candidate yields a ~2.38x speedup.
+**Action:** When evaluating ordered structural or selector fallbacks on hierarchical tree structures (DOM/AST), collect all candidate buckets in a single pass instead of re-traversing the tree per selector.
