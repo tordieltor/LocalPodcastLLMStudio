@@ -149,6 +149,9 @@ class TestAtomicWriteUtils:
         with pytest.raises(ValueError, match="file_path contains forbidden null byte"):
             atomic_write_file("out\x00file.txt", "data")
 
+        with pytest.raises(ValueError, match="file_path contains forbidden path traversal"):
+            atomic_write_file("../etc/passwd", "data")
+
 
 class TestDomainExceptionHierarchy:
     """ARCH-04: Verify unified StudioError domain exception hierarchy."""
