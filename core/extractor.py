@@ -595,23 +595,18 @@ def select_primary_container(root: DOMNode) -> DOMNode:
         if tag == "main":
             buckets[1].append(node)
 
-        if attrs:
-            if attrs.get("role") == "main":
-                buckets[2].append(node)
-            if attrs.get("id") == "mw-content-text":
-                buckets[3].append(node)
-
-            cls_val = attrs.get("class")
-            if cls_val and isinstance(cls_val, str):
-                classes = cls_val.lower().split()
-                if "mw-parser-output" in classes:
-                    buckets[4].append(node)
-                if "post-content" in classes:
-                    buckets[5].append(node)
-                if "article-body" in classes:
-                    buckets[6].append(node)
-                if "entry-content" in classes:
-                    buckets[7].append(node)
+        if node.get_attr("role") == "main":
+            buckets[2].append(node)
+        if node.get_attr("id") == "mw-content-text":
+            buckets[3].append(node)
+        if node.has_class("mw-parser-output"):
+            buckets[4].append(node)
+        if node.has_class("post-content"):
+            buckets[5].append(node)
+        if node.has_class("article-body"):
+            buckets[6].append(node)
+        if node.has_class("entry-content"):
+            buckets[7].append(node)
 
         if tag == "body":
             buckets[8].append(node)
