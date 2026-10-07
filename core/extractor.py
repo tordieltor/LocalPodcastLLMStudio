@@ -588,7 +588,6 @@ def select_primary_container(root: DOMNode) -> DOMNode:
     while stack:
         node = stack.pop()
         tag = node.tag
-        attrs = node.attrs
 
         if tag == "article":
             buckets[0].append(node)
