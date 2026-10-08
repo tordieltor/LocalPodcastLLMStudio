@@ -503,8 +503,15 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        # PERFORMANCE OPTIMIZATION: Fast-path class lookup avoiding split and generator allocation
+        class_val = self.attrs.get("class")
+        if not class_val:
+            return False
+        target = class_name.lower()
+        class_lower = class_val.lower()
+        if target not in class_lower:
+            return False
+        return target in class_lower.split()
 
     def get_text_content(self) -> str:
         if self.is_text:
@@ -578,29 +585,60 @@ def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOM
 def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
-    """
-    selectors: list[Callable[[DOMNode], bool]] = [
-        lambda n: n.tag == "article",
-        lambda n: n.tag == "main",
-        lambda n: n.get_attr("role") == "main",
-        lambda n: n.get_attr("id") == "mw-content-text",
-        lambda n: n.has_class("mw-parser-output"),
-        lambda n: n.has_class("post-content"),
-        lambda n: n.has_class("article-body"),
-        lambda n: n.has_class("entry-content"),
-        lambda n: n.tag == "body",
-    ]
 
-    for sel in selectors:
-        matches = _find_nodes(root, sel)
+    PERFORMANCE OPTIMIZATION: Replaces multiple full-tree traversals with a single-pass
+    depth-first DOM walk collecting candidate nodes into priority buckets and caching
+    text content evaluations.
+    """
+    buckets: list[list[DOMNode]] = [[] for _ in range(9)]
+
+    def _walk(node: DOMNode) -> None:
+        if not node.is_text:
+            tag = node.tag
+            if tag == "article":
+                buckets[0].append(node)
+            elif tag == "main":
+                buckets[1].append(node)
+            elif tag == "body":
+                buckets[8].append(node)
+
+            if node.attrs:
+                role = node.attrs.get("role")
+                if role and role.lower() == "main":
+                    buckets[2].append(node)
+                id_val = node.attrs.get("id")
+                if id_val and id_val.lower() == "mw-content-text":
+                    buckets[3].append(node)
+                if node.has_class("mw-parser-output"):
+                    buckets[4].append(node)
+                if node.has_class("post-content"):
+                    buckets[5].append(node)
+                if node.has_class("article-body"):
+                    buckets[6].append(node)
+                if node.has_class("entry-content"):
+                    buckets[7].append(node)
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+
+    for matches in buckets:
         if matches:
             if len(matches) == 1:
-                if len(matches[0].get_text_content().strip()) > 30:
+                content_len = len(matches[0].get_text_content().strip())
+                if content_len > 30:
                     return matches[0]
             else:
-                best = max(matches, key=lambda m: len(m.get_text_content().strip()))
-                if len(best.get_text_content().strip()) > 30:
-                    return best
+                best_node: DOMNode | None = None
+                best_len = -1
+                for m in matches:
+                    c_len = len(m.get_text_content().strip())
+                    if c_len > best_len:
+                        best_len = c_len
+                        best_node = m
+                if best_node is not None and best_len > 30:
+                    return best_node
 
     return root
 
