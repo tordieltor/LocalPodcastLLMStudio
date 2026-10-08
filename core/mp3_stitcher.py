@@ -97,7 +97,9 @@ class MP3Stitcher:
         if header_bytes[offset] != 0xFF:
             return None
 
-        frame_len = _MPEG_FRAME_LEN_TABLE[(header_bytes[offset + 1] << 8) | header_bytes[offset + 2]]
+        frame_len = _MPEG_FRAME_LEN_TABLE[
+            (header_bytes[offset + 1] << 8) | header_bytes[offset + 2]
+        ]
         return frame_len if frame_len != 0 else None
 
     @classmethod
