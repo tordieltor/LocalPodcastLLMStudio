@@ -294,12 +294,17 @@ class TestWindowsAudioPlayerResilience:
 
 
 class TestCrashDumpLogResilience:
-    """SEC-05: Verify crash dump path resolution."""
+    """SEC-05: Verify crash dump path resolution and security isolation."""
 
     def test_resolve_crash_log_path(self):
         path = _resolve_crash_log_path()
         assert path.endswith(".log")
         assert os.path.isabs(path)
+        if hasattr(os, "getuid") and "LocalPodcastLLMStudio_crash_dump" in path:
+            assert f"_{os.getuid()}.log" in path
+        if hasattr(os, "chmod") and os.name != "nt" and os.path.exists(path):
+            mode = os.stat(path).st_mode & 0o777
+            assert mode == 0o600
 
 
 class TestPromptDataclasses:

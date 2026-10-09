@@ -28,13 +28,21 @@ def _resolve_crash_log_path() -> str:
     if local_app_data:
         app_dir = os.path.join(local_app_data, "LocalPodcastLLMStudio")
         candidates.append(os.path.join(app_dir, "crash_dump.log"))
-    candidates.append(os.path.join(tempfile.gettempdir(), "LocalPodcastLLMStudio_crash_dump.log"))
+    uid_suffix = f"_{os.getuid()}" if hasattr(os, "getuid") else ""
+    candidates.append(
+        os.path.join(tempfile.gettempdir(), f"LocalPodcastLLMStudio_crash_dump{uid_suffix}.log")
+    )
 
     for candidate in candidates:
         try:
             os.makedirs(os.path.dirname(os.path.abspath(candidate)), exist_ok=True)
             with open(candidate, "a", encoding="utf-8"):
                 pass
+            if hasattr(os, "chmod") and os.name != "nt" and os.path.exists(candidate):
+                try:
+                    os.chmod(candidate, 0o600)
+                except OSError:
+                    pass
             return candidate
         except OSError:
             continue
