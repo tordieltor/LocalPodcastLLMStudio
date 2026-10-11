@@ -657,7 +657,12 @@ def sanitize_html_boilerplate(html_content: str) -> str:
     container = select_primary_container(builder.root)
     sanitized_html = serialize_node(container)
 
-    cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
+    # PERFORMANCE OPTIMIZATION: Guard regex substitutions with fast substring checks.
+    # Bypasses expensive C-regex execution when citation brackets are absent.
+    cleaned_html = sanitized_html
+    if "[" in cleaned_html:
+        cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", cleaned_html)
+
     cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
 
     return cleaned_html.strip()
