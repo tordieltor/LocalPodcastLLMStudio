@@ -154,6 +154,12 @@ class TestValidateSafeOutputPath:
             "out.mp3\x00",
             "folder\x00/test.mp3",
             "\x00test.mp3",
+            "podcast\n.mp3",
+            "podcast\r.mp3",
+            "podcast\t.mp3",
+            "podcast\x07.mp3",
+            "podcast\x1f.mp3",
+            "podcast\x7f.mp3",
         ],
     )
     def test_validate_safe_output_path_rejections(self, invalid_path):
