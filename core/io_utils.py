@@ -46,6 +46,15 @@ def validate_safe_output_path(
     if "\x00" in path:
         raise ValueError(f"{param_name} contains forbidden null byte (\\x00) character.")
 
+    if any(ord(c) < 32 or ord(c) == 127 for c in clean_path):
+        raise ValueError(f"{param_name} contains forbidden control character.")
+
+    # Check for path traversal components (".." as a segment)
+    normalized = clean_path.replace("\\", "/")
+    parts = normalized.split("/")
+    if ".." in parts:
+        raise ValueError(f"{param_name} contains forbidden path traversal ('..') sequence.")
+
     return clean_path
 
 
