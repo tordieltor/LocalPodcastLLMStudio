@@ -503,8 +503,12 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        # PERFORMANCE OPTIMIZATION: Fast path for nodes without class attributes.
+        # Avoids string splitting, generator comprehensions, and lowercasing for the majority of nodes.
+        class_val = self.attrs.get("class")
+        if not class_val:
+            return False
+        return class_name.lower() in class_val.lower().split()
 
     def get_text_content(self) -> str:
         if self.is_text:
@@ -594,13 +598,17 @@ def select_primary_container(root: DOMNode) -> DOMNode:
     for sel in selectors:
         matches = _find_nodes(root, sel)
         if matches:
-            if len(matches) == 1:
-                if len(matches[0].get_text_content().strip()) > 30:
-                    return matches[0]
-            else:
-                best = max(matches, key=lambda m: len(m.get_text_content().strip()))
-                if len(best.get_text_content().strip()) > 30:
-                    return best
+            # PERFORMANCE OPTIMIZATION: Evaluate text length once per candidate match
+            # to avoid quadratic subtree re-traversals during max() key evaluation.
+            best_node = None
+            best_len = 0
+            for m in matches:
+                text_len = len(m.get_text_content().strip())
+                if text_len > best_len:
+                    best_len = text_len
+                    best_node = m
+            if best_node is not None and best_len > 30:
+                return best_node
 
     return root
 
@@ -894,16 +902,19 @@ class HTMLToMarkdownParser(HTMLParser):
         while self._pieces and self._pieces[-1] == " ":
             self._pieces.pop()
 
-        # PERFORMANCE OPTIMIZATION: O(N) reverse trailing newline count replaces O(N^2)
-        # quadratic full-buffer string joins ("".join(self._pieces)) executed on tag boundaries (~7x speedup).
+        # PERFORMANCE OPTIMIZATION: Non-allocating reverse index scan replaces p.rstrip("\n")
+        # to eliminate temporary string allocations on every HTML tag boundary.
         trailing_newlines = 0
         for p in reversed(self._pieces):
             if not p:
                 continue
-            stripped_len = len(p.rstrip("\n"))
-            newlines_in_p = len(p) - stripped_len
+            p_len = len(p)
+            idx = p_len
+            while idx > 0 and p[idx - 1] == "\n":
+                idx -= 1
+            newlines_in_p = p_len - idx
             trailing_newlines += newlines_in_p
-            if stripped_len > 0:
+            if idx > 0:
                 break
 
         needed = count - trailing_newlines
