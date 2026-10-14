@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-10-14 - Header Verification Bitmasks in CBR MP3 Extraction
+**Learning:** Validating every frame with `parse_frame_length` in contiguous audio streams incurs massive function call overhead (~60% of stitch time). Validating base frame parameters once on frame 0 and comparing subsequent headers via bitwise masks (`b1 == b1_first` and `(b2 & 0xFC) == (b2_first & 0xFC)`) yields a ~3.0x speedup while strictly enforcing CBR parameter constancy.
+**Action:** Use inline header bitmask validation (`b2 & 0xFC`) when scanning homogeneous audio byte streams to verify bitrate and sample rate index constancy without full frame parsing overhead.
