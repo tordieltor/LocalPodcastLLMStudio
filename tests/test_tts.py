@@ -268,6 +268,30 @@ class TestTTSSynthesisExecution:
                 output_path=bad_path,  # type: ignore[arg-type]
             )
 
+    @pytest.mark.asyncio
+    async def test_synthesize_turn_uses_atomic_write(self, tmp_path):
+        out_file = str(tmp_path / "test_turn.wav")
+        with patch("core.tts.atomic_write_file") as mock_atomic_write:
+            mock_atomic_write.return_value = out_file
+            res = await synthesize_turn(
+                text="Testing atomic write output.",
+                voice="en_US-lessac-medium",
+                output_path=out_file,
+            )
+            assert len(res) > 0
+            mock_atomic_write.assert_called_once_with(out_file, res)
+
+    def test_synthesize_dialogue_audio_uses_atomic_write(self, tmp_path, single_frame_mp3):
+        turns = [DialogueTurn(speaker="Host 1", text="Test turn")]
+        out_dir = str(tmp_path / "turns_out")
+        with (
+            patch("core.tts.TTSEngine.run_synthesis_sync", return_value=[single_frame_mp3]),
+            patch("core.tts.atomic_write_file") as mock_atomic_write,
+        ):
+            files = synthesize_dialogue_audio(turns, output_dir=out_dir)
+            assert len(files) == 1
+            assert mock_atomic_write.call_count == 1
+
 
 class TestTTSSoloVoiceAndMonologue:
     """Milestone 2: Solo voice selection and monologue audio synthesis pipeline."""
