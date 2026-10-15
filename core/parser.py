@@ -277,19 +277,21 @@ class DialogueParser:
         # ======================================================================
         # Tier 2: Markdown Code Fence Extraction (```json ... ``` or ``` ... ```)
         # ======================================================================
-        fence_matches = _REGEX_FENCE.findall(cleaned)
-        for fence_content in fence_matches:
-            fence_content = fence_content.strip()
-            try:
-                data = json.loads(fence_content)
-                turns = cls._validate_and_convert(data)
-                if turns:
-                    return turns
-            except (json.JSONDecodeError, TypeError, ValueError):
-                # Try bracket trimming on fence content
-                sub_turns = cls._try_bracket_parse(fence_content)
-                if sub_turns:
-                    return sub_turns
+        # PERFORMANCE OPTIMIZATION: Guard code fence regex scanning with fast '```' substring check
+        if "```" in cleaned:
+            fence_matches = _REGEX_FENCE.findall(cleaned)
+            for fence_content in fence_matches:
+                fence_content = fence_content.strip()
+                try:
+                    data = json.loads(fence_content)
+                    turns = cls._validate_and_convert(data)
+                    if turns:
+                        return turns
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    # Try bracket trimming on fence content
+                    sub_turns = cls._try_bracket_parse(fence_content)
+                    if sub_turns:
+                        return sub_turns
 
         # ======================================================================
         # Tier 3: Substring Outer Bracket Trimming
@@ -386,7 +388,7 @@ class DialogueParser:
         """Converts raw parsed data into List[DialogueTurn]."""
         if isinstance(data, dict):
             # Handle {"dialogue": [...]}, {"turns": [...]}, {"monologue": [...]}, etc.
-            for key in [
+            for key in (
                 "dialogue",
                 "turns",
                 "script",
@@ -398,7 +400,7 @@ class DialogueParser:
                 "audio_essay",
                 "paragraphs",
                 "sections",
-            ]:
+            ):
                 if key in data and isinstance(data[key], list):
                     data = data[key]
                     break
