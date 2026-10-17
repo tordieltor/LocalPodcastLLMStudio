@@ -66,6 +66,21 @@ class TestLoggerSubsystem:
             assert f"_{os.getuid()}" in d
         assert os.path.exists(d)
 
+    def test_resolve_crash_log_path_uid_isolation_and_permissions(self, tmp_path, monkeypatch):
+        from app import _resolve_crash_log_path
+
+        monkeypatch.setattr("os.getcwd", lambda: "/nonexistent_write_protected_dir")
+        monkeypatch.setenv("LOCALAPPDATA", "")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+        path = _resolve_crash_log_path()
+        if hasattr(os, "getuid"):
+            assert f"_{os.getuid()}" in path
+        assert os.path.exists(path)
+        if hasattr(os, "stat") and os.name != "nt":
+            mode = os.stat(path).st_mode & 0o777
+            assert mode == 0o600
+
     def test_main_window_open_logs(self):
         mock_win = MagicMock(spec=MainWindow)
         with (
