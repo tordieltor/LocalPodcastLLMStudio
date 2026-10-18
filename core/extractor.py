@@ -586,7 +586,11 @@ def select_primary_container(root: DOMNode) -> DOMNode:
     """
     # 1. Fast path for top semantic HTML5 tags (<article>, <main>)
     for tag_name in ("article", "main"):
-        matches = _find_nodes(root, lambda n, t=tag_name: n.tag == t)
+
+        def _is_target_tag(n: DOMNode, target: str = tag_name) -> bool:
+            return n.tag == target
+
+        matches = _find_nodes(root, _is_target_tag)
         if matches:
             if len(matches) == 1:
                 if len(matches[0].get_text_content().strip()) > 30:
