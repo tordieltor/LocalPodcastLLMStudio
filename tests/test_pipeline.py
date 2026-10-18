@@ -507,3 +507,35 @@ class TestPipelineCancellation:
                 )
 
         recorder.assert_stage_cancelled(PipelineStage.SCRIPT_GENERATION)
+
+
+class TestPipelineOutputDirValidation:
+    """Validates output_dir path safety enforcement in PodcastGeneratorService."""
+
+    def test_pipeline_output_dir_null_byte_rejection(self) -> None:
+        service = PodcastGeneratorService()
+        opts = GenerationOptions(
+            content="Sample text",
+            output_dir="./output_\x00_test",
+            is_raw_text=True,
+        )
+        with pytest.raises(ValueError, match="forbidden null byte"):
+            service.generate_podcast(options=opts)
+
+    def test_pipeline_output_dir_invalid_type_and_empty_rejection(self) -> None:
+        service = PodcastGeneratorService()
+        opts_type = GenerationOptions(
+            content="Sample text",
+            output_dir=12345,  # type: ignore[arg-type]
+            is_raw_text=True,
+        )
+        with pytest.raises(ValueError, match="must be a str instance"):
+            service.generate_podcast(options=opts_type)
+
+        opts_empty = GenerationOptions(
+            content="Sample text",
+            output_dir="   ",
+            is_raw_text=True,
+        )
+        with pytest.raises(ValueError, match="cannot be empty or whitespace-only"):
+            service.generate_podcast(options=opts_empty)
