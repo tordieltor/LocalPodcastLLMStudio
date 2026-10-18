@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-10-18 - Single-Pass Bucket DOM Traversal for Primary Container Selection
+**Learning:** Performing multiple sequential depth-first tree traversals over a DOM tree for selector priority matching causes redundant tree walks. Traversing the DOM tree once and bucketing candidates into priority lists reduces traversal time from O(K*N) to O(N).
+**Action:** When evaluating ordered element selection criteria over tree structures in Python, collect matching nodes into priority buckets during a single depth-first pass.
