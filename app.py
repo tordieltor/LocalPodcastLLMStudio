@@ -28,13 +28,31 @@ def _resolve_crash_log_path() -> str:
     if local_app_data:
         app_dir = os.path.join(local_app_data, "LocalPodcastLLMStudio")
         candidates.append(os.path.join(app_dir, "crash_dump.log"))
-    candidates.append(os.path.join(tempfile.gettempdir(), "LocalPodcastLLMStudio_crash_dump.log"))
+    uid_suffix = f"_{os.getuid()}" if hasattr(os, "getuid") else ""
+    candidates.append(
+        os.path.join(tempfile.gettempdir(), f"LocalPodcastLLMStudio_crash_dump{uid_suffix}.log")
+    )
+
+    sys_temp = os.path.abspath(tempfile.gettempdir())
+    cwd = os.path.abspath(os.getcwd())
 
     for candidate in candidates:
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(candidate)), exist_ok=True)
+            cand_dir = os.path.dirname(os.path.abspath(candidate))
+            os.makedirs(cand_dir, mode=0o700, exist_ok=True)
+            if hasattr(os, "chmod") and os.name != "nt":
+                if cand_dir != sys_temp and cand_dir != cwd:
+                    try:
+                        os.chmod(cand_dir, 0o700)
+                    except OSError:
+                        pass
             with open(candidate, "a", encoding="utf-8"):
                 pass
+            if hasattr(os, "chmod") and os.name != "nt" and os.path.exists(candidate):
+                try:
+                    os.chmod(candidate, 0o600)
+                except OSError:
+                    pass
             return candidate
         except OSError:
             continue
@@ -58,6 +76,11 @@ def log_crash(exc_type: Any, exc_value: Any, exc_traceback: Any) -> None:
             f.write(f"LocalPodcastLLMStudio Crash Report - {sys.version}\n")
             f.write(f"{'=' * 70}\n")
             traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+        if hasattr(os, "chmod") and os.name != "nt" and os.path.exists(log_path):
+            try:
+                os.chmod(log_path, 0o600)
+            except OSError:
+                pass
     except OSError:
         pass
 
