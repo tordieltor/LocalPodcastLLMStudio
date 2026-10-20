@@ -579,9 +579,31 @@ def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
     """
+    # Fast-path for standard <article> or <main> top-level containers
+    articles = _find_nodes(root, lambda n: n.tag == "article")
+    if articles:
+        best = (
+            max(articles, key=lambda m: len(m.get_text_content().strip()))
+            if len(articles) > 1
+            else articles[0]
+        )
+        if len(best.get_text_content().strip()) > 30:
+            return best
+
+    mains = _find_nodes(root, lambda n: n.tag == "main")
+    if mains:
+        best = (
+            max(mains, key=lambda m: len(m.get_text_content().strip()))
+            if len(mains) > 1
+            else mains[0]
+        )
+        if len(best.get_text_content().strip()) > 30:
+            return best
+
+    # PERFORMANCE OPTIMIZATION:
+    # Perform a single-pass tree traversal evaluating remaining container predicates into priority buckets.
+    # Using DOMNode methods (get_attr, has_class) preserves encapsulation and avoids multi-pass traversals.
     selectors: list[Callable[[DOMNode], bool]] = [
-        lambda n: n.tag == "article",
-        lambda n: n.tag == "main",
         lambda n: n.get_attr("role") == "main",
         lambda n: n.get_attr("id") == "mw-content-text",
         lambda n: n.has_class("mw-parser-output"),
@@ -591,14 +613,23 @@ def select_primary_container(root: DOMNode) -> DOMNode:
         lambda n: n.tag == "body",
     ]
 
-    for sel in selectors:
-        matches = _find_nodes(root, sel)
-        if matches:
-            if len(matches) == 1:
-                if len(matches[0].get_text_content().strip()) > 30:
-                    return matches[0]
+    buckets: list[list[DOMNode]] = [[] for _ in range(len(selectors))]
+
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        for i, sel in enumerate(selectors):
+            if sel(node):
+                buckets[i].append(node)
+        stack.extend(reversed(node.children))
+
+    for candidates in buckets:
+        if candidates:
+            if len(candidates) == 1:
+                if len(candidates[0].get_text_content().strip()) > 30:
+                    return candidates[0]
             else:
-                best = max(matches, key=lambda m: len(m.get_text_content().strip()))
+                best = max(candidates, key=lambda m: len(m.get_text_content().strip()))
                 if len(best.get_text_content().strip()) > 30:
                     return best
 
