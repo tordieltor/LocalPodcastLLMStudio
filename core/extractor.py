@@ -578,21 +578,49 @@ def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOM
 def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
+    Uses a single-pass tree traversal with priority buckets across semantic selectors.
     """
-    selectors: list[Callable[[DOMNode], bool]] = [
-        lambda n: n.tag == "article",
-        lambda n: n.tag == "main",
-        lambda n: n.get_attr("role") == "main",
-        lambda n: n.get_attr("id") == "mw-content-text",
-        lambda n: n.has_class("mw-parser-output"),
-        lambda n: n.has_class("post-content"),
-        lambda n: n.has_class("article-body"),
-        lambda n: n.has_class("entry-content"),
-        lambda n: n.tag == "body",
-    ]
+    # PERFORMANCE OPTIMIZATION: Collect matching nodes into priority buckets in a single-pass
+    # depth-first search instead of running up to 9 full depth-first tree traversals (~9x speedup).
+    buckets: list[list[DOMNode]] = [[] for _ in range(9)]
 
-    for sel in selectors:
-        matches = _find_nodes(root, sel)
+    def _walk(n: DOMNode) -> None:
+        if not n.is_text:
+            tag = n.tag
+            if tag == "article":
+                buckets[0].append(n)
+            elif tag == "main":
+                buckets[1].append(n)
+            elif tag == "body":
+                buckets[8].append(n)
+
+            if n.attrs:
+                role = n.attrs.get("role")
+                if role == "main":
+                    buckets[2].append(n)
+
+                id_val = n.attrs.get("id")
+                if id_val == "mw-content-text":
+                    buckets[3].append(n)
+
+                cls_val = n.attrs.get("class")
+                if cls_val:
+                    classes = {c.lower() for c in cls_val.split()}
+                    if "mw-parser-output" in classes:
+                        buckets[4].append(n)
+                    if "post-content" in classes:
+                        buckets[5].append(n)
+                    if "article-body" in classes:
+                        buckets[6].append(n)
+                    if "entry-content" in classes:
+                        buckets[7].append(n)
+
+            for child in n.children:
+                _walk(child)
+
+    _walk(root)
+
+    for matches in buckets:
         if matches:
             if len(matches) == 1:
                 if len(matches[0].get_text_content().strip()) > 30:
