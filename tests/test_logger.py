@@ -87,3 +87,29 @@ class TestLoggerSubsystem:
             mock_popen.assert_called_once()
             args = mock_popen.call_args[0][0]
             assert args[0] == "xdg-open"
+
+    def test_crash_log_permissions_posix(self, tmp_path, monkeypatch):
+        import stat
+
+        from app import _resolve_crash_log_path, log_crash
+
+        monkeypatch.setattr("os.getcwd", lambda: str(tmp_path))
+        monkeypatch.setenv("LOCALAPPDATA", "")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+        crash_log_path = _resolve_crash_log_path()
+        assert os.path.exists(crash_log_path)
+
+        if os.name != "nt" and hasattr(os, "stat"):
+            mode = os.stat(crash_log_path).st_mode
+            assert stat.S_IMODE(mode) == 0o600
+
+        try:
+            raise ValueError("Test crash permission exception")
+        except ValueError as exc:
+            log_crash(type(exc), exc, exc.__traceback__)
+
+        assert os.path.exists(crash_log_path)
+        if os.name != "nt" and hasattr(os, "stat"):
+            mode = os.stat(crash_log_path).st_mode
+            assert stat.S_IMODE(mode) == 0o600

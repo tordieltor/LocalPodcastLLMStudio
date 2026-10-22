@@ -32,9 +32,20 @@ def _resolve_crash_log_path() -> str:
 
     for candidate in candidates:
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(candidate)), exist_ok=True)
+            target_dir = os.path.dirname(os.path.abspath(candidate))
+            os.makedirs(target_dir, mode=0o700, exist_ok=True)
+            if hasattr(os, "chmod") and os.name != "nt":
+                try:
+                    os.chmod(target_dir, 0o700)
+                except OSError:
+                    pass
             with open(candidate, "a", encoding="utf-8"):
                 pass
+            if hasattr(os, "chmod") and os.name != "nt" and os.path.exists(candidate):
+                try:
+                    os.chmod(candidate, 0o600)
+                except OSError:
+                    pass
             return candidate
         except OSError:
             continue
@@ -58,6 +69,11 @@ def log_crash(exc_type: Any, exc_value: Any, exc_traceback: Any) -> None:
             f.write(f"LocalPodcastLLMStudio Crash Report - {sys.version}\n")
             f.write(f"{'=' * 70}\n")
             traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+        if hasattr(os, "chmod") and os.name != "nt" and os.path.exists(log_path):
+            try:
+                os.chmod(log_path, 0o600)
+            except OSError:
+                pass
     except OSError:
         pass
 
