@@ -378,6 +378,23 @@ class TestPipelineTier1FeatureCoverage:
 class TestPipelineTier2BoundaryAndCorners:
     """Tier 2: Edge values, boundary conditions, empty/oversized payloads, cancellations."""
 
+    @pytest.mark.parametrize(
+        "bad_out_dir",
+        ["", "   ", None, 12345, "bad\x00output_dir", "bad\noutput\rdir"],
+    )
+    def test_pipeline_boundary_rejects_invalid_output_dir(self, bad_out_dir: Any) -> None:
+        """Verifies PodcastGeneratorService rejects invalid output_dir paths."""
+        service = PodcastGeneratorService()
+        options = GenerationOptions(
+            content="Output dir validation test topic",
+            output_dir=bad_out_dir,
+            is_topic=True,
+        )
+        mock_dialogue = [DialogueTurn(speaker="Host 1", text="Validation turn.")]
+        with patch("core.pipeline.generate_podcast_script", return_value=mock_dialogue):
+            with pytest.raises(ValueError):
+                service.generate_podcast(options)
+
     def test_pipeline_boundary_empty_and_whitespace_html(self, tmp_path: Any) -> None:
         """Verifies URL returning empty/whitespace HTML fails gracefully with DocumentExtractionError."""
         service = PodcastGeneratorService()
