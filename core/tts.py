@@ -16,8 +16,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.io_utils import atomic_write_file, validate_safe_output_path
 from core.logger import get_logger
-from core.mp3_stitcher import validate_safe_output_path
 from core.parser import DialogueTurn, SpeakerRole, normalize_speaker
 from core.prompts import normalize_language_code
 
@@ -314,9 +314,7 @@ async def synthesize_turn(
                 audio_bytes = _generate_fallback_wav_pcm(duration_sec=est_sec)
 
             if safe_out_path:
-                os.makedirs(os.path.dirname(os.path.abspath(safe_out_path)), exist_ok=True)
-                with open(safe_out_path, "wb") as f:
-                    f.write(audio_bytes)
+                atomic_write_file(safe_out_path, audio_bytes)
 
             return audio_bytes
 
@@ -327,9 +325,7 @@ async def synthesize_turn(
                 est_sec = max(0.5, (words / 2.5) * length_scale)
                 audio_bytes = _generate_fallback_wav_pcm(duration_sec=est_sec)
                 if safe_out_path:
-                    os.makedirs(os.path.dirname(os.path.abspath(safe_out_path)), exist_ok=True)
-                    with open(safe_out_path, "wb") as f:
-                        f.write(audio_bytes)
+                    atomic_write_file(safe_out_path, audio_bytes)
                 return audio_bytes
             await asyncio.sleep(0.5 * attempt)
 
@@ -488,8 +484,7 @@ def synthesize_dialogue_audio(
             # Detect format (RIFF for WAV, ID3/FF for MP3)
             ext = "wav" if buf.startswith(b"RIFF") else "mp3"
             file_path = os.path.join(target_dir, f"turn_{idx:03d}.{ext}")
-            with open(file_path, "wb") as f:
-                f.write(buf)
+            atomic_write_file(file_path, buf)
             temp_file_paths.append(file_path)
 
         return temp_file_paths
