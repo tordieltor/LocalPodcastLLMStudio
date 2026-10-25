@@ -473,6 +473,23 @@ class TestPipelineErrorHandling:
         recorder.assert_stage_failed(PipelineStage.TTS_SYNTHESIS)
         assert len(recorder.get_events_for_stage(PipelineStage.AUDIO_ASSEMBLY)) == 0
 
+    def test_pipeline_output_dir_path_traversal_rejection(self) -> None:
+        service = PodcastGeneratorService()
+        opts = GenerationOptions(
+            content="Valid content string",
+            is_raw_text=True,
+            output_dir="../forbidden_dir",
+        )
+        with (
+            patch("core.pipeline.extract_text", return_value="Valid text content"),
+            patch(
+                "core.pipeline.generate_podcast_script",
+                return_value=[DialogueTurn(speaker="Host 1", text="Hello")],
+            ),
+        ):
+            with pytest.raises(ValueError, match="contains forbidden path traversal"):
+                service.generate_podcast(options=opts)
+
 
 class TestPipelineCancellation:
     """Validates responsive cancellation and StageStatus.CANCELLED emission."""
