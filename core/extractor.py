@@ -503,8 +503,10 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        class_val = self.attrs.get("class")
+        if not class_val:
+            return False
+        return class_name.lower() in class_val.lower().split()
 
     def get_text_content(self) -> str:
         if self.is_text:
@@ -575,6 +577,26 @@ def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOM
     return results
 
 
+def _has_min_text_length(node: DOMNode, min_len: int = 30) -> bool:
+    """
+    Short-circuits DOM subtree text length counting as soon as non-empty text length
+    exceeds min_len, avoiding full subtree string joins and string allocations.
+    """
+    count = 0
+    stack = [node]
+    while stack:
+        curr = stack.pop()
+        if curr.is_text:
+            s = curr.text.strip() if count == 0 else curr.text
+            if s:
+                count += len(s)
+                if count > min_len:
+                    return True
+        elif not _is_noise_node(curr):
+            stack.extend(reversed(curr.children))
+    return count > min_len
+
+
 def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
@@ -595,11 +617,12 @@ def select_primary_container(root: DOMNode) -> DOMNode:
         matches = _find_nodes(root, sel)
         if matches:
             if len(matches) == 1:
-                if len(matches[0].get_text_content().strip()) > 30:
+                # PERFORMANCE OPTIMIZATION: Short-circuit text length check without full string join
+                if _has_min_text_length(matches[0], 30):
                     return matches[0]
             else:
                 best = max(matches, key=lambda m: len(m.get_text_content().strip()))
-                if len(best.get_text_content().strip()) > 30:
+                if _has_min_text_length(best, 30):
                     return best
 
     return root
