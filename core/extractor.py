@@ -503,8 +503,12 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        # PERFORMANCE OPTIMIZATION: Fast-path missing or empty class attributes to avoid list allocations,
+        # and lowercase class attribute string once before splitting to avoid per-token lowercasing and generator overhead.
+        class_val = self.attrs.get("class")
+        if not class_val:
+            return False
+        return class_name.lower() in class_val.lower().split()
 
     def get_text_content(self) -> str:
         if self.is_text:
