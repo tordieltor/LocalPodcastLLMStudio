@@ -3335,6 +3335,9 @@ class MainWindow(ctk.CTk):
                     os.startfile(log_path)  # nosec: B606
                 elif os.path.isdir(log_dir):
                     os.startfile(log_dir)  # nosec: B606
+            elif sys.platform == "darwin":
+                if os.path.isdir(log_dir):
+                    subprocess.Popen(["open", log_dir])  # nosec: B603, B607
             else:
                 if os.path.isdir(log_dir):
                     subprocess.Popen(["xdg-open", log_dir])  # nosec: B603, B607
