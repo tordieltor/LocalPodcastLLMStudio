@@ -503,8 +503,11 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        # Fast-path missing or empty class attributes to avoid split allocations and per-token lowercasing
+        class_attr = self.attrs.get("class")
+        if not class_attr:
+            return False
+        return class_name.lower() in class_attr.lower().split()
 
     def get_text_content(self) -> str:
         if self.is_text:
@@ -575,6 +578,35 @@ def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOM
     return results
 
 
+def _has_min_text_length(node: DOMNode, min_length: int = 30) -> bool:
+    """
+    Checks whether a DOM subtree contains at least min_length non-whitespace characters,
+    short-circuiting early without full DOM text concatenation or string allocations.
+    """
+    count = 0
+    stack = [node]
+    while stack:
+        curr = stack.pop()
+        if curr.is_text:
+            for ch in curr.text:
+                if not ch.isspace():
+                    count += 1
+                    if count > min_length:
+                        return True
+        elif not _is_noise_node(curr):
+            stack.extend(reversed(curr.children))
+    return count > min_length
+
+
+def _get_text_length(node: DOMNode) -> int:
+    """Calculates non-whitespace character count in node subtree without allocating concatenated strings."""
+    if node.is_text:
+        return sum(1 for ch in node.text if not ch.isspace())
+    if _is_noise_node(node):
+        return 0
+    return sum(_get_text_length(c) for c in node.children)
+
+
 def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
@@ -595,11 +627,11 @@ def select_primary_container(root: DOMNode) -> DOMNode:
         matches = _find_nodes(root, sel)
         if matches:
             if len(matches) == 1:
-                if len(matches[0].get_text_content().strip()) > 30:
+                if _has_min_text_length(matches[0], 30):
                     return matches[0]
             else:
-                best = max(matches, key=lambda m: len(m.get_text_content().strip()))
-                if len(best.get_text_content().strip()) > 30:
+                best = max(matches, key=_get_text_length)
+                if _has_min_text_length(best, 30):
                     return best
 
     return root
