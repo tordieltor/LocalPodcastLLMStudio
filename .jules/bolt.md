@@ -5,3 +5,7 @@
 ## 2026-08-23 - Fast-path Substring Guards Before Regex Executions
 **Learning:** Executing compiled C-regex substitution methods (e.g., `_RE_HYPHEN_BREAK.sub`) on large text strings incurs noticeable invocation overhead even when the target pattern is absent. Checking substring presence first in pure C Python (`if '-\n' in text:`) avoids expensive regex engine invocations.
 **Action:** Guard string regex replacements with fast `in` substring checks when target tokens are sparse/absent in the vast majority of input documents.
+
+## 2026-10-28 - Avoid Dict Allocation for Sparse Tag Attributes
+**Learning:** In streaming HTML parsers (`HTMLParser`), constructing attribute dictionaries (`{k.lower(): (v or "") for k, v in attrs}`) on every tag call allocates thousands of unused dictionaries when attributes are only needed for specific tags (e.g., `<a>`).
+**Action:** Inspect tag names before constructing attribute dictionaries or iterate `attrs` tuples directly inside tag-specific handler branches.
