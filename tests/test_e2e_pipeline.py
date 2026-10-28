@@ -905,3 +905,16 @@ class TestPipelineTier5AdversarialHardening:
             res = service.generate_podcast(options)
             assert len(res.dialogue) == 2
             assert all(t.speaker == "Host 1" for t in res.dialogue)
+
+    @pytest.mark.parametrize(
+        "invalid_output_dir",
+        ["", "   ", "out\x00dir", "out\npath", None, 12345],
+    )
+    def test_pipeline_rejects_invalid_output_dir(self, invalid_output_dir):
+        service = PodcastGeneratorService()
+        options = GenerationOptions(
+            content="Sample text",
+            output_dir=invalid_output_dir,  # type: ignore[arg-type]
+        )
+        with pytest.raises(ValueError):
+            service.generate_podcast(options)

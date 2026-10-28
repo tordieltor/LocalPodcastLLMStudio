@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 
 from core.extractor import extract_text
-from core.io_utils import atomic_write_file
+from core.io_utils import atomic_write_file, validate_safe_output_path
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import generate_podcast_script
 from core.parser import DialogueTurn, dialogue_to_json, dialogue_to_markdown
@@ -104,6 +104,9 @@ class PodcastGeneratorService:
         Returns:
             GenerationResult containing file paths, dialogue turns, and duration estimate.
         """
+        options.output_dir = validate_safe_output_path(
+            options.output_dir, param_name="options.output_dir"
+        )
         current_pct = 0.0
         current_stage = PipelineStage.URL_INGESTION
 
