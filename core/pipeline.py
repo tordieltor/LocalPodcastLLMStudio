@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 
 from core.extractor import extract_text
-from core.io_utils import atomic_write_file
+from core.io_utils import atomic_write_file, validate_safe_output_path
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import generate_podcast_script
 from core.parser import DialogueTurn, dialogue_to_json, dialogue_to_markdown
@@ -286,9 +286,12 @@ class PodcastGeneratorService:
 
             _check_cancelled()
 
-            os.makedirs(options.output_dir, exist_ok=True)
-            script_json_path = os.path.join(options.output_dir, "transcript.json")
-            script_md_path = os.path.join(options.output_dir, "transcript.md")
+            safe_out_dir = validate_safe_output_path(
+                options.output_dir, param_name="options.output_dir"
+            )
+            os.makedirs(safe_out_dir, exist_ok=True)
+            script_json_path = os.path.join(safe_out_dir, "transcript.json")
+            script_md_path = os.path.join(safe_out_dir, "transcript.md")
             atomic_write_file(script_json_path, dialogue_to_json(dialogue))
             atomic_write_file(
                 script_md_path,
@@ -357,7 +360,7 @@ class PodcastGeneratorService:
 
             master_mp3 = stitch_mp3_files(
                 input_files_or_bytes=audio_files,
-                output_file_path=os.path.join(options.output_dir, "podcast.mp3"),
+                output_file_path=os.path.join(safe_out_dir, "podcast.mp3"),
             )
 
             _check_cancelled()
