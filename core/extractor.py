@@ -503,8 +503,13 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        cls_attr = self.attrs.get("class")
+        if not cls_attr:
+            return False
+        c_lower = class_name.lower()
+        if cls_attr.lower() == c_lower:
+            return True
+        return c_lower in (c.lower() for c in cls_attr.split())
 
     def get_text_content(self) -> str:
         if self.is_text:
@@ -562,45 +567,82 @@ def _is_noise_node(node: DOMNode) -> bool:
 
 
 def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOMNode]:
-    """Depth-first search collecting nodes matching the given predicate."""
+    """Depth-first search collecting nodes matching the given predicate (iterative stack)."""
     results: list[DOMNode] = []
-
-    def _walk(node: DOMNode) -> None:
+    stack = [root]
+    while stack:
+        node = stack.pop()
         if predicate(node):
             results.append(node)
-        for child in node.children:
-            _walk(child)
-
-    _walk(root)
+        if node.children:
+            stack.extend(reversed(node.children))
     return results
+
+
+def _has_min_text_length(node: DOMNode, min_length: int = 30) -> bool:
+    """
+    Counts non-whitespace text characters in a DOM subtree,
+    short-circuiting as soon as min_length is exceeded.
+    """
+    total = 0
+    stack = [node]
+    while stack:
+        curr = stack.pop()
+        if curr.is_text:
+            text = curr.text.strip()
+            if text:
+                total += len(text)
+                if total > min_length:
+                    return True
+        elif not _is_noise_node(curr):
+            if curr.children:
+                stack.extend(reversed(curr.children))
+    return total > min_length
 
 
 def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
+    Uses a single-pass priority bucket traversal to avoid redundant tree walks.
     """
-    selectors: list[Callable[[DOMNode], bool]] = [
-        lambda n: n.tag == "article",
-        lambda n: n.tag == "main",
-        lambda n: n.get_attr("role") == "main",
-        lambda n: n.get_attr("id") == "mw-content-text",
-        lambda n: n.has_class("mw-parser-output"),
-        lambda n: n.has_class("post-content"),
-        lambda n: n.has_class("article-body"),
-        lambda n: n.has_class("entry-content"),
-        lambda n: n.tag == "body",
-    ]
+    buckets: list[list[DOMNode]] = [[] for _ in range(9)]
 
-    for sel in selectors:
-        matches = _find_nodes(root, sel)
-        if matches:
-            if len(matches) == 1:
-                if len(matches[0].get_text_content().strip()) > 30:
-                    return matches[0]
-            else:
-                best = max(matches, key=lambda m: len(m.get_text_content().strip()))
-                if len(best.get_text_content().strip()) > 30:
-                    return best
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.tag == "article":
+            buckets[0].append(n)
+        if n.tag == "main":
+            buckets[1].append(n)
+        if n.attrs:
+            if n.attrs.get("role") == "main":
+                buckets[2].append(n)
+            if n.attrs.get("id") == "mw-content-text":
+                buckets[3].append(n)
+            if n.has_class("mw-parser-output"):
+                buckets[4].append(n)
+            if n.has_class("post-content"):
+                buckets[5].append(n)
+            if n.has_class("article-body"):
+                buckets[6].append(n)
+            if n.has_class("entry-content"):
+                buckets[7].append(n)
+        if n.tag == "body":
+            buckets[8].append(n)
+
+        if n.children:
+            stack.extend(reversed(n.children))
+
+    for bucket in buckets:
+        if not bucket:
+            continue
+        if len(bucket) == 1:
+            if _has_min_text_length(bucket[0], 30):
+                return bucket[0]
+        else:
+            best = max(bucket, key=lambda m: len(m.get_text_content().strip()))
+            if _has_min_text_length(best, 30):
+                return best
 
     return root
 
