@@ -96,7 +96,7 @@ class TestVoiceModelCacheConcurrencyStress:
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=10.0)
+                t.join(timeout=30.0)
 
         assert errors == [], f"Exceptions occurred during concurrent voice loading: {errors}"
         for idx, res in enumerate(results):

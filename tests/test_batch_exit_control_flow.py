@@ -55,16 +55,15 @@ def _create_batch_sandbox(tmp_path: Path) -> Path:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(sys.executable, scripts_dir / "python.exe")
 
-    # Copy pyvenv.cfg if present (so CPython / uv launcher locates stdlib cleanly)
-    src_venv_cfg = Path(sys.executable).resolve().parent.parent / "pyvenv.cfg"
-    if not src_venv_cfg.exists():
-        src_venv_cfg = REPO_ROOT / ".venv" / "pyvenv.cfg"
-    if src_venv_cfg.exists():
-        cfg_lines = []
-        for line in src_venv_cfg.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not line.strip().lower().startswith("include-system-site-packages"):
-                cfg_lines.append(line)
-        (sandbox / ".venv" / "pyvenv.cfg").write_text("\n".join(cfg_lines) + "\n", encoding="utf-8")
+    # Guarantee pyvenv.cfg exists so CPython / uv launcher treats .venv as a virtualenv
+    # and strictly isolates from system site-packages on CI runner toolcaches.
+    base_dir = Path(getattr(sys, "base_prefix", sys.prefix)).resolve()
+    pyvenv_lines = [
+        f"home = {base_dir}",
+        "include-system-site-packages = false",
+        f"version = {sys.version.split()[0]}",
+    ]
+    (sandbox / ".venv" / "pyvenv.cfg").write_text("\n".join(pyvenv_lines) + "\n", encoding="utf-8")
 
     # Stub pip and PyInstaller inside sandbox site-packages so `-m pip` and `-m PyInstaller`
     # execute deterministically offline in milliseconds.
