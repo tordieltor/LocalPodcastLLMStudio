@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+import venv
 from pathlib import Path
 
 import pytest
@@ -50,21 +51,10 @@ def _create_batch_sandbox(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
 
-    # Create isolated .venv layout copying only the lightweight python launcher binary
-    scripts_dir = sandbox / ".venv" / "Scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(sys.executable, scripts_dir / "python.exe")
-
-    # Copy pyvenv.cfg if present (so CPython / uv launcher locates stdlib cleanly)
-    src_venv_cfg = Path(sys.executable).resolve().parent.parent / "pyvenv.cfg"
-    if not src_venv_cfg.exists():
-        src_venv_cfg = REPO_ROOT / ".venv" / "pyvenv.cfg"
-    if src_venv_cfg.exists():
-        cfg_lines = []
-        for line in src_venv_cfg.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not line.strip().lower().startswith("include-system-site-packages"):
-                cfg_lines.append(line)
-        (sandbox / ".venv" / "pyvenv.cfg").write_text("\n".join(cfg_lines) + "\n", encoding="utf-8")
+    # Provision a genuine stdlib virtual environment (without pip bootstrap overhead)
+    # so `.venv\Scripts\python.exe` uses CPython's official venvlauncher trampoline with
+    # `include-system-site-packages = false` across both local `.venv` and global CI runners.
+    venv.EnvBuilder(with_pip=False).create(sandbox / ".venv")
 
     # Stub pip and PyInstaller inside sandbox site-packages so `-m pip` and `-m PyInstaller`
     # execute deterministically offline in milliseconds.
@@ -106,6 +96,19 @@ def _create_batch_sandbox(tmp_path: Path) -> Path:
     return sandbox
 
 
+def _sandbox_env(sandbox: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Builds a subprocess environment that forces Python inside the sandbox to resolve
+    stubbed `pip` and `PyInstaller` from sandbox site-packages ahead of any global runner packages.
+    """
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(sandbox / ".venv" / "Lib" / "site-packages")
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    if extra:
+        env.update(extra)
+    return env
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows batch script tests require Windows")
 class TestBatchExitControlFlow:
     """Test suite verifying exit control-flow remediation in build_exe.bat and setup.bat."""
@@ -121,6 +124,7 @@ class TestBatchExitControlFlow:
             encoding="utf-8",
             errors="replace",
             timeout=60,
+            env=_sandbox_env(sandbox),
         )
         assert proc.returncode == 0, (
             f"setup.bat failed with code {proc.returncode}:\n{proc.stdout}\n{proc.stderr}"
@@ -130,8 +134,6 @@ class TestBatchExitControlFlow:
     def test_setup_bat_ci_mode(self, tmp_path: Path):
         """Verify that GITHUB_ACTIONS environment variable triggers non-interactive execution."""
         sandbox = _create_batch_sandbox(tmp_path)
-        env = os.environ.copy()
-        env["GITHUB_ACTIONS"] = "true"
         proc = subprocess.run(
             ["cmd.exe", "/c", str(sandbox / "setup.bat")],
             cwd=str(sandbox),
@@ -140,7 +142,7 @@ class TestBatchExitControlFlow:
             encoding="utf-8",
             errors="replace",
             timeout=60,
-            env=env,
+            env=_sandbox_env(sandbox, {"GITHUB_ACTIONS": "true"}),
         )
         assert proc.returncode == 0, f"setup.bat failed in CI mode:\n{proc.stdout}\n{proc.stderr}"
         assert "Setup complete" in proc.stdout
@@ -166,6 +168,7 @@ class TestBatchExitControlFlow:
                 encoding="utf-8",
                 errors="replace",
                 timeout=60,
+                env=_sandbox_env(sandbox),
             )
 
             assert proc.returncode == 1, (
@@ -201,6 +204,7 @@ class TestBatchExitControlFlow:
             encoding="utf-8",
             errors="replace",
             timeout=60,
+            env=_sandbox_env(sandbox),
         )
 
         assert proc.returncode == 1, f"Expected exit code 1, got {proc.returncode}:\n{proc.stdout}"
@@ -220,6 +224,7 @@ class TestBatchExitControlFlow:
             encoding="utf-8",
             errors="replace",
             timeout=60,
+            env=_sandbox_env(sandbox),
         )
 
         assert proc.returncode == 0, (

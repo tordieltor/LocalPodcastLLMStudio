@@ -5,9 +5,11 @@ inter-speaker silence frame injector, and unified ID3v2.3 metadata writer.
 Zero external ffmpeg binary dependencies.
 """
 
+import array
 import io
 import os
 import struct
+import sys
 import wave
 from collections.abc import Sequence
 
@@ -415,11 +417,22 @@ class WAVStitcher:
             return channels
 
         if sampwidth == 2:
-            samples = struct.unpack(
-                f"<{total_frames * nchannels}h", pcm_bytes[: total_frames * frame_stride]
-            )
-            for ch in range(nchannels):
-                channels[ch] = list(samples[ch::nchannels])
+            raw16 = pcm_bytes[: total_frames * frame_stride]
+            if array.array("h").itemsize == 2:
+                arr = array.array("h")
+                arr.frombytes(raw16)
+                if sys.byteorder != "little":
+                    arr.byteswap()
+                if nchannels == 1:
+                    return [arr.tolist()]
+                for ch in range(nchannels):
+                    channels[ch] = arr[ch::nchannels].tolist()
+            else:
+                samples = struct.unpack(f"<{total_frames * nchannels}h", raw16)
+                if nchannels == 1:
+                    return [list(samples)]
+                for ch in range(nchannels):
+                    channels[ch] = list(samples[ch::nchannels])
         elif sampwidth == 1:
             for idx in range(total_frames):
                 base = idx * frame_stride
@@ -453,17 +466,23 @@ class WAVStitcher:
 
         dst_len = max(1, int(round(src_len * (dst_rate / src_rate))))
         ratio = (src_len - 1) / max(1, dst_len - 1) if dst_len > 1 else 0.0
-        out: list[int] = []
+        out: list[int] = [0] * dst_len
         last_idx = src_len - 1
         for i in range(dst_len):
             pos = i * ratio
             i0 = int(pos)
             if i0 >= last_idx:
-                out.append(samples[last_idx])
+                out[i] = samples[last_idx]
             else:
+                s0 = samples[i0]
                 frac = pos - i0
-                interp = int(round(samples[i0] * (1.0 - frac) + samples[i0 + 1] * frac))
-                out.append(max(-32768, min(32767, interp)))
+                interp = int(round(s0 + (samples[i0 + 1] - s0) * frac))
+                if interp > 32767:
+                    out[i] = 32767
+                elif interp < -32768:
+                    out[i] = -32768
+                else:
+                    out[i] = interp
         return out
 
     @classmethod
@@ -507,6 +526,17 @@ class WAVStitcher:
             ]
 
         n_out = len(norm_channels[0])
+        if dst_width == 2 and array.array("h").itemsize == 2:
+            if dst_channels == 1:
+                arr_out = array.array("h", norm_channels[0])
+            else:
+                arr_out = array.array("h", [0]) * (n_out * dst_channels)
+                for ch in range(dst_channels):
+                    arr_out[ch::dst_channels] = array.array("h", norm_channels[ch])
+            if sys.byteorder != "little":
+                arr_out.byteswap()
+            return arr_out.tobytes()
+
         interleaved: list[int] = []
         for i in range(n_out):
             for ch in range(dst_channels):
