@@ -11,6 +11,7 @@ import struct
 import wave
 from collections.abc import Sequence
 
+from core.exceptions import AudioStitchingError
 from core.io_utils import atomic_write_file, validate_safe_output_path
 
 
@@ -79,6 +80,9 @@ class MP3Stitcher:
 
         if pos >= end_pos:
             return b""
+
+        if pos == 0 and end_pos == total_len:
+            return mp3_data
 
         return mp3_data[pos:end_pos]
 
@@ -176,10 +180,14 @@ class MP3Stitcher:
         # This reduces per-frame extraction time by ~40-50% while guaranteeing binary validity.
         first_frame_len = cls.parse_frame_length(clean_data, offset=0)
         if first_frame_len:
+            first_hdr = clean_data[:4]
             pos = 0
             valid = True
             while pos <= total_len - 4:
-                flen = cls.parse_frame_length(clean_data, offset=pos)
+                if clean_data[pos : pos + 4] == first_hdr:
+                    flen: int | None = first_frame_len
+                else:
+                    flen = cls.parse_frame_length(clean_data, offset=pos)
                 if flen is None or abs(flen - first_frame_len) > 1:
                     valid = False
                     break
@@ -390,9 +398,131 @@ class MP3Stitcher:
 class WAVStitcher:
     """
     Pure Python WAV Audio Stitcher using standard library wave module.
-    Extracts raw PCM frames, normalizes channel/sample rates, and injects
+    Extracts raw PCM frames, normalizes channel/sample widths/sample rates across
+    heterogeneous Piper voice models (e.g. 16 kHz low + 22.05 kHz medium), and injects
     silence audio frames between turns. Zero external dependencies.
     """
+
+    @staticmethod
+    def _decode_to_int16_channels(
+        pcm_bytes: bytes, nchannels: int, sampwidth: int
+    ) -> list[list[int]]:
+        """Decodes 8/16/24/32-bit PCM bytes into per-channel signed 16-bit integer lists."""
+        frame_stride = max(1, nchannels * sampwidth)
+        total_frames = len(pcm_bytes) // frame_stride
+        channels: list[list[int]] = [[] for _ in range(nchannels)]
+        if total_frames == 0:
+            return channels
+
+        if sampwidth == 2:
+            samples = struct.unpack(
+                f"<{total_frames * nchannels}h", pcm_bytes[: total_frames * frame_stride]
+            )
+            for ch in range(nchannels):
+                channels[ch] = list(samples[ch::nchannels])
+        elif sampwidth == 1:
+            for idx in range(total_frames):
+                base = idx * frame_stride
+                for ch in range(nchannels):
+                    # 8-bit WAV is unsigned [0..255] centered at 128
+                    channels[ch].append((pcm_bytes[base + ch] - 128) << 8)
+        elif sampwidth == 3:
+            for idx in range(total_frames):
+                base = idx * frame_stride
+                for ch in range(nchannels):
+                    off = base + ch * 3
+                    val24 = int.from_bytes(pcm_bytes[off : off + 3], "little", signed=True)
+                    channels[ch].append(max(-32768, min(32767, val24 >> 8)))
+        elif sampwidth == 4:
+            samples32 = struct.unpack(
+                f"<{total_frames * nchannels}i", pcm_bytes[: total_frames * frame_stride]
+            )
+            for ch in range(nchannels):
+                channels[ch] = [max(-32768, min(32767, s >> 16)) for s in samples32[ch::nchannels]]
+        return channels
+
+    @staticmethod
+    def _resample_linear(samples: list[int], src_rate: int, dst_rate: int) -> list[int]:
+        """Pure-Python linear interpolation resampler between PCM sample rates."""
+        if not samples or src_rate <= 0 or dst_rate <= 0 or src_rate == dst_rate:
+            return samples
+        src_len = len(samples)
+        if src_len == 1:
+            out_len = max(1, int(round(dst_rate / src_rate)))
+            return [samples[0]] * out_len
+
+        dst_len = max(1, int(round(src_len * (dst_rate / src_rate))))
+        ratio = (src_len - 1) / max(1, dst_len - 1) if dst_len > 1 else 0.0
+        out: list[int] = []
+        last_idx = src_len - 1
+        for i in range(dst_len):
+            pos = i * ratio
+            i0 = int(pos)
+            if i0 >= last_idx:
+                out.append(samples[last_idx])
+            else:
+                frac = pos - i0
+                interp = int(round(samples[i0] * (1.0 - frac) + samples[i0 + 1] * frac))
+                out.append(max(-32768, min(32767, interp)))
+        return out
+
+    @classmethod
+    def _normalize_pcm_segment(
+        cls,
+        pcm_bytes: bytes,
+        src_channels: int,
+        src_width: int,
+        src_rate: int,
+        dst_channels: int,
+        dst_width: int,
+        dst_rate: int,
+    ) -> bytes:
+        """Normalizes PCM frames to target channel count, sample width, and sample rate."""
+        if src_channels == dst_channels and src_width == dst_width and src_rate == dst_rate:
+            return pcm_bytes
+
+        decoded = cls._decode_to_int16_channels(pcm_bytes, src_channels, src_width)
+        if not decoded or not decoded[0]:
+            return b""
+
+        # Convert channel topology (mono <-> stereo/multi)
+        if src_channels == dst_channels:
+            norm_channels = decoded
+        elif dst_channels == 1:
+            n_frames = len(decoded[0])
+            mono = [
+                int(sum(decoded[ch][i] for ch in range(src_channels)) / src_channels)
+                for i in range(n_frames)
+            ]
+            norm_channels = [mono]
+        elif src_channels == 1:
+            norm_channels = [list(decoded[0]) for _ in range(dst_channels)]
+        else:
+            norm_channels = [list(decoded[ch % src_channels]) for ch in range(dst_channels)]
+
+        # Resample each channel to dst_rate if needed
+        if src_rate != dst_rate:
+            norm_channels = [
+                cls._resample_linear(ch_samples, src_rate, dst_rate) for ch_samples in norm_channels
+            ]
+
+        n_out = len(norm_channels[0])
+        interleaved: list[int] = []
+        for i in range(n_out):
+            for ch in range(dst_channels):
+                interleaved.append(max(-32768, min(32767, norm_channels[ch][i])))
+
+        if dst_width == 2:
+            return struct.pack(f"<{len(interleaved)}h", *interleaved)
+        if dst_width == 1:
+            return bytes(max(0, min(255, (s >> 8) + 128)) for s in interleaved)
+        if dst_width == 4:
+            return struct.pack(f"<{len(interleaved)}i", *(s << 16 for s in interleaved))
+        # Default fallback to 16-bit packed if 24-bit target requested
+        out24 = bytearray()
+        for s in interleaved:
+            out24.extend(int(s << 8).to_bytes(3, "little", signed=True))
+        return bytes(out24)
 
     @classmethod
     def stitch(
@@ -400,14 +530,14 @@ class WAVStitcher:
         segments: Sequence[bytes | bytearray],
         pause_ms: int = 350,
     ) -> bytes:
-        """Stitches multiple WAV byte buffers in-memory into a single WAV byte buffer."""
+        """Stitches multiple WAV byte buffers in-memory into a single normalized WAV byte buffer."""
         if not segments:
             return b""
 
         frames_list: list[bytes] = []
-        nchannels = 1
-        sampwidth = 2
-        framerate = 22050
+        target_channels: int | None = None
+        target_sampwidth: int | None = None
+        target_framerate: int | None = None
 
         for seg in segments:
             raw = bytes(seg)
@@ -416,26 +546,57 @@ class WAVStitcher:
             if raw.startswith(b"RIFF"):
                 try:
                     with wave.open(io.BytesIO(raw), "rb") as wf:
-                        nchannels = wf.getnchannels()
-                        sampwidth = wf.getsampwidth()
-                        framerate = wf.getframerate()
-                        frames_list.append(wf.readframes(wf.getnframes()))
+                        seg_channels = wf.getnchannels()
+                        seg_width = wf.getsampwidth()
+                        seg_rate = wf.getframerate()
+                        seg_frames = wf.readframes(wf.getnframes())
                 except (wave.Error, EOFError, OSError, ValueError):
-                    pass
+                    continue
+
+                if not seg_frames or seg_channels <= 0 or seg_width <= 0 or seg_rate <= 0:
+                    continue
+
+                if target_channels is None:
+                    target_channels = seg_channels
+                    target_sampwidth = seg_width if seg_width in (1, 2, 3, 4) else 2
+                    target_framerate = seg_rate
+
+                assert target_sampwidth is not None and target_framerate is not None
+                normalized = cls._normalize_pcm_segment(
+                    seg_frames,
+                    src_channels=seg_channels,
+                    src_width=seg_width,
+                    src_rate=seg_rate,
+                    dst_channels=target_channels,
+                    dst_width=target_sampwidth,
+                    dst_rate=target_framerate,
+                )
+                if normalized:
+                    frames_list.append(normalized)
             else:
+                if target_channels is None:
+                    target_channels = 1
+                    target_sampwidth = 2
+                    target_framerate = 22050
                 frames_list.append(raw)
 
-        if not frames_list:
+        if (
+            not frames_list
+            or target_channels is None
+            or target_sampwidth is None
+            or target_framerate is None
+        ):
             return b""
 
-        silence_frames_count = int((pause_ms / 1000.0) * framerate)
-        silence_bytes = b"\x00" * (silence_frames_count * nchannels * sampwidth)
+        silence_frames_count = max(0, int((pause_ms / 1000.0) * target_framerate))
+        silence_unit = b"\x80" if target_sampwidth == 1 else b"\x00" * target_sampwidth
+        silence_bytes = silence_unit * (silence_frames_count * target_channels)
 
         out_buf = io.BytesIO()
         with wave.open(out_buf, "wb") as out_wf:
-            out_wf.setnchannels(nchannels)
-            out_wf.setsampwidth(sampwidth)
-            out_wf.setframerate(framerate)
+            out_wf.setnchannels(target_channels)
+            out_wf.setsampwidth(target_sampwidth)
+            out_wf.setframerate(target_framerate)
             for idx, f in enumerate(frames_list):
                 if idx > 0 and silence_bytes:
                     out_wf.writeframes(silence_bytes)
@@ -462,7 +623,7 @@ def stitch_mp3_files(
     safe_out_path = validate_safe_output_path(output_file_path, param_name="output_file_path")
 
     if not input_files_or_bytes:
-        raise ValueError("Cannot stitch empty list of audio inputs.")
+        raise AudioStitchingError("Cannot stitch empty list of audio inputs.")
 
     byte_segments: list[bytes] = []
     for item in input_files_or_bytes:
@@ -476,21 +637,21 @@ def stitch_mp3_files(
 
     valid_segments = [s for s in byte_segments if s]
     if not valid_segments:
-        raise ValueError("Cannot stitch empty list of audio inputs.")
+        raise AudioStitchingError("Cannot stitch empty list of audio inputs.")
 
     # Check if inputs are WAV or MP3
     is_wav = valid_segments[0].startswith(b"RIFF")
     if is_wav:
         if not all(s.startswith(b"RIFF") for s in valid_segments):
-            raise ValueError(
+            raise AudioStitchingError(
                 "Mixed audio formats detected: cannot concatenate WAV and MP3 segments without transcoding."
             )
         stitched_bytes = WAVStitcher.stitch(segments=valid_segments, pause_ms=silence_duration_ms)
         if not stitched_bytes:
-            raise ValueError("No valid WAV audio frames could be extracted from inputs.")
+            raise AudioStitchingError("No valid WAV audio frames could be extracted from inputs.")
     else:
         if any(s.startswith(b"RIFF") for s in valid_segments):
-            raise ValueError(
+            raise AudioStitchingError(
                 "Mixed audio formats detected: cannot concatenate MP3 and WAV segments without transcoding."
             )
         stitched_bytes = MP3Stitcher.stitch(
@@ -501,6 +662,8 @@ def stitch_mp3_files(
             pause_ms=silence_duration_ms,
         )
         if not stitched_bytes:
-            raise ValueError("No valid MPEG Layer III audio frames could be extracted from inputs.")
+            raise AudioStitchingError(
+                "No valid MPEG Layer III audio frames could be extracted from inputs."
+            )
 
     return atomic_write_file(safe_out_path, stitched_bytes)

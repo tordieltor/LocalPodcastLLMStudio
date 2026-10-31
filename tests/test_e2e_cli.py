@@ -505,21 +505,29 @@ class TestCLITier2BoundaryAndCorners:
         data = json.loads(captured.out)
         assert data["success"] is False
 
-    def test_synthesize_audio_corrupt_json_file(self, tmp_path: Any) -> None:
-        """Verifies synthesize-audio on malformed JSON script raises ValueError."""
+    def test_synthesize_audio_corrupt_json_file(self, tmp_path: Any, capsys: Any) -> None:
+        """Verifies synthesize-audio on malformed JSON script returns code 1 and valid JSON error."""
         corrupt_json = tmp_path / "corrupt.json"
         corrupt_json.write_text("{ this is not valid json dialogue !!!", encoding="utf-8")
 
-        with pytest.raises(ValueError):
-            cli.main(["synthesize-audio", "-i", str(corrupt_json), "--json"])
+        exit_code = cli.main(["synthesize-audio", "-i", str(corrupt_json), "--json"])
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is False
+        assert "error" in data
 
-    def test_synthesize_audio_empty_dialogue_array(self, tmp_path: Any) -> None:
-        """Verifies synthesize-audio on empty dialogue list raises ValueError."""
+    def test_synthesize_audio_empty_dialogue_array(self, tmp_path: Any, capsys: Any) -> None:
+        """Verifies synthesize-audio on empty dialogue list returns code 1 and valid JSON error."""
         empty_json = tmp_path / "empty_dialogue.json"
         empty_json.write_text("[]", encoding="utf-8")
 
-        with pytest.raises(ValueError):
-            cli.main(["synthesize-audio", "-i", str(empty_json), "--json"])
+        exit_code = cli.main(["synthesize-audio", "-i", str(empty_json), "--json"])
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is False
+        assert "error" in data
 
     def test_stitch_no_files_found_returns_code_2(self) -> None:
         """Verifies stitch with no input files returns exit code 2."""

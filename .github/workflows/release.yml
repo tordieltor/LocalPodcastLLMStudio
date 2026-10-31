@@ -7,20 +7,40 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release Tag Name (e.g. v0.7.0)"
+        description: "Release Tag Name (e.g. v1.0.0)"
         required: true
-        default: "v0.7.0"
+        default: "v1.0.0"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-and-release:
     name: Build & Publish Windows Standalone Executable
     runs-on: windows-latest
     timeout-minutes: 25
+    permissions:
+      contents: write
 
     steps:
+      - name: Resolve & Validate Release Tag
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.tag_name }}".Trim()
+          } else {
+            $tag = "${{ github.ref_name }}".Trim()
+          }
+          if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$') {
+            Write-Error "Invalid semantic release tag '$tag'. Expected format: vMAJOR.MINOR.PATCH (optional -prerelease)."
+            exit 1
+          }
+          $isPrerelease = if ($tag.Contains("-")) { "true" } else { "false" }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "is_prerelease=$isPrerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved release tag: $tag (prerelease=$isPrerelease)"
+
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
@@ -42,7 +62,7 @@ jobs:
         run: |
           .\build_exe.ps1 -NoPause
 
-      - name: Validate Binary & Compute Checksums
+      - name: Validate Binary, Run Self-Test & Compute Checksums
         shell: pwsh
         run: |
           $exePath = "dist\LocalPodcastLLMStudio.exe"
@@ -53,21 +73,30 @@ jobs:
           $item = Get-Item $exePath
           $sizeMb = [math]::Round($item.Length / 1MB, 2)
           Write-Host "Binary built successfully: $sizeMb MB ($($item.Length) bytes)"
-          
+
+          # Execute headless binary self-test smoke verification
+          Write-Host "Running standalone executable --self-test smoke check..."
+          $proc = Start-Process -FilePath $exePath -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "Standalone executable --self-test failed with exit code $($proc.ExitCode)!"
+            exit $proc.ExitCode
+          }
+          Write-Host "[OK] Standalone executable --self-test passed (exit code 0)."
+
           # Compute SHA256 Hash for standalone executable
           $hashObj = Get-FileHash -Algorithm SHA256 $exePath
           $hashStr = "$($hashObj.Hash)  LocalPodcastLLMStudio.exe"
           $hashStr | Out-File -FilePath "dist\LocalPodcastLLMStudio-SHA256.txt" -Encoding ascii
           Write-Host "LocalPodcastLLMStudio.exe SHA256: $($hashObj.Hash)"
-          
+
           # Package portable zip bundle
           $zipItems = @("dist\LocalPodcastLLMStudio.exe", "README.md")
           if (Test-Path "LICENSE") { $zipItems += "LICENSE" }
           if (Test-Path "SECURITY.md") { $zipItems += "SECURITY.md" }
-          
+
           Compress-Archive -Path $zipItems -DestinationPath "dist\LocalPodcastLLMStudio-Windows-x64.zip" -Force
           Write-Host "Created bundle: dist\LocalPodcastLLMStudio-Windows-x64.zip"
-          
+
           # Compute SHA256 Hash for portable zip bundle
           $zipHashObj = Get-FileHash -Algorithm SHA256 "dist\LocalPodcastLLMStudio-Windows-x64.zip"
           $zipHashStr = "$($zipHashObj.Hash)  LocalPodcastLLMStudio-Windows-x64.zip"
@@ -77,11 +106,11 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          name: "LocalPodcastLLMStudio ${{ github.ref_name || github.event.inputs.tag_name }}"
-          tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
+          name: "LocalPodcastLLMStudio ${{ steps.meta.outputs.tag }}"
+          tag_name: ${{ steps.meta.outputs.tag }}
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.meta.outputs.is_prerelease == 'true' }}
           files: |
             dist/LocalPodcastLLMStudio.exe
             dist/LocalPodcastLLMStudio-SHA256.txt

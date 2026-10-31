@@ -138,16 +138,20 @@ class WindowsMSVCRTInputReader(InputReader):
 
     def _read_translated_key(self) -> str:
         ch = str(self._msvcrt.getwch())
+        if not ch:
+            return ""
         if ch == "\x00":
             ch2 = str(self._msvcrt.getwch())
-            return EXTENDED_00_MAP.get(ch2, f"special_00_{ord(ch2)}")
+            return EXTENDED_00_MAP.get(ch2, f"special_00_{ord(ch2) if ch2 else 0}")
         elif ch == "\xe0":
             ch2 = str(self._msvcrt.getwch())
-            return EXTENDED_E0_MAP.get(ch2, f"special_e0_{ord(ch2)}")
+            return EXTENDED_E0_MAP.get(ch2, f"special_e0_{ord(ch2) if ch2 else 0}")
         elif ch in CHAR_MAP:
             return CHAR_MAP[ch]
         elif ch in CTRL_MAP:
             return CTRL_MAP[ch]
+        if 0xD800 <= ord(ch[0]) <= 0xDFFF:
+            return ""
         return ch
 
     def flush(self) -> None:
@@ -216,6 +220,128 @@ class MockInputReader(InputReader):
         self._index = len(self._keys)
 
 
+POSIX_CSI_MAP: dict[str, str] = {
+    "\x1b[A": "up",
+    "\x1b[B": "down",
+    "\x1b[C": "right",
+    "\x1b[D": "left",
+    "\x1b[H": "home",
+    "\x1b[F": "end",
+    "\x1b[1~": "home",
+    "\x1b[4~": "end",
+    "\x1b[3~": "delete",
+    "\x1b[5~": "page_up",
+    "\x1b[6~": "page_down",
+    "\x1b[Z": "shift+tab",
+    "\x1bOP": "f1",
+    "\x1bOQ": "f2",
+    "\x1bOR": "f3",
+    "\x1bOS": "f4",
+    "\x1b[11~": "f1",
+    "\x1b[12~": "f2",
+    "\x1b[13~": "f3",
+    "\x1b[14~": "f4",
+    "\x1b[15~": "f5",
+    "\x1b[17~": "f6",
+    "\x1b[18~": "f7",
+    "\x1b[19~": "f8",
+    "\x1b[20~": "f9",
+    "\x1b[21~": "f10",
+    "\x1b[23~": "f11",
+    "\x1b[24~": "f12",
+}
+
+
+class PosixTermiosInputReader(InputReader):
+    """Non-blocking POSIX terminal reader using termios cbreak mode and select()."""
+
+    def __init__(self) -> None:
+        if sys.platform == "win32":
+            raise RuntimeError("PosixTermiosInputReader is only supported on POSIX platforms.")
+        import os as _os
+        import select as _select
+        import termios as _termios
+        import tty as _tty
+
+        if not sys.stdin.isatty():
+            raise RuntimeError("Standard input is not an interactive TTY.")
+        self._os = _os
+        self._select = _select
+        self._termios: Any = _termios
+        self._tty: Any = _tty
+        self._fd: int = sys.stdin.fileno()
+
+    def has_key(self) -> bool:
+        try:
+            ready, _, _ = self._select.select([self._fd], [], [], 0.0)
+            return bool(ready)
+        except Exception:
+            return False
+
+    def get_key(self, timeout: float = 0.05) -> str | None:
+        old_attrs = self._termios.tcgetattr(self._fd)
+        try:
+            self._tty.setcbreak(self._fd)
+            ready, _, _ = self._select.select([self._fd], [], [], max(0.0, timeout))
+            if not ready:
+                return None
+            raw = self._os.read(self._fd, 1)
+            if not raw:
+                return None
+            if raw == b"\x1b":
+                seq = raw
+                while True:
+                    more, _, _ = self._select.select([self._fd], [], [], 0.01)
+                    if not more:
+                        break
+                    nxt = self._os.read(self._fd, 1)
+                    if not nxt:
+                        break
+                    seq += nxt
+                    decoded_seq = seq.decode("utf-8", errors="ignore")
+                    if decoded_seq in POSIX_CSI_MAP or len(seq) >= 8:
+                        break
+                decoded = seq.decode("utf-8", errors="ignore")
+                if decoded == "\x1b":
+                    return "escape"
+                return POSIX_CSI_MAP.get(decoded, "escape")
+
+            # Read remaining UTF-8 continuation bytes if multi-byte character
+            first_byte = raw[0]
+            extra = (
+                3
+                if (first_byte & 0xF8) == 0xF0
+                else (
+                    2 if (first_byte & 0xF0) == 0xE0 else (1 if (first_byte & 0xE0) == 0xC0 else 0)
+                )
+            )
+            for _ in range(extra):
+                more, _, _ = self._select.select([self._fd], [], [], 0.005)
+                if more:
+                    raw += self._os.read(self._fd, 1)
+            ch = raw.decode("utf-8", errors="ignore")
+            if not ch:
+                return None
+            if ch == "\x7f":
+                return "backspace"
+            if ch in CHAR_MAP:
+                return CHAR_MAP[ch]
+            if ch in CTRL_MAP:
+                return CTRL_MAP[ch]
+            return ch
+        finally:
+            try:
+                self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, old_attrs)
+            except Exception:  # nosec B110
+                pass
+
+    def flush(self) -> None:
+        try:
+            self._termios.tcflush(self._fd, self._termios.TCIFLUSH)
+        except Exception:  # nosec B110
+            pass
+
+
 def create_input_reader(
     reader_type: str | None = None,
     mock_keys: Sequence[str] | None = None,
@@ -224,7 +350,7 @@ def create_input_reader(
     Factory creating an appropriate InputReader instance.
 
     Args:
-        reader_type: 'msvcrt', 'queue', 'mock', or None for auto-detection.
+        reader_type: 'msvcrt', 'posix', 'queue', 'mock', or None for auto-detection.
         mock_keys: Sequence of keys to supply when creating a MockInputReader.
 
     Returns:
@@ -234,9 +360,14 @@ def create_input_reader(
         return MockInputReader(mock_keys or [])
     if reader_type == "queue":
         return QueueInputReader()
-    if sys.platform == "win32" and reader_type != "queue":
+    if sys.platform == "win32":
         try:
             return WindowsMSVCRTInputReader()
+        except Exception:
+            return QueueInputReader()
+    if reader_type in (None, "posix"):
+        try:
+            return PosixTermiosInputReader()
         except Exception:
             return QueueInputReader()
     return QueueInputReader()

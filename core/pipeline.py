@@ -7,13 +7,14 @@ across a 5-stage lifecycle state machine without GUI dependencies.
 from __future__ import annotations
 
 import os
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
 from core.extractor import extract_text
-from core.io_utils import atomic_write_file
+from core.io_utils import atomic_write_file, validate_safe_output_path
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import generate_podcast_script
 from core.parser import DialogueTurn, dialogue_to_json, dialogue_to_markdown
@@ -65,6 +66,13 @@ class GenerationOptions:
     is_url: bool = False
     host_mode: str = "dialogue"
     solo_voice: str | None = None
+    host1_voice: str | None = None
+    host2_voice: str | None = None
+    host1_name: str | None = None
+    host2_name: str | None = None
+    temperature: float = 0.7
+    custom_system_prompt: str | None = None
+    allow_cloud_tts: bool = False
 
 
 @dataclass
@@ -140,6 +148,8 @@ class PodcastGeneratorService:
                 raise RuntimeError("Generation cancelled by user.")
 
         try:
+            safe_output_dir = validate_safe_output_path(options.output_dir, param_name="output_dir")
+
             # ------------------------------------------------------------------
             # Stage 1: URL Ingestion & Security Validation
             # ------------------------------------------------------------------
@@ -268,27 +278,37 @@ class PodcastGeneratorService:
                 if act_callback:
                     act_callback(act_idx, total_acts, act_turns)
 
-            dialogue = generate_podcast_script(
-                content=text,
-                language=norm_lang,
-                format_type=options.format_type,
-                tone_style=options.tone_style,
-                grounding_mode=options.grounding_mode,
-                model=options.model,
-                ollama_url=self.ollama_url,
-                is_topic=options.is_topic,
-                cancel_event=cancel_event,
-                progress_callback=_llm_progress,
-                stream_callback=stream_callback,
-                act_callback=_internal_act_cb,
-                host_mode=norm_host_mode,
-            )
+            gen_kwargs: dict[str, object] = {
+                "content": text,
+                "language": norm_lang,
+                "format_type": options.format_type,
+                "tone_style": options.tone_style,
+                "grounding_mode": options.grounding_mode,
+                "model": options.model,
+                "ollama_url": self.ollama_url,
+                "is_topic": options.is_topic,
+                "cancel_event": cancel_event,
+                "progress_callback": _llm_progress,
+                "stream_callback": stream_callback,
+                "act_callback": _internal_act_cb,
+                "host_mode": norm_host_mode,
+            }
+            if options.temperature != 0.7:
+                gen_kwargs["temperature"] = options.temperature
+            if options.host1_name:
+                gen_kwargs["host1_name"] = options.host1_name
+            if options.host2_name:
+                gen_kwargs["host2_name"] = options.host2_name
+            if options.custom_system_prompt:
+                gen_kwargs["custom_system_prompt"] = options.custom_system_prompt
+
+            dialogue = generate_podcast_script(**gen_kwargs)  # type: ignore[arg-type]
 
             _check_cancelled()
 
-            os.makedirs(options.output_dir, exist_ok=True)
-            script_json_path = os.path.join(options.output_dir, "transcript.json")
-            script_md_path = os.path.join(options.output_dir, "transcript.md")
+            os.makedirs(safe_output_dir, exist_ok=True)
+            script_json_path = os.path.join(safe_output_dir, "transcript.json")
+            script_md_path = os.path.join(safe_output_dir, "transcript.md")
             atomic_write_file(script_json_path, dialogue_to_json(dialogue))
             atomic_write_file(
                 script_md_path,
@@ -304,61 +324,72 @@ class PodcastGeneratorService:
             _check_cancelled()
 
             # ------------------------------------------------------------------
-            # Stage 4: Neural Voice Synthesis
+            # Stage 4: Neural Voice Synthesis & Stage 5: Master Audio Assembly
+            # Wrapped in TemporaryDirectory so intermediate turn segments never leak in %TEMP%.
             # ------------------------------------------------------------------
-            current_stage = PipelineStage.TTS_SYNTHESIS
-            _notify(
-                PipelineStage.TTS_SYNTHESIS,
-                StageStatus.IN_ACTION,
-                0.60,
-                f"Synthesizing {len(dialogue)} dialogue turns via neural voice engine...",
-            )
-
-            def _tts_progress(current: int, total: int) -> None:
-                pct = 0.60 + (0.30 * (current / max(1, total)))
-                speaker = "Host"
-                if 0 < current <= len(dialogue):
-                    speaker = dialogue[current - 1].speaker
+            with tempfile.TemporaryDirectory(prefix="localpodcastllmstudio_tts_") as temp_tts_dir:
+                current_stage = PipelineStage.TTS_SYNTHESIS
                 _notify(
                     PipelineStage.TTS_SYNTHESIS,
                     StageStatus.IN_ACTION,
-                    pct,
-                    f"Synthesizing turn {current} of {total} ({speaker})...",
+                    0.60,
+                    f"Synthesizing {len(dialogue)} dialogue turns via neural voice engine...",
                 )
 
-            audio_files = synthesize_dialogue_audio(
-                dialogue=dialogue,
-                language=norm_lang,
-                rate=options.speed_rate,
-                progress_cb=_tts_progress,
-                cancel_event=cancel_event,
-                solo_voice=options.solo_voice,
-            )
+                def _tts_progress(current: int, total: int) -> None:
+                    pct = 0.60 + (0.30 * (current / max(1, total)))
+                    speaker = "Host"
+                    if 0 < current <= len(dialogue):
+                        speaker = dialogue[current - 1].speaker
+                    _notify(
+                        PipelineStage.TTS_SYNTHESIS,
+                        StageStatus.IN_ACTION,
+                        pct,
+                        f"Synthesizing turn {current} of {total} ({speaker})...",
+                    )
 
-            _check_cancelled()
-            _notify(
-                PipelineStage.TTS_SYNTHESIS,
-                StageStatus.COMPLETED,
-                0.90,
-                f"Synthesized {len(audio_files)} audio turn segments.",
-            )
-            _check_cancelled()
+                tts_kwargs: dict[str, object] = {
+                    "dialogue": dialogue,
+                    "language": norm_lang,
+                    "rate": options.speed_rate,
+                    "output_dir": temp_tts_dir,
+                    "progress_cb": _tts_progress,
+                    "cancel_event": cancel_event,
+                    "solo_voice": options.solo_voice,
+                }
+                if options.host1_voice:
+                    tts_kwargs["host1_voice"] = options.host1_voice
+                if options.host2_voice:
+                    tts_kwargs["host2_voice"] = options.host2_voice
+                if options.allow_cloud_tts:
+                    tts_kwargs["allow_cloud_tts"] = True
 
-            # ------------------------------------------------------------------
-            # Stage 5: Master Audio Frame Stitching & Tagging
-            # ------------------------------------------------------------------
-            current_stage = PipelineStage.AUDIO_ASSEMBLY
-            _notify(
-                PipelineStage.AUDIO_ASSEMBLY,
-                StageStatus.IN_ACTION,
-                0.92,
-                "Stitching audio frames into master MP3...",
-            )
+                audio_files = synthesize_dialogue_audio(**tts_kwargs)  # type: ignore[arg-type]
 
-            master_mp3 = stitch_mp3_files(
-                input_files_or_bytes=audio_files,
-                output_file_path=os.path.join(options.output_dir, "podcast.mp3"),
-            )
+                _check_cancelled()
+                _notify(
+                    PipelineStage.TTS_SYNTHESIS,
+                    StageStatus.COMPLETED,
+                    0.90,
+                    f"Synthesized {len(audio_files)} audio turn segments.",
+                )
+                _check_cancelled()
+
+                # ------------------------------------------------------------------
+                # Stage 5: Master Audio Frame Stitching & Tagging
+                # ------------------------------------------------------------------
+                current_stage = PipelineStage.AUDIO_ASSEMBLY
+                _notify(
+                    PipelineStage.AUDIO_ASSEMBLY,
+                    StageStatus.IN_ACTION,
+                    0.92,
+                    "Stitching audio frames into master MP3...",
+                )
+
+                master_mp3 = stitch_mp3_files(
+                    input_files_or_bytes=audio_files,
+                    output_file_path=os.path.join(safe_output_dir, "podcast.mp3"),
+                )
 
             _check_cancelled()
             _notify(

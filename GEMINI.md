@@ -13,7 +13,7 @@ Before committing or pushing any code changes, always run the full local verific
    - Run type checker: `.venv/Scripts/python.exe -m mypy core ui app.py check_env.py cli.py tui`
 
 3. **Security Analysis (if modifying dependencies or external processes)**:
-   - Run bandit: `.venv/Scripts/python.exe -m bandit -r core ui tui cli.py -ll`
+   - Run bandit: `.venv/Scripts/python.exe -m bandit -r core ui app.py check_env.py cli.py tui tui.py -ll`
 
 4. **Automated Tests**:
    - Run tests: `.venv/Scripts/python.exe -m pytest tests -v`

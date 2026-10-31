@@ -10,6 +10,7 @@ import os
 from typing import Any
 
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markup import escape as escape_markup
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -202,8 +203,8 @@ class DashboardScreen:
             source_desc = f"Raw Text ({ing.char_count} chars)"
 
         table = KeyValueTable()
-        table.add_row("Input Modality", mode_str)
-        table.add_row("Source Content", source_desc)
+        table.add_row("Input Modality", escape_markup(mode_str))
+        table.add_row("Source Content", escape_markup(source_desc))
         table.add_row("Extracted Size", f"{ing.char_count} chars, {ing.word_count} words")
 
         status_color = COLOR_SUCCESS if ing.is_valid else COLOR_WARNING
@@ -235,13 +236,15 @@ class DashboardScreen:
         """Renders Ollama server status and model selection."""
         oll = self.state.ollama
         table = KeyValueTable()
-        table.add_row("Ollama URL", oll.server_url)
+        table.add_row("Ollama URL", escape_markup(oll.server_url))
 
         st_color = COLOR_SUCCESS if oll.is_online else COLOR_WARNING
         st_txt = f"[{st_color} bold]{'Online' if oll.is_online else 'Offline / Checking'}[/]"
         table.add_row("Service Status", st_txt)
 
-        model_txt = f"[bold {COLOR_ACCENT}]{oll.selected_model or 'None Selected'}[/]"
+        model_txt = (
+            f"[bold {COLOR_ACCENT}]{escape_markup(oll.selected_model or 'None Selected')}[/]"
+        )
         table.add_row("Active Model", model_txt)
         table.add_row("Available Models", f"{len(oll.available_models)} installed")
 
@@ -268,7 +271,7 @@ class DashboardScreen:
         table.add_row("Grounding Mode", f"{cfg.grounding_mode.upper()} fidelity")
         table.add_row(
             "Host Personas",
-            f"[{COLOR_HOST1}]{cfg.host1_name}[/] & [{COLOR_HOST2}]{cfg.host2_name}[/]",
+            f"[{COLOR_HOST1}]{escape_markup(cfg.host1_name)}[/] & [{COLOR_HOST2}]{escape_markup(cfg.host2_name)}[/]",
         )
         table.add_row("Speaking Speed", f"{int(self.state.audio.speaking_speed):+d}%")
 
@@ -314,9 +317,9 @@ class DashboardScreen:
         table.add_row("Script Status", gen.status.value.capitalize())
         table.add_row("Dialogue Turns", f"{turn_count} total turns")
         if gen.script_json_path:
-            table.add_row("Saved JSON", os.path.basename(gen.script_json_path))
+            table.add_row("Saved JSON", escape_markup(os.path.basename(gen.script_json_path)))
         if gen.script_md_path:
-            table.add_row("Saved Transcript", os.path.basename(gen.script_md_path))
+            table.add_row("Saved Transcript", escape_markup(os.path.basename(gen.script_md_path)))
 
         items: list[RenderableType] = [table.__rich__()]
 
@@ -350,8 +353,11 @@ class DashboardScreen:
 
         table = KeyValueTable()
         table.add_row("TTS Engine", "Piper Neural TTS (ONNX)")
-        table.add_row("Voices", f"H1: {audio.host1_voice} | H2: {audio.host2_voice}")
-        table.add_row("Master Audio", file_label)
+        table.add_row(
+            "Voices",
+            escape_markup(f"H1: {audio.host1_voice} | H2: {audio.host2_voice}"),
+        )
+        table.add_row("Master Audio", escape_markup(file_label))
         table.add_row(
             "Playback Status",
             f"{player_st.mode.value.capitalize()} ({player_st.scrubber_str})",

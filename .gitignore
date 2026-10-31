@@ -57,9 +57,11 @@ venv.bak/
 
 # Antigravity / IDE / OS
 .agents/
+.jules/
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 *.log
+logs/
 output/

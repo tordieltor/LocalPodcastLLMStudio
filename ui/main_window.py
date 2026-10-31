@@ -14,6 +14,8 @@ import sys
 import tempfile
 import threading
 import time
+import tkinter as tk
+import uuid
 from tkinter import filedialog, messagebox
 from typing import Any
 
@@ -146,16 +148,28 @@ class URLExtractionWorker(threading.Thread):
         self.timeout = timeout
         self.max_size_bytes = max_size_bytes
 
+    def _emit_dual(self, legacy_event: str, modern_event: str, payload: dict[str, Any]) -> None:
+        tagged = dict(payload)
+        tagged.setdefault("_event_id", uuid.uuid4().hex)
+        self.msg_queue.put((legacy_event, tagged))
+        self.msg_queue.put((modern_event, dict(tagged)))
+
     def run(self):
         try:
-            self.msg_queue.put(("EXTRACTION_STARTING", {"url": self.url}))
-            self.msg_queue.put(("URL_EXTRACTION_STARTING", {"url": self.url}))
+            if self.cancel_event.is_set():
+                self._emit_dual(
+                    "EXTRACTION_CANCELLED", "URL_EXTRACTION_CANCELLED", {"url": self.url}
+                )
+                return
+
+            self._emit_dual("EXTRACTION_STARTING", "URL_EXTRACTION_STARTING", {"url": self.url})
 
             def progress_cb(msg: str):
                 if not self.cancel_event.is_set():
-                    self.msg_queue.put(("EXTRACTION_PROGRESS", {"status": msg, "url": self.url}))
-                    self.msg_queue.put(
-                        ("URL_EXTRACTION_PROGRESS", {"status": msg, "url": self.url})
+                    self._emit_dual(
+                        "EXTRACTION_PROGRESS",
+                        "URL_EXTRACTION_PROGRESS",
+                        {"status": msg, "url": self.url},
                     )
 
             extracted_md = extract_text(
@@ -164,11 +178,13 @@ class URLExtractionWorker(threading.Thread):
                 timeout=self.timeout,
                 max_size_bytes=self.max_size_bytes,
                 progress_callback=progress_cb,
+                cancel_event=self.cancel_event,
             )
 
             if self.cancel_event.is_set():
-                self.msg_queue.put(("EXTRACTION_CANCELLED", {"url": self.url}))
-                self.msg_queue.put(("URL_EXTRACTION_CANCELLED", {"url": self.url}))
+                self._emit_dual(
+                    "EXTRACTION_CANCELLED", "URL_EXTRACTION_CANCELLED", {"url": self.url}
+                )
                 return
 
             payload = {
@@ -176,8 +192,7 @@ class URLExtractionWorker(threading.Thread):
                 "markdown": extracted_md,
                 "char_count": len(extracted_md),
             }
-            self.msg_queue.put(("EXTRACTION_DONE", payload))
-            self.msg_queue.put(("URL_EXTRACTION_DONE", payload))
+            self._emit_dual("EXTRACTION_DONE", "URL_EXTRACTION_DONE", payload)
         except SecurityError as sec_err:
             err_payload = {
                 "title": "URL Security Violation (SSRF Blocked)",
@@ -192,9 +207,13 @@ class URLExtractionWorker(threading.Thread):
                 ),
                 "dialog_type": "error",
             }
-            self.msg_queue.put(("EXTRACTION_ERROR", err_payload))
-            self.msg_queue.put(("URL_EXTRACTION_ERROR", err_payload))
+            self._emit_dual("EXTRACTION_ERROR", "URL_EXTRACTION_ERROR", err_payload)
         except DocumentExtractionError as doc_err:
+            if self.cancel_event.is_set():
+                self._emit_dual(
+                    "EXTRACTION_CANCELLED", "URL_EXTRACTION_CANCELLED", {"url": self.url}
+                )
+                return
             err_payload = {
                 "title": "Web Extraction Failed",
                 "message": f"Could not extract article content from URL:\n{doc_err}",
@@ -205,9 +224,13 @@ class URLExtractionWorker(threading.Thread):
                 "remedy": "Ensure the URL is public, accessible, and contains readable article text.",
                 "dialog_type": "warning",
             }
-            self.msg_queue.put(("EXTRACTION_ERROR", err_payload))
-            self.msg_queue.put(("URL_EXTRACTION_ERROR", err_payload))
+            self._emit_dual("EXTRACTION_ERROR", "URL_EXTRACTION_ERROR", err_payload)
         except Exception as unhandled_err:
+            if self.cancel_event.is_set():
+                self._emit_dual(
+                    "EXTRACTION_CANCELLED", "URL_EXTRACTION_CANCELLED", {"url": self.url}
+                )
+                return
             err_payload = {
                 "title": "Extraction Error",
                 "message": f"Unexpected error during URL extraction: {unhandled_err}",
@@ -218,8 +241,7 @@ class URLExtractionWorker(threading.Thread):
                 "remedy": "Check network connectivity and retry.",
                 "dialog_type": "error",
             }
-            self.msg_queue.put(("EXTRACTION_ERROR", err_payload))
-            self.msg_queue.put(("URL_EXTRACTION_ERROR", err_payload))
+            self._emit_dual("EXTRACTION_ERROR", "URL_EXTRACTION_ERROR", err_payload)
 
 
 # ==============================================================================
@@ -248,6 +270,8 @@ class GenerationWorker(threading.Thread):
         ollama_url: str = "http://localhost:11434",
         host_mode: str = "dialogue",
         solo_voice: str | None = None,
+        host1_voice: str | None = None,
+        host2_voice: str | None = None,
     ):
         super().__init__(daemon=True)
         self.mode = mode
@@ -265,6 +289,8 @@ class GenerationWorker(threading.Thread):
         self.ollama_url = ollama_url
         self.host_mode = host_mode
         self.solo_voice = solo_voice
+        self.host1_voice = host1_voice
+        self.host2_voice = host2_voice
         self.temp_turn_files: list[str] = []
 
     def _cleanup_temp_dir(self, temp_dir: str) -> None:
@@ -314,7 +340,18 @@ class GenerationWorker(threading.Thread):
                         f"Validating and fetching URL: {str(self.input_data)[:60]}...",
                     )
                     try:
-                        extracted_text = extract_text(source=self.input_data, is_url=True)
+                        extracted_text = extract_text(
+                            source=self.input_data,
+                            is_url=True,
+                            cancel_event=self.cancel_event,
+                        )
+                    except RuntimeError:
+                        if self.cancel_event.is_set():
+                            self.msg_queue.put(
+                                ("CANCELLED", "Generation cancelled during URL ingestion.")
+                            )
+                            return
+                        raise
                     except SecurityError as sec_err:
                         _notify(
                             PipelineStage.URL_INGESTION,
@@ -576,7 +613,7 @@ class GenerationWorker(threading.Thread):
 
                 if self.mode == "script_only":
                     _notify(
-                        PipelineStage.AUDIO_ASSEMBLY,
+                        PipelineStage.SCRIPT_GENERATION,
                         StageStatus.COMPLETED,
                         1.0,
                         f"Script generated successfully! ({len(dialogue)} turns)",
@@ -644,95 +681,98 @@ class GenerationWorker(threading.Thread):
                     )
 
             temp_tts_dir = tempfile.mkdtemp(prefix="localpodcastllmstudio_tts_")
-
             try:
-                self.temp_turn_files = synthesize_dialogue_audio(
-                    dialogue=dialogue,
-                    language=self.language,
-                    rate=self.speed_rate,
-                    output_dir=temp_tts_dir,
-                    progress_cb=tts_progress_cb,
-                    cancel_event=self.cancel_event,
-                    solo_voice=self.solo_voice,
-                )
-            except Exception as tts_err:
-                self._cleanup_temp_dir(temp_tts_dir)
-                if self.cancel_event.is_set():
-                    self.msg_queue.put(("CANCELLED", "Audio synthesis cancelled by user."))
+                try:
+                    self.temp_turn_files = synthesize_dialogue_audio(
+                        dialogue=dialogue,
+                        language=self.language,
+                        rate=self.speed_rate,
+                        output_dir=temp_tts_dir,
+                        progress_cb=tts_progress_cb,
+                        cancel_event=self.cancel_event,
+                        solo_voice=self.solo_voice,
+                        host1_voice=self.host1_voice,
+                        host2_voice=self.host2_voice,
+                    )
+                except Exception as tts_err:
+                    if self.cancel_event.is_set():
+                        self.msg_queue.put(("CANCELLED", "Audio synthesis cancelled by user."))
+                        return
+                    _notify(
+                        PipelineStage.TTS_SYNTHESIS, StageStatus.FAILED, current_pct, str(tts_err)
+                    )
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "Voice Synthesis Error",
+                                "message": f"Piper TTS synthesis encountered an error: {tts_err}",
+                                "details": str(tts_err),
+                                "stage": PipelineStage.TTS_SYNTHESIS,
+                                "remedy": "Please verify Piper TTS local neural voice models in models/voices/ directory.",
+                            },
+                        )
+                    )
                     return
-                _notify(PipelineStage.TTS_SYNTHESIS, StageStatus.FAILED, current_pct, str(tts_err))
-                self.msg_queue.put(
-                    (
-                        "ERROR",
-                        {
-                            "title": "Voice Synthesis Error",
-                            "message": f"Piper TTS synthesis encountered an error: {tts_err}",
-                            "details": str(tts_err),
-                            "stage": PipelineStage.TTS_SYNTHESIS,
-                            "remedy": "Please verify Piper TTS local neural voice models in models/voices/ directory.",
-                        },
-                    )
-                )
-                return
 
-            if self.cancel_event.is_set():
-                self._cleanup_temp_dir(temp_tts_dir)
-                self.msg_queue.put(("CANCELLED", "Generation cancelled by user."))
-                return
+                if self.cancel_event.is_set():
+                    self.msg_queue.put(("CANCELLED", "Generation cancelled by user."))
+                    return
 
-            _notify(
-                PipelineStage.TTS_SYNTHESIS,
-                StageStatus.COMPLETED,
-                0.90,
-                f"Synthesized {len(self.temp_turn_files)} audio segments.",
-            )
-
-            # ------------------------------------------------------------------
-            # Phase 5: Zero-FFmpeg MP3 Binary Frame Stitching
-            # ------------------------------------------------------------------
-            if self.cancel_event.is_set():
-                self._cleanup_temp_dir(temp_tts_dir)
-                self.msg_queue.put(("CANCELLED", "Generation cancelled before audio assembly."))
-                return
-
-            _notify(
-                PipelineStage.AUDIO_ASSEMBLY,
-                StageStatus.IN_ACTION,
-                0.92,
-                "Stitching audio segments into master MP3...",
-            )
-
-            output_mp3_path = os.path.join(self.output_dir, f"podcast_{timestamp}.mp3")
-
-            try:
-                stitch_mp3_files(
-                    input_files_or_bytes=self.temp_turn_files,
-                    output_file_path=output_mp3_path,
-                    silence_duration_ms=350,
-                    title=f"Podcast {timestamp}",
-                    artist="LocalPodcastLLMStudio",
-                )
-            except Exception as stitch_err:
-                self._cleanup_temp_dir(temp_tts_dir)
                 _notify(
-                    PipelineStage.AUDIO_ASSEMBLY, StageStatus.FAILED, current_pct, str(stitch_err)
+                    PipelineStage.TTS_SYNTHESIS,
+                    StageStatus.COMPLETED,
+                    0.90,
+                    f"Synthesized {len(self.temp_turn_files)} audio segments.",
                 )
-                self.msg_queue.put(
-                    (
-                        "ERROR",
-                        {
-                            "title": "MP3 Stitching Error",
-                            "message": f"Failed to stitch MP3 audio frames: {stitch_err}",
-                            "details": str(stitch_err),
-                            "stage": PipelineStage.AUDIO_ASSEMBLY,
-                            "remedy": "Check write permissions in the output directory.",
-                        },
-                    )
-                )
-                return
 
-            # Clean up temporary turn files
-            self._cleanup_temp_dir(temp_tts_dir)
+                # ------------------------------------------------------------------
+                # Phase 5: Zero-FFmpeg MP3 Binary Frame Stitching
+                # ------------------------------------------------------------------
+                if self.cancel_event.is_set():
+                    self.msg_queue.put(("CANCELLED", "Generation cancelled before audio assembly."))
+                    return
+
+                _notify(
+                    PipelineStage.AUDIO_ASSEMBLY,
+                    StageStatus.IN_ACTION,
+                    0.92,
+                    "Stitching audio segments into master MP3...",
+                )
+
+                output_mp3_path = os.path.join(self.output_dir, f"podcast_{timestamp}.mp3")
+
+                try:
+                    stitch_mp3_files(
+                        input_files_or_bytes=self.temp_turn_files,
+                        output_file_path=output_mp3_path,
+                        silence_duration_ms=350,
+                        title=f"Podcast {timestamp}",
+                        artist="LocalPodcastLLMStudio",
+                    )
+                except Exception as stitch_err:
+                    _notify(
+                        PipelineStage.AUDIO_ASSEMBLY,
+                        StageStatus.FAILED,
+                        current_pct,
+                        str(stitch_err),
+                    )
+                    self.msg_queue.put(
+                        (
+                            "ERROR",
+                            {
+                                "title": "MP3 Stitching Error",
+                                "message": f"Failed to stitch MP3 audio frames: {stitch_err}",
+                                "details": str(stitch_err),
+                                "stage": PipelineStage.AUDIO_ASSEMBLY,
+                                "remedy": "Check write permissions in the output directory.",
+                            },
+                        )
+                    )
+                    return
+            finally:
+                # Guarantee cleanup of temporary turn files across normal, cancelled, and error paths
+                self._cleanup_temp_dir(temp_tts_dir)
 
             # ------------------------------------------------------------------
             # Phase 6: Completion & Readiness
@@ -879,6 +919,18 @@ class ModelPullWorker(threading.Thread):
                         },
                     )
                 )
+            elif self.cancel_event.is_set():
+                self.msg_queue.put(("PULL_CANCELLED", {"model": self.model_name}))
+            else:
+                self.msg_queue.put(
+                    (
+                        "PULL_ERROR",
+                        {
+                            "model": self.model_name,
+                            "error": f"Model pull for '{self.model_name}' did not complete successfully.",
+                        },
+                    )
+                )
         except Exception as e:
             if self.cancel_event.is_set():
                 self.msg_queue.put(("PULL_CANCELLED", {"model": self.model_name}))
@@ -889,6 +941,20 @@ class ModelPullWorker(threading.Thread):
                         {"model": self.model_name, "error": str(e)},
                     )
                 )
+
+
+def _is_duplicate_url_event(win: Any, payload: Any) -> bool:
+    """Deduplicates dual-emitted EXTRACTION_* / URL_EXTRACTION_* worker queue messages."""
+    if not isinstance(payload, dict):
+        return False
+    event_id = payload.get("_event_id")
+    if not isinstance(event_id, str) or not event_id:
+        return False
+    last_id = getattr(win, "_last_url_event_id", None)
+    if isinstance(last_id, str) and event_id == last_id:
+        return True
+    win._last_url_event_id = event_id
+    return False
 
 
 # ==============================================================================
@@ -984,6 +1050,9 @@ class MainWindow(ctk.CTk):
         self._queue_poll_id: str | None = None
         self._player_poll_id: str | None = None
         self._is_closing: bool = False
+        self._refresh_in_progress: bool = False
+        self._last_url_event_id: str | None = None
+        self._last_extracted_url: str | None = None
 
         # Data & Playback State
         self.current_dialogue: list[DialogueTurn] = []
@@ -2317,13 +2386,23 @@ class MainWindow(ctk.CTk):
             )
             return
 
+        prev_url_worker = getattr(self, "current_url_worker", None)
+        if prev_url_worker and getattr(prev_url_worker, "is_alive", lambda: False)():
+            prev_cancel = getattr(self, "url_cancel_event", None)
+            if prev_cancel is not None:
+                prev_cancel.set()
+
         if hasattr(self, "btn_extract_url"):
             self.btn_extract_url.configure(state="disabled")
         if hasattr(self, "url_status_label"):
             self.url_status_label.configure(
                 text=f"Fetching and validating {url[:40]}...", text_color=COLOR_WARNING
             )
-        self.url_cancel_event.clear()
+        self._last_extracted_url = None
+        if isinstance(getattr(self, "url_cancel_event", None), threading.Event):
+            self.url_cancel_event = threading.Event()
+        else:
+            self.url_cancel_event.clear()
         self.current_url_worker = URLExtractionWorker(
             url=url,
             msg_queue=self.msg_queue,
@@ -2424,7 +2503,20 @@ class MainWindow(ctk.CTk):
     # ==========================================================================
     def refresh_ollama_models(self):
         """Asynchronously checks Ollama connection and installed models."""
-        self.ollama_badge.set_status("checking", "Checking Ollama...")
+        if getattr(self, "_refresh_in_progress", False) is True:
+            return
+        self._refresh_in_progress = True
+
+        pull_active = bool(
+            isinstance(getattr(self, "current_pull_worker", None), threading.Thread)
+            and self.current_pull_worker.is_alive()  # type: ignore[union-attr]
+        )
+        launch_active = bool(
+            isinstance(getattr(self, "current_launcher_worker", None), threading.Thread)
+            and self.current_launcher_worker.is_alive()  # type: ignore[union-attr]
+        )
+        if not (pull_active or launch_active):
+            self.ollama_badge.set_status("checking", "Checking Ollama...")
         self.btn_refresh_models.configure(state="disabled")
 
         def _bg_fetch():
@@ -2492,9 +2584,21 @@ class MainWindow(ctk.CTk):
             self.btn_cancel_pull.configure(state="disabled")
 
     def _handle_ollama_status(self, data: dict[str, Any]):
+        self._refresh_in_progress = False
         self.btn_refresh_models.configure(state="normal")
         self.btn_start_ollama_header.configure(state="normal")
         self.btn_start_ollama.configure(state="normal")
+
+        badge_locked = bool(
+            (
+                isinstance(getattr(self, "current_pull_worker", None), threading.Thread)
+                and self.current_pull_worker.is_alive()  # type: ignore[union-attr]
+            )
+            or (
+                isinstance(getattr(self, "current_launcher_worker", None), threading.Thread)
+                and self.current_launcher_worker.is_alive()  # type: ignore[union-attr]
+            )
+        )
 
         if data.get("connected") and data.get("models"):
             models = data["models"]
@@ -2517,19 +2621,22 @@ class MainWindow(ctk.CTk):
                     selected = matched[0]
                     break
             self.model_menu.set(selected)
-            self.ollama_badge.set_status("online", f"Ollama Connected ({len(models)} models)")
+            if not badge_locked:
+                self.ollama_badge.set_status("online", f"Ollama Connected ({len(models)} models)")
             self.btn_start_ollama_header.configure(state="disabled")
             self.btn_start_ollama.configure(state="disabled")
         elif data.get("connected"):
             self.model_menu.configure(values=["No models installed"])
             self.model_menu.set("No models installed")
-            self.ollama_badge.set_status("warning", "Ollama Online (No models)")
+            if not badge_locked:
+                self.ollama_badge.set_status("warning", "Ollama Online (No models)")
             self.btn_start_ollama_header.configure(state="disabled")
             self.btn_start_ollama.configure(state="disabled")
         else:
             self.model_menu.configure(values=["Ollama Offline (No models)"])
             self.model_menu.set("Ollama Offline (No models)")
-            self.ollama_badge.set_status("offline", "Ollama Offline")
+            if not badge_locked:
+                self.ollama_badge.set_status("offline", "Ollama Offline")
 
         self._update_highway_preset_label()
 
@@ -2538,7 +2645,12 @@ class MainWindow(ctk.CTk):
     # ==========================================================================
     def start_generation(self, mode: str = "full"):
         """Validates inputs and spawns the background GenerationWorker."""
+        active_worker = getattr(self, "current_worker", None)
+        if isinstance(active_worker, threading.Thread) and active_worker.is_alive():
+            return
+
         modality = self.input_modality_var.get()
+        effective_input_type = modality
         source_data = ""
 
         if modality == "file":
@@ -2570,7 +2682,22 @@ class MainWindow(ctk.CTk):
                     details=f"Received: {url_val}",
                 )
                 return
-            source_data = url_val
+            preview_text = (
+                self.url_preview_box.get("1.0", "end-1c")
+                if hasattr(self, "url_preview_box")
+                else None
+            )
+            last_extracted_url = getattr(self, "_last_extracted_url", None)
+            if (
+                isinstance(last_extracted_url, str)
+                and last_extracted_url == url_val
+                and isinstance(preview_text, str)
+                and len(preview_text.strip()) >= 5
+            ):
+                effective_input_type = "text"
+                source_data = preview_text.strip()
+            else:
+                source_data = url_val
         else:
             text_data = self.text_input_box.get("1.0", "end-1c").strip()
             if not text_data:
@@ -2661,15 +2788,39 @@ class MainWindow(ctk.CTk):
 
         host_mode = "monologue" if is_mono else "dialogue"
         solo_voice = None
+        host1_voice = None
+        host2_voice = None
         if is_mono and hasattr(self, "solo_voice_menu"):
-            solo_voice = self.solo_voice_menu.get().strip()
+            raw_solo = self.solo_voice_menu.get()
+            if isinstance(raw_solo, str) and raw_solo.strip():
+                solo_voice = raw_solo.strip()
+        else:
+            if hasattr(self, "host1_voice_menu"):
+                raw_h1 = self.host1_voice_menu.get()
+                if isinstance(raw_h1, str) and raw_h1.strip():
+                    host1_voice = raw_h1.strip()
+            if hasattr(self, "host2_voice_menu"):
+                raw_h2 = self.host2_voice_menu.get()
+                if isinstance(raw_h2, str) and raw_h2.strip():
+                    host2_voice = raw_h2.strip()
+
+        if mode != "script_only":
+            player = getattr(self, "player", None)
+            if player is not None and getattr(player, "_is_open", False) is True:
+                try:
+                    player.close()
+                except Exception:
+                    pass
 
         # Reset stage tracker on new generation run
         if hasattr(self, "stage_tracker"):
             self.stage_tracker.reset()
 
-        # Prepare Worker & Live Streaming UI
-        self.cancel_event.clear()
+        # Prepare Worker & Live Streaming UI (fresh Event per worker run avoids race with lingering threads)
+        if isinstance(getattr(self, "cancel_event", None), threading.Event):
+            self.cancel_event = threading.Event()
+        else:
+            self.cancel_event.clear()
         self._set_busy_state(True)
         self.progress_bar.set(0.02)
         self.status_label.configure(text=f"Connecting to Ollama ({selected_model})...")
@@ -2677,7 +2828,7 @@ class MainWindow(ctk.CTk):
 
         self.current_worker = GenerationWorker(
             mode=mode,
-            input_type=modality,
+            input_type=effective_input_type,
             input_data=source_data,
             language=lang,
             model=selected_model,
@@ -2690,6 +2841,8 @@ class MainWindow(ctk.CTk):
             grounding_mode=grounding_mode,
             host_mode=host_mode,
             solo_voice=solo_voice,
+            host1_voice=host1_voice,
+            host2_voice=host2_voice,
         )
         self.current_worker.start()
 
@@ -2702,7 +2855,7 @@ class MainWindow(ctk.CTk):
 
     def _synthesize_from_edited_script(self):
         """Synthesizes audio directly from the user-edited script tab."""
-        if getattr(self, "is_busy", False):
+        if getattr(self, "is_busy", False) is True:
             return
 
         try:
@@ -2721,15 +2874,17 @@ class MainWindow(ctk.CTk):
                 parsed_json = json.loads(raw_text)
                 if isinstance(parsed_json, list):
                     dialogue_turns = [
-                        DialogueTurn(speaker=t.get("speaker", "Host 1"), text=t.get("text", ""))
+                        turn
                         for t in parsed_json
                         if isinstance(t, dict)
+                        for turn in (DialogueTurn.from_dict(t),)
+                        if turn.text.strip()
                     ]
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
 
             if not dialogue_turns:
-                dialogue_turns = DialogueParser.parse(raw_text)
+                dialogue_turns = [t for t in DialogueParser.parse(raw_text) if t.text.strip()]
 
             if not dialogue_turns:
                 ActionableErrorDialog(
@@ -2745,7 +2900,7 @@ class MainWindow(ctk.CTk):
             speed_rate = format_rate_str(speed_val)
             out_dir = self.output_entry.get().strip() or os.path.abspath("./output")
 
-            # Host Mode & Solo Voice
+            # Host Mode & Voice Mapping
             is_mono = False
             if hasattr(self, "episode_style_var") and self.episode_style_var.get() == "monologue":
                 is_mono = True
@@ -2757,13 +2912,36 @@ class MainWindow(ctk.CTk):
 
             host_mode = "monologue" if is_mono else "dialogue"
             solo_voice = None
+            host1_voice = None
+            host2_voice = None
             if is_mono and hasattr(self, "solo_voice_menu"):
-                solo_voice = self.solo_voice_menu.get().strip()
+                raw_solo = self.solo_voice_menu.get()
+                if isinstance(raw_solo, str) and raw_solo.strip():
+                    solo_voice = raw_solo.strip()
+            else:
+                if hasattr(self, "host1_voice_menu"):
+                    raw_h1 = self.host1_voice_menu.get()
+                    if isinstance(raw_h1, str) and raw_h1.strip():
+                        host1_voice = raw_h1.strip()
+                if hasattr(self, "host2_voice_menu"):
+                    raw_h2 = self.host2_voice_menu.get()
+                    if isinstance(raw_h2, str) and raw_h2.strip():
+                        host2_voice = raw_h2.strip()
+
+            player = getattr(self, "player", None)
+            if player is not None and getattr(player, "_is_open", False) is True:
+                try:
+                    player.close()
+                except Exception:
+                    pass
 
             if hasattr(self, "stage_tracker"):
                 self.stage_tracker.reset()
 
-            self.cancel_event.clear()
+            if isinstance(getattr(self, "cancel_event", None), threading.Event):
+                self.cancel_event = threading.Event()
+            else:
+                self.cancel_event.clear()
             self._set_busy_state(True)
             self.progress_bar.set(0.40)
             self.status_label.configure(text="Synthesizing audio from edited script...")
@@ -2783,6 +2961,8 @@ class MainWindow(ctk.CTk):
                 grounding_mode=self.get_selected_grounding_mode(),
                 host_mode=host_mode,
                 solo_voice=solo_voice,
+                host1_voice=host1_voice,
+                host2_voice=host2_voice,
             )
             self.current_worker.start()
         except Exception as e:
@@ -2798,15 +2978,20 @@ class MainWindow(ctk.CTk):
     # Queue Poller & Event Dispatch Loop
     # ==========================================================================
     def _start_queue_poller(self):
-        if self._is_closing:
+        if getattr(self, "_is_closing", False) is True:
             return
         self._process_queue(max_batch_size=30)
-        if not self._is_closing:
-            self._queue_poll_id = self.after(50, self._start_queue_poller)
+        if getattr(self, "_is_closing", False) is not True:
+            try:
+                self._queue_poll_id = self.after(50, self._start_queue_poller)
+            except (tk.TclError, RuntimeError):
+                self._queue_poll_id = None
 
     def _process_queue(self, max_batch_size: int | None = None):
         processed = 0
         while not self.msg_queue.empty():
+            if getattr(self, "_is_closing", False) is True:
+                break
             if max_batch_size is not None and processed >= max_batch_size:
                 break
             try:
@@ -2815,8 +3000,11 @@ class MainWindow(ctk.CTk):
                 break
             try:
                 self._handle_event(event_type, payload)
-            except (RuntimeError, AttributeError, ValueError, TypeError):
-                pass
+            except tk.TclError:
+                if getattr(self, "_is_closing", False) is True:
+                    break
+            except (RuntimeError, AttributeError, ValueError, TypeError) as err:
+                logger.warning("Ignored GUI event handling error for %s: %s", event_type, err)
             finally:
                 self.msg_queue.task_done()
                 processed += 1
@@ -2841,6 +3029,8 @@ class MainWindow(ctk.CTk):
             if hasattr(self, "progress_pct_label"):
                 self.progress_pct_label.configure(text=f"{int(float(pct) * 100)}%")
         elif event_type in ("EXTRACTION_STARTING", "URL_EXTRACTION_STARTING"):
+            if _is_duplicate_url_event(self, payload):
+                return
             if hasattr(self, "btn_extract_url"):
                 self.btn_extract_url.configure(state="disabled")
             if hasattr(self, "url_status_label"):
@@ -2848,16 +3038,21 @@ class MainWindow(ctk.CTk):
                     text="Validating and fetching URL content...", text_color=COLOR_WARNING
                 )
         elif event_type in ("EXTRACTION_PROGRESS", "URL_EXTRACTION_PROGRESS"):
+            if _is_duplicate_url_event(self, payload):
+                return
             st = payload.get("status", "") if isinstance(payload, dict) else str(payload)
             if hasattr(self, "url_status_label"):
                 self.url_status_label.configure(text=st, text_color=COLOR_WARNING)
             if hasattr(self, "status_label"):
                 self.status_label.configure(text=st)
         elif event_type in ("EXTRACTION_DONE", "URL_EXTRACTION_DONE"):
+            if _is_duplicate_url_event(self, payload):
+                return
             if isinstance(payload, dict):
                 url = payload.get("url", "")
                 md = payload.get("markdown", "")
                 chars = payload.get("char_count", len(md))
+                self._last_extracted_url = str(url).strip() if url else None
                 if hasattr(self, "btn_extract_url"):
                     self.btn_extract_url.configure(state="normal")
                 if hasattr(self, "url_status_label"):
@@ -2874,6 +3069,8 @@ class MainWindow(ctk.CTk):
                     self.text_input_box.delete("1.0", "end")
                     self.text_input_box.insert("1.0", md)
         elif event_type in ("EXTRACTION_ERROR", "URL_EXTRACTION_ERROR"):
+            if _is_duplicate_url_event(self, payload):
+                return
             if hasattr(self, "btn_extract_url"):
                 self.btn_extract_url.configure(state="normal")
             if isinstance(payload, dict):
@@ -2894,6 +3091,8 @@ class MainWindow(ctk.CTk):
                     dialog_type=payload.get("dialog_type", "error" if is_sec else "warning"),
                 )
         elif event_type in ("EXTRACTION_CANCELLED", "URL_EXTRACTION_CANCELLED"):
+            if _is_duplicate_url_event(self, payload):
+                return
             if hasattr(self, "btn_extract_url"):
                 self.btn_extract_url.configure(state="normal")
             if hasattr(self, "url_status_label"):
@@ -3233,21 +3432,26 @@ class MainWindow(ctk.CTk):
         self.current_script_path = result.get("script_path")
 
         if self.current_mp3_path and os.path.exists(self.current_mp3_path):
-            self.player_title_label.configure(
-                text=f"Loaded: {os.path.basename(self.current_mp3_path)}"
-            )
+            self.btn_export_mp3.configure(state="normal")
             try:
-                self.player.open(self.current_mp3_path)
-                self.btn_play.configure(state="normal")
-                self.btn_pause.configure(state="normal")
-                self.btn_stop.configure(state="normal")
-                self.btn_export_mp3.configure(state="normal")
+                opened = self.player.open(self.current_mp3_path)
+                if opened:
+                    self.player_title_label.configure(
+                        text=f"Loaded: {os.path.basename(self.current_mp3_path)}"
+                    )
+                    self.btn_play.configure(state="normal")
+                    self.btn_pause.configure(state="normal")
+                    self.btn_stop.configure(state="normal")
 
-                # Update initial time slider
-                tot_ms = self.player.get_length()
-                self.time_slider.update_position(0, tot_ms, "Loaded")
-            except Exception:
-                pass
+                    # Update initial time slider
+                    tot_ms = self.player.get_length()
+                    self.time_slider.update_position(0, tot_ms, "Loaded")
+                else:
+                    self.player_title_label.configure(
+                        text=f"Saved (playback unavailable): {os.path.basename(self.current_mp3_path)}"
+                    )
+            except Exception as err:
+                logger.warning("Audio player initialization failed: %s", err)
 
     def _on_script_only_done(self, result: dict[str, Any]):
         self._set_busy_state(False)
@@ -3261,11 +3465,14 @@ class MainWindow(ctk.CTk):
     # Audio Player & MCI Integration
     # ==========================================================================
     def _start_player_poller(self):
-        if self._is_closing:
+        if getattr(self, "_is_closing", False) is True:
             return
         self._update_player_position()
-        if not self._is_closing:
-            self._player_poll_id = self.after(250, self._start_player_poller)
+        if getattr(self, "_is_closing", False) is not True:
+            try:
+                self._player_poll_id = self.after(250, self._start_player_poller)
+            except (tk.TclError, RuntimeError):
+                self._player_poll_id = None
 
     def _update_player_position(self):
         if self.player and self.player._is_open:
@@ -3319,10 +3526,16 @@ class MainWindow(ctk.CTk):
         out_dir = os.path.abspath(raw_dir)
         try:
             os.makedirs(out_dir, exist_ok=True)
-            if sys.platform == "win32" and os.path.isdir(out_dir):
+            if not os.path.isdir(out_dir):
+                return
+            if sys.platform == "win32":
                 os.startfile(out_dir)  # nosec: B606
-        except OSError:
-            pass
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", out_dir])  # nosec: B603, B607
+            else:
+                subprocess.Popen(["xdg-open", out_dir])  # nosec: B603, B607
+        except OSError as e:
+            logger.warning("Could not open output directory %s: %s", out_dir, e)
 
     def _open_logs(self):
         """Opens the application log file or log directory for inspection."""
@@ -3335,6 +3548,10 @@ class MainWindow(ctk.CTk):
                     os.startfile(log_path)  # nosec: B606
                 elif os.path.isdir(log_dir):
                     os.startfile(log_dir)  # nosec: B606
+            elif sys.platform == "darwin":
+                target = log_path if os.path.isfile(log_path) else log_dir
+                if os.path.exists(target):
+                    subprocess.Popen(["open", target])  # nosec: B603, B607
             else:
                 if os.path.isdir(log_dir):
                     subprocess.Popen(["xdg-open", log_dir])  # nosec: B603, B607
@@ -3374,6 +3591,31 @@ class MainWindow(ctk.CTk):
 
     def reset_form(self):
         """Clears inputs and resets view."""
+        url_worker = getattr(self, "current_url_worker", None)
+        if url_worker and getattr(url_worker, "is_alive", lambda: False)():
+            url_cancel = getattr(self, "url_cancel_event", None)
+            if url_cancel is not None:
+                url_cancel.set()
+        self._last_extracted_url = None
+
+        player = getattr(self, "player", None)
+        if player is not None and getattr(player, "_is_open", False) is True:
+            try:
+                player.close()
+            except Exception:
+                pass
+        self.current_mp3_path = None
+        self.current_script_path = None
+        if hasattr(self, "player_title_label"):
+            self.player_title_label.configure(text="Audio Player: No audio loaded")
+        if hasattr(self, "time_slider"):
+            self.time_slider.update_position(0, 0, "Stopped")
+        for btn_attr in ("btn_play", "btn_pause", "btn_stop", "btn_export_mp3"):
+            if hasattr(self, btn_attr):
+                getattr(self, btn_attr).configure(state="disabled")
+        if hasattr(self, "btn_extract_url"):
+            self.btn_extract_url.configure(state="normal")
+
         if self._live_stream_card:
             try:
                 self._live_stream_card.destroy()
@@ -3478,6 +3720,16 @@ class MainWindow(ctk.CTk):
                 launcher_cancel_event.set()
             try:
                 current_launcher_worker.join(timeout=0.1)
+            except (RuntimeError, TimeoutError, AttributeError):
+                pass
+
+        current_url_worker = getattr(self, "current_url_worker", None)
+        if current_url_worker and getattr(current_url_worker, "is_alive", lambda: False)():
+            url_cancel_event = getattr(self, "url_cancel_event", None)
+            if url_cancel_event:
+                url_cancel_event.set()
+            try:
+                current_url_worker.join(timeout=0.1)
             except (RuntimeError, TimeoutError, AttributeError):
                 pass
 

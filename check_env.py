@@ -5,11 +5,12 @@ LocalPodcastLLMStudio Environment Diagnostic Tool
 Performs comprehensive preflight diagnostics on:
   1. Python runtime (>= 3.10)
   2. Virtual environment (.venv)
-  3. Core dependencies (customtkinter, edge-tts, pypdf, requests)
+  3. Core dependencies (customtkinter, pypdf, requests, rich)
   4. Development tools (pyinstaller)
-  5. Local Ollama LLM service connectivity (http://localhost:11434/api/tags)
-  6. Installed Ollama model inventory (parameter size, quantization, format)
-  7. Edge-TTS neural voice synthesis network reachability
+  5. Local TTS engine & Piper ONNX voice models (models/voices/)
+  6. Local Ollama LLM service connectivity (http://localhost:11434/api/tags)
+  7. Installed Ollama model inventory (parameter size, quantization, format)
+  8. Optional Edge-TTS neural voice network reachability
 
 Usage:
   python check_env.py          # Formatted ANSI terminal report
@@ -17,12 +18,17 @@ Usage:
   python check_env.py --quiet  # Silent check, exit code only (0=OK, 1=Fail)
 """
 
+import argparse
+import importlib.util
 import json
 import os
+import shutil
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
+from core.logger import setup_logging
 from core.ollama import _validate_url as _validate_ollama_url
 
 # Reconfigure stdout/stderr for UTF-8 on Windows consoles to prevent charmap UnicodeEncodeErrors
@@ -107,6 +113,7 @@ def check_packages() -> dict[str, Any]:
         ("customtkinter", "customtkinter", "GUI framework"),
         ("pypdf", "pypdf", "PDF document parser"),
         ("requests", "requests", "Ollama HTTP client"),
+        ("rich", "rich", "Terminal TUI & CLI rendering"),
     ]
     installed = {}
     missing = []
@@ -269,12 +276,54 @@ def check_edge_tts_network(timeout_sec: float = 3.0) -> dict[str, Any]:
         }
 
 
+def check_local_tts_voices() -> dict[str, Any]:
+    """Inspect local offline TTS availability (Piper ONNX models, Piper CLI/module, built-in fallback)."""
+    project_root = Path(__file__).resolve().parent
+    candidate_dirs = [project_root / "models" / "voices", project_root / "models"]
+    onnx_models: list[str] = []
+    seen_names: set[str] = set()
+    for d in candidate_dirs:
+        if d.is_dir():
+            for p in sorted(d.glob("*.onnx")):
+                if p.name not in seen_names:
+                    seen_names.add(p.name)
+                    onnx_models.append(p.name)
+
+    piper_pkg = importlib.util.find_spec("piper") is not None
+    piper_bin = shutil.which("piper")
+    piper_available = bool(piper_pkg or piper_bin)
+
+    if onnx_models and piper_available:
+        detail = f"Piper offline neural TTS ready ({len(onnx_models)} ONNX voice(s): {', '.join(onnx_models[:4])})"
+    elif onnx_models:
+        detail = (
+            f"Found {len(onnx_models)} ONNX voice model(s); install piper-tts or place piper binary on PATH "
+            "(built-in local fallback active)"
+        )
+    elif piper_available:
+        detail = "Piper runtime detected; place .onnx voice models in models/voices/ (built-in local fallback active)"
+    else:
+        detail = "Built-in offline TTS fallback ready (optional: install piper-tts & place .onnx voices in models/voices/)"
+
+    return {
+        "name": "Local TTS Engine & Voices",
+        "ok": True,
+        "warn": False,
+        "piper_available": piper_available,
+        "onnx_models_count": len(onnx_models),
+        "onnx_models": onnx_models,
+        "detail": detail,
+        "remediation": None,
+    }
+
+
 def run_all_checks(ollama_url: str = "http://localhost:11434") -> dict[str, Any]:
     """Execute all diagnostic checks and aggregate results."""
     py_check = check_python_version()
     venv_check = check_virtual_env()
     pkgs_check = check_packages()
     pyinst_check = check_pyinstaller()
+    local_tts_check = check_local_tts_voices()
     ollama_check = check_ollama_service(host=ollama_url)
     edge_check = check_edge_tts_network()
 
@@ -283,6 +332,7 @@ def run_all_checks(ollama_url: str = "http://localhost:11434") -> dict[str, Any]
         "virtual_environment": venv_check,
         "runtime_dependencies": pkgs_check,
         "pyinstaller": pyinst_check,
+        "local_tts": local_tts_check,
         "ollama_service": ollama_check,
         "edge_tts_network": edge_check,
     }
@@ -395,13 +445,43 @@ def print_diagnostic_report(report: dict[str, Any]) -> int:
         return 1
 
 
-def main() -> int:
-    ollama_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    if not ollama_url.startswith("http"):
-        ollama_url = f"http://{ollama_url}"
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="LocalPodcastLLMStudio Preflight Environment Diagnostics",
+        add_help=True,
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output to stdout",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress output and exit with status code only (0=OK, 1=Fail)",
+    )
+    parser.add_argument(
+        "-u",
+        "--ollama-url",
+        default=None,
+        help="Ollama base URL override (default: $OLLAMA_HOST or http://localhost:11434)",
+    )
+    args, _ = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
 
-    is_json = "--json" in sys.argv
-    is_quiet = "--quiet" in sys.argv or "-q" in sys.argv
+    is_json = bool(args.json)
+    is_quiet = bool(args.quiet)
+    if is_json or is_quiet:
+        setup_logging(enable_console=False)
+
+    raw_url = (
+        args.ollama_url
+        if args.ollama_url is not None
+        else os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    )
+    ollama_url = raw_url.strip() if isinstance(raw_url, str) else "http://localhost:11434"
+    if ollama_url and "://" not in ollama_url:
+        ollama_url = f"http://{ollama_url}"
 
     report = run_all_checks(ollama_url=ollama_url)
 

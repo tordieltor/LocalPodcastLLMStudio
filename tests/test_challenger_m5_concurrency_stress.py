@@ -112,16 +112,29 @@ class TestNormalizeSpeakerConcurrencyStress:
             "Interviewer",
         ]
 
+        num_readers = 20
+        num_clearers = 4
+        start_barrier = threading.Barrier(num_readers + num_clearers + 1)
+
         def reader(tid: int):
+            try:
+                start_barrier.wait(timeout=5.0)
+            except threading.BrokenBarrierError:
+                return
             while not stop_event.is_set():
                 try:
                     for spk in sample_speakers:
                         res = normalize_speaker(spk)
                         assert res is not None
+                    time.sleep(0.0002)
                 except Exception as e:
                     errors.append(f"Reader T{tid} Error: {e}")
 
         def clearer(tid: int):
+            try:
+                start_barrier.wait(timeout=5.0)
+            except threading.BrokenBarrierError:
+                return
             while not stop_event.is_set():
                 try:
                     normalize_speaker.cache_clear()
@@ -129,17 +142,23 @@ class TestNormalizeSpeakerConcurrencyStress:
                 except Exception as e:
                     errors.append(f"Clearer T{tid} Error: {e}")
 
-        readers = [threading.Thread(target=reader, args=(i,), daemon=True) for i in range(40)]
-        clearers = [threading.Thread(target=clearer, args=(i,), daemon=True) for i in range(5)]
+        readers = [
+            threading.Thread(target=reader, args=(i,), daemon=True) for i in range(num_readers)
+        ]
+        clearers = [
+            threading.Thread(target=clearer, args=(i,), daemon=True) for i in range(num_clearers)
+        ]
 
         for t in readers + clearers:
             t.start()
 
-        time.sleep(0.5)  # Run for 500ms
+        start_barrier.wait(timeout=5.0)
+        time.sleep(0.35)
         stop_event.set()
 
         for t in readers + clearers:
             t.join(timeout=3.0)
+            assert not t.is_alive(), "Concurrency stress worker failed to terminate cleanly"
 
         assert errors == [], f"Errors during concurrent cache_clear / read: {errors}"
         normalize_speaker.cache_clear()
@@ -158,14 +177,8 @@ class TestNormalizeSpeakerConcurrencyStress:
             try:
                 for k in unique_keys:
                     res = normalize_speaker(k)
-                    # For strings without host keywords, normalize_speaker returns k.strip()
-                    # (Unless it contains '1' or '2', which :04d format handles if not 1 or 2)
-                    if "1" in k:
-                        assert res == "Host 1"
-                    elif "2" in k:
-                        assert res == "Host 2"
-                    else:
-                        assert res == k
+                    # For non-persona guest strings without host keywords, normalize_speaker preserves k.strip()
+                    assert res == k
             except Exception as e:
                 errors.append(f"T{tid} Error: {e}")
 

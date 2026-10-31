@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markup import escape as escape_markup
 from rich.table import Table
 from rich.text import Text
 
@@ -547,7 +548,9 @@ class IngestionScreen:
                 )
                 style_p = COLOR_TEXT_PRIMARY if self.state.ingestion.file_path else COLOR_TEXT_MUTED
                 input_items.append(
-                    Text.from_markup(f"[bold {COLOR_ACCENT}]Path:[/] {p_text}", style=style_p)
+                    Text.from_markup(
+                        f"[bold {COLOR_ACCENT}]Path:[/] {escape_markup(p_text)}", style=style_p
+                    )
                 )
 
             if self.state.ingestion.file_path and os.path.exists(self.state.ingestion.file_path):
@@ -614,7 +617,8 @@ class IngestionScreen:
                 )
                 input_items.append(
                     Text.from_markup(
-                        f"[bold {COLOR_ACCENT}]Topic:[/] {top_display}", style=style_top
+                        f"[bold {COLOR_ACCENT}]Topic:[/] {escape_markup(top_display)}",
+                        style=style_top,
                     )
                 )
 

@@ -45,11 +45,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tts = [
+    "piper-tts>=1.2.0",
+]
+extraction = [
+    "markitdown>=0.0.1",
+]
 dev = [
     "bandit>=1.7.0",
     "mypy>=1.8.0",
     "pip-audit>=2.7.0",
-    "pyinstaller>=6.3.0",
+    "pyinstaller>=6.4.0",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
@@ -62,12 +68,12 @@ localpodcastllmstudio = "app:main"
 podcaststudio = "app:main"
 
 [project.scripts]
-podcast-tui = "tui:main"
+podcast-tui = "tui.__main__:main"
 podcast-cli = "cli:main"
 
 [tool.setuptools]
-py-modules = ["app", "check_env", "cli", "tui"]
-packages = ["core", "ui", "tui"]
+py-modules = ["app", "check_env", "cli"]
+packages = ["core", "ui", "tui", "tui.screens"]
 
 [tool.ruff]
 target-version = "py310"
@@ -84,7 +90,6 @@ extend-exclude = [
     ".agents",
     "PROJECT.md",
     "*.md",
-    "verify_*.py",
 ]
 
 [tool.ruff.lint]
@@ -148,7 +153,6 @@ omit = [
     "tests/*",
     ".venv/*",
     "setup.py",
-    "verify_*.py",
     ".agents/*",
 ]
 branch = true

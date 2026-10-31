@@ -11,6 +11,7 @@ import threading
 from typing import Any
 
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markup import escape as escape_markup
 from rich.table import Table
 from rich.text import Text
 
@@ -154,6 +155,8 @@ class GenerationScreen:
             tone=self.state.config.tone_preset,
             grounding_mode=self.state.config.grounding_mode,
             speed_rate=f"{int(self.state.audio.speaking_speed):+d}%",
+            temperature=self.state.config.temperature,
+            custom_system_prompt=self.state.config.custom_system_prompt,
             output_dir=self.state.config.output_dir,
             ollama_url=self.state.ollama.server_url,
             state=self.state,
@@ -308,11 +311,22 @@ class GenerationScreen:
             self.start_generation(mode="script_only")
             return True
 
-        if k in ("c", "escape"):
+        if k == "c":
             if self.state.generation.status == GenerationStatus.GENERATING:
                 self.cancel_generation()
                 return True
             return False
+
+        if k in ("escape", "b", "q"):
+            if self.state.generation.status == GenerationStatus.GENERATING:
+                self.cancel_generation()
+                return True
+            if self.event_queue is not None:
+                self.event_queue.post_event(
+                    TUIEventType.NAVIGATE_SCREEN,
+                    payload={"screen": ScreenMode.DASHBOARD.value},
+                )
+            return True
 
         if k in ("r", "3"):
             self.reset_generation()
@@ -385,10 +399,10 @@ class GenerationScreen:
         grounding_str = self.state.config.grounding_mode.upper()
 
         right_table.add_row(
-            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_ACCENT}]{model_name}[/][{COLOR_CARD_BORDER}]][/]",
-            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_HOST1}]{lang_str}[/][{COLOR_CARD_BORDER}]][/]",
-            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_HOST2}]{preset_name}[/][{COLOR_CARD_BORDER}]][/]",
-            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_INFO}]{grounding_str}[/][{COLOR_CARD_BORDER}]][/]",
+            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_ACCENT}]{escape_markup(str(model_name))}[/][{COLOR_CARD_BORDER}]][/]",
+            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_HOST1}]{escape_markup(str(lang_str))}[/][{COLOR_CARD_BORDER}]][/]",
+            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_HOST2}]{escape_markup(str(preset_name))}[/][{COLOR_CARD_BORDER}]][/]",
+            f"[{COLOR_CARD_BORDER}][[/][bold {COLOR_INFO}]{escape_markup(str(grounding_str))}[/][{COLOR_CARD_BORDER}]][/]",
         )
 
         grid.add_row(left_group, right_table)

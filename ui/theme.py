@@ -158,7 +158,7 @@ def enable_windows_dark_titlebar(window: ctk.CTk) -> bool:
         if not hwnd:
             hwnd = window.winfo_id()
 
-        value = ctypes.c_int(2)  # 2 = DWMWA_USE_IMMERSIVE_DARK_MODE
+        value = ctypes.c_int(1)  # BOOL TRUE (1) for DWMWA_USE_IMMERSIVE_DARK_MODE
         try:
             res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, 20, ctypes.byref(value), ctypes.sizeof(value)
@@ -168,13 +168,14 @@ def enable_windows_dark_titlebar(window: ctk.CTk) -> bool:
         except (AttributeError, OSError):
             pass
 
-        # Fallback to attribute 19
+        # Fallback to attribute 19 (Windows 10 pre-20H1)
         try:
             value = ctypes.c_int(1)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, 19, ctypes.byref(value), ctypes.sizeof(value)
             )
-            return True
+            if res == 0:
+                return True
         except (AttributeError, OSError):
             pass
 

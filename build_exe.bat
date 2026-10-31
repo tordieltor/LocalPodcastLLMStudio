@@ -31,14 +31,22 @@ set "PY_BIN="
 set "PY_ARGS="
 
 if exist ".venv\Scripts\python.exe" (
-    set "PY_BIN=%~dp0.venv\Scripts\python.exe"
-    set "PY_ARGS="
-    echo [1/5] Using local virtual environment: .venv\Scripts\python.exe
-) else if exist "venv\Scripts\python.exe" (
-    set "PY_BIN=%~dp0venv\Scripts\python.exe"
-    set "PY_ARGS="
-    echo [1/5] Using local virtual environment: venv\Scripts\python.exe
-) else (
+    "%~dp0.venv\Scripts\python.exe" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+    if !ERRORLEVEL! equ 0 (
+        set "PY_BIN=%~dp0.venv\Scripts\python.exe"
+        set "PY_ARGS="
+        echo [1/5] Using local virtual environment: .venv\Scripts\python.exe
+    )
+)
+if "!PY_BIN!"=="" if exist "venv\Scripts\python.exe" (
+    "%~dp0venv\Scripts\python.exe" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+    if !ERRORLEVEL! equ 0 (
+        set "PY_BIN=%~dp0venv\Scripts\python.exe"
+        set "PY_ARGS="
+        echo [1/5] Using local virtual environment: venv\Scripts\python.exe
+    )
+)
+if "!PY_BIN!"=="" (
     :: Test python command
     where python >nul 2>nul
     if !ERRORLEVEL! equ 0 (
@@ -132,7 +140,7 @@ echo.
 echo [3/5] Cleaning previous build artifacts (build, dist)...
 
 if exist "dist\LocalPodcastLLMStudio.exe" (
-    taskkill /f /im LocalPodcastLLMStudio.exe >nul 2>nul
+    powershell.exe -NoProfile -Command "$target = [System.IO.Path]::GetFullPath('dist\LocalPodcastLLMStudio.exe'); Get-Process -Name 'LocalPodcastLLMStudio' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $target } | Stop-Process -Force -ErrorAction SilentlyContinue" >nul 2>nul
     del /f /q "dist\LocalPodcastLLMStudio.exe" >nul 2>nul
     if exist "dist\LocalPodcastLLMStudio.exe" (
         timeout /t 1 /nobreak >nul 2>nul
@@ -226,9 +234,11 @@ echo LocalPodcastLLMStudio.exe is ready for distribution and local execution
 echo To launch the application, run:
 echo   dist\LocalPodcastLLMStudio.exe
 echo.
-:: Automatically update Desktop shortcuts
-if exist "create_desktop_shortcut.ps1" (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0create_desktop_shortcut.ps1" >nul 2>nul
+:: Automatically update Desktop shortcuts in interactive mode only
+if "%NO_PAUSE%"=="0" (
+    if exist "create_desktop_shortcut.ps1" (
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0create_desktop_shortcut.ps1" >nul 2>nul
+    )
 )
 set "FINAL_CODE=0"
 goto safe_exit

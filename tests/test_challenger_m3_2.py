@@ -17,7 +17,6 @@ import threading
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
-import customtkinter as ctk
 import pytest
 
 from core.ollama import ModelPullProgress
@@ -45,27 +44,9 @@ from ui.widgets import (
     TimeSlider,
 )
 
-
 # ==============================================================================
-# Headless Fixtures
+# Headless Fixtures (session headless_tk_root provided by tests/conftest.py)
 # ==============================================================================
-@pytest.fixture(scope="session", autouse=True)
-def headless_tk_root():
-    """Provides a hidden session-wide Tk root for headless environments."""
-    root = None
-    try:
-        root = ctk.CTk()
-        root.withdraw()
-        yield root
-    except Exception:
-        with patch("customtkinter.CTk"):
-            yield None
-    finally:
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
 
 
 @pytest.fixture

@@ -11,9 +11,9 @@ We actively maintain and provide security patches for the following versions of 
 
 | Version | Supported          | Status                                 |
 | ------- | ------------------ | -------------------------------------- |
-| 0.7.x   | :white_check_mark: | Current release (Active support)       |
+| 1.0.x   | :white_check_mark: | Current release (Active support)       |
 | main    | :white_check_mark: | Development branch (Bleeding edge)     |
-| < 0.7.0 | :x:                | Legacy / Unsupported                   |
+| < 1.0.0 | :x:                | Legacy / Unsupported                   |
 
 If you are running an unsupported version, please upgrade to the latest release before submitting a vulnerability report.
 
@@ -62,13 +62,14 @@ We support and appreciate good-faith security research:
 
 LocalPodcastLLMStudio incorporates defense-in-depth security principles:
 
-1. **100% Local Inference & Offline Voice Synthesis**:
+1. **100% Local Inference & Offline-by-Default Voice Synthesis**:
    - Dialogue generation is executed against locally hosted Ollama instances (`http://127.0.0.1:11434`).
    - Source documents, prompt templates, and generated transcripts are processed strictly in local workstation memory and are never transmitted to third-party cloud LLM APIs.
-   - Voice synthesis runs 100% offline via local Piper ONNX neural voice models. Zero dialogue text or audio data is ever transmitted to Microsoft, Bing, or any cloud endpoints.
+   - Voice synthesis runs 100% offline by default via local Piper ONNX neural voice models (`models/voices/`) and Windows SAPI5 / PCM fallback (`allow_cloud_tts=False`). Outbound Edge-TTS requests are disabled unless explicitly opted into by the user (`--allow-cloud-tts`).
 
-2. **Strict URL Scheme Validation**:
-   - All network connections to the Ollama REST API strictly enforce `http://` or `https://` schemes and valid hostnames, mitigating Server-Side Request Forgery (SSRF) and local file access (`file://`) vectors.
+2. **Strict URL Scheme Validation & DNS-Pinned SSRF Defense**:
+   - All network connections strictly enforce `http://` or `https://` schemes, reject embedded URL credentials, and block loopback, private, link-local, cloud metadata (`169.254.169.254`), and IPv4-mapped IPv6 targets during website ingestion.
+   - Website extraction pins validated resolved IP addresses at the socket transport layer across every redirect hop (up to 5 hops), defeating DNS-rebinding TOCTOU attacks.
 
 3. **Input Bounds & Denial-of-Service (DoS) Protection**:
    - Ingestion bounds are enforced on all imported documents (max **50 MB** file size and max **200 pages** for PDF documents).

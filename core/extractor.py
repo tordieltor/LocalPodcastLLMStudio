@@ -3,11 +3,13 @@ LocalPodcastLLMStudio - Document Ingestion & Text Extraction Engine
 Supports .txt, .md, .pdf files, pasted raw text, scratch topic prompts, and safe website URL ingestion.
 """
 
+import html
 import io
 import ipaddress
 import os
 import re
 import socket
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -57,6 +59,13 @@ BLOCKED_IP_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] =
     ipaddress.ip_network("fe80::/10"),  # IPv6 Link-Local
     ipaddress.ip_network("ff00::/8"),  # IPv6 Multicast
     ipaddress.ip_network("2001:db8::/32"),  # IPv6 Documentation
+)
+
+_BLOCKED_IPV4_NETWORKS: tuple[ipaddress.IPv4Network, ...] = tuple(
+    net for net in BLOCKED_IP_NETWORKS if isinstance(net, ipaddress.IPv4Network)
+)
+_BLOCKED_IPV6_NETWORKS: tuple[ipaddress.IPv6Network, ...] = tuple(
+    net for net in BLOCKED_IP_NETWORKS if isinstance(net, ipaddress.IPv6Network)
 )
 
 # Precompiled regular expressions for text normalization performance
@@ -200,11 +209,9 @@ def is_ip_address_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
     ):
         return True
 
-    for net in BLOCKED_IP_NETWORKS:
-        if ip.version == net.version and ip in net:
-            return True
-
-    return False
+    if isinstance(ip, ipaddress.IPv4Address):
+        return any(ip in net for net in _BLOCKED_IPV4_NETWORKS)
+    return any(ip in net for net in _BLOCKED_IPV6_NETWORKS)
 
 
 def parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -255,6 +262,9 @@ def validate_url_target(url: str) -> str:
     if not cleaned_url:
         raise SecurityError("Invalid URL: URL must be a non-empty string.")
 
+    if any(ord(c) < 32 or ord(c) == 127 for c in cleaned_url):
+        raise SecurityError("Invalid URL: URL contains forbidden ASCII control characters.")
+
     try:
         parsed = urllib.parse.urlsplit(cleaned_url)
     except Exception as exc:
@@ -269,6 +279,11 @@ def validate_url_target(url: str) -> str:
     hostname = parsed.hostname
     if not hostname or not hostname.strip():
         raise SecurityError(f"Invalid URL: missing or invalid hostname in '{cleaned_url}'.")
+
+    try:
+        explicit_port = parsed.port
+    except ValueError as exc:
+        raise SecurityError(f"Malformed port in URL '{cleaned_url}': {exc}") from exc
 
     hostname_clean = hostname.strip().rstrip(".")
     if hostname_clean.lower() in (
@@ -287,7 +302,7 @@ def validate_url_target(url: str) -> str:
             )
         return cleaned_url
 
-    port = parsed.port or (443 if scheme == "https" else 80)
+    port = explicit_port or (443 if scheme == "https" else 80)
     try:
         addr_info = socket.getaddrinfo(hostname_clean, port, type=socket.SOCK_STREAM)
     except (socket.gaierror, socket.herror, OSError) as exc:
@@ -348,12 +363,55 @@ def detect_and_decode_html(raw_bytes: bytes, header_encoding: str | None = None)
     return raw_bytes.decode("utf-8", errors="replace")
 
 
+def _verify_peer_socket_ip(response: Any, target_url: str) -> None:
+    """
+    Inspects the underlying connected peer socket IP (when exposed by urllib3/requests)
+    to mitigate DNS-rebinding TOCTOU attacks between validate_url_target() and connect().
+    Safely ignores mocked or non-socket response streams in unit tests.
+    """
+    raw = getattr(response, "raw", None)
+    if raw is None:
+        return
+
+    sock: Any = None
+    conn = getattr(raw, "_connection", None)
+    if conn is not None:
+        sock = getattr(conn, "sock", None)
+    if sock is None:
+        fp = getattr(raw, "_fp", None)
+        inner_fp = getattr(fp, "fp", None) if fp is not None else None
+        raw_io = getattr(inner_fp, "raw", None) if inner_fp is not None else None
+        sock = getattr(raw_io, "_sock", None) if raw_io is not None else None
+
+    if sock is None or not hasattr(sock, "getpeername"):
+        return
+
+    try:
+        peer = sock.getpeername()
+    except OSError:
+        return
+
+    if not isinstance(peer, tuple) or not peer or not isinstance(peer[0], str):
+        return
+
+    try:
+        peer_ip = ipaddress.ip_address(peer[0])
+    except ValueError:
+        return
+
+    if is_ip_address_blocked(peer_ip):
+        raise SecurityError(
+            f"DNS rebinding / SSRF blocked: peer socket IP '{peer_ip}' for '{target_url}' is in restricted address space."
+        )
+
+
 def fetch_url_content(
     url: str,
     timeout: float = DEFAULT_FETCH_TIMEOUT_SECONDS,
     max_size_bytes: int = DEFAULT_MAX_URL_SIZE_BYTES,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
     progress_callback: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """
     Safely fetches HTML content from a website with SSRF protection,
@@ -365,6 +423,7 @@ def fetch_url_content(
         max_size_bytes: Maximum allowed downloaded content size in bytes (default: 5 MB).
         max_redirects: Maximum allowed redirect hops (default: 5).
         progress_callback: Optional status callback function.
+        cancel_event: Optional threading.Event for cooperative cancellation.
 
     Returns:
         Decoded HTML content string.
@@ -372,17 +431,22 @@ def fetch_url_content(
     Raises:
         SecurityError: If URL or any redirect target resolves to blocked IP space or violates protocols.
         DocumentExtractionError: If download fails, times out, or exceeds max_size_bytes.
+        RuntimeError: If cancel_event is set before or during streaming.
     """
     current_url = url.strip() if isinstance(url, str) else ""
     visited_urls: set[str] = set()
     deadline = time.monotonic() + timeout
 
     for hop in range(max_redirects + 1):
-        remaining_time = max(0.1, deadline - time.monotonic())
-        if remaining_time <= 0.1 and hop > 0:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("URL extraction cancelled by user.")
+
+        now = time.monotonic()
+        if (now >= deadline and hop > 0) or timeout <= 0:
             raise DocumentExtractionError(
                 f"Fetching URL '{url}' timed out after {timeout:.1f} seconds."
             )
+        remaining_time = max(0.1, deadline - now)
 
         validated_url = validate_url_target(current_url)
         visited_urls.add(validated_url)
@@ -415,63 +479,79 @@ def fetch_url_content(
                 f"Failed to fetch content from '{validated_url}': {exc}"
             ) from exc
 
-        if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
-            if hop >= max_redirects:
-                raise SecurityError(
-                    f"Exceeded maximum allowed redirect hops ({max_redirects}) while fetching '{url}'."
-                )
-
-            location = response.headers.get("Location")
-            if not location:
-                raise DocumentExtractionError(
-                    f"HTTP {response.status_code} redirect response from '{validated_url}' missing Location header."
-                )
-
-            next_url = urllib.parse.urljoin(validated_url, location)
-            if next_url in visited_urls:
-                raise SecurityError(
-                    f"Circular redirect loop detected: '{next_url}' was already visited."
-                )
-
-            current_url = next_url
-            continue
-
-        if response.status_code != 200:
-            raise DocumentExtractionError(
-                f"HTTP request to '{validated_url}' failed with status code {response.status_code}."
-            )
-
-        content_length = response.headers.get("Content-Length")
-        if content_length and content_length.isdigit():
-            cl_int = int(content_length)
-            if cl_int > max_size_bytes:
-                raise DocumentExtractionError(
-                    f"Target URL '{validated_url}' response size ({cl_int / (1024 * 1024):.1f} MB) exceeds maximum allowed limit of {max_size_bytes / (1024 * 1024):.1f} MB."
-                )
-
-        chunks: list[bytes] = []
-        downloaded_bytes: int = 0
-        chunk_size: int = 65536
-
         try:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    downloaded_bytes += len(chunk)
-                    if downloaded_bytes > max_size_bytes:
+            _verify_peer_socket_ip(response, validated_url)
+
+            if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
+                if hop >= max_redirects:
+                    raise SecurityError(
+                        f"Exceeded maximum allowed redirect hops ({max_redirects}) while fetching '{url}'."
+                    )
+
+                location = response.headers.get("Location")
+                if not location:
+                    raise DocumentExtractionError(
+                        f"HTTP {response.status_code} redirect response from '{validated_url}' missing Location header."
+                    )
+
+                next_url = urllib.parse.urljoin(validated_url, location)
+                if next_url in visited_urls:
+                    raise SecurityError(
+                        f"Circular redirect loop detected: '{next_url}' was already visited."
+                    )
+
+                current_url = next_url
+                continue
+
+            if response.status_code != 200:
+                raise DocumentExtractionError(
+                    f"HTTP request to '{validated_url}' failed with status code {response.status_code}."
+                )
+
+            content_length = response.headers.get("Content-Length")
+            if content_length and content_length.isdigit():
+                cl_int = int(content_length)
+                if cl_int > max_size_bytes:
+                    raise DocumentExtractionError(
+                        f"Target URL '{validated_url}' response size ({cl_int / (1024 * 1024):.1f} MB) exceeds maximum allowed limit of {max_size_bytes / (1024 * 1024):.1f} MB."
+                    )
+
+            chunks: list[bytes] = []
+            downloaded_bytes: int = 0
+            chunk_size: int = 65536
+
+            try:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("URL extraction cancelled by user.")
+                    if time.monotonic() > deadline:
                         raise DocumentExtractionError(
-                            f"Downloaded content from '{validated_url}' exceeded maximum allowed limit of {max_size_bytes / (1024 * 1024):.1f} MB."
+                            f"Fetching URL '{validated_url}' timed out after {timeout:.1f} seconds."
                         )
-                    chunks.append(chunk)
-        except requests.RequestException as exc:
-            raise DocumentExtractionError(
-                f"Error while reading response stream from '{validated_url}': {exc}"
-            ) from exc
+                    if chunk:
+                        downloaded_bytes += len(chunk)
+                        if downloaded_bytes > max_size_bytes:
+                            raise DocumentExtractionError(
+                                f"Downloaded content from '{validated_url}' exceeded maximum allowed limit of {max_size_bytes / (1024 * 1024):.1f} MB."
+                            )
+                        chunks.append(chunk)
+            except requests.RequestException as exc:
+                raise DocumentExtractionError(
+                    f"Error while reading response stream from '{validated_url}': {exc}"
+                ) from exc
 
-        raw_bytes = b"".join(chunks)
-        if not raw_bytes or len(raw_bytes.strip()) == 0:
-            raise DocumentExtractionError(f"Fetched empty content from '{validated_url}'.")
+            raw_bytes = b"".join(chunks)
+            if not raw_bytes or len(raw_bytes.strip()) == 0:
+                raise DocumentExtractionError(f"Fetched empty content from '{validated_url}'.")
 
-        return detect_and_decode_html(raw_bytes, response.encoding)
+            return detect_and_decode_html(raw_bytes, response.encoding)
+        finally:
+            close_fn = getattr(response, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
 
     raise SecurityError(f"Failed to fetch '{url}': maximum redirect hops exceeded.")
 
@@ -503,15 +583,29 @@ class DOMNode:
         return self.attrs.get(key.lower(), "")
 
     def has_class(self, class_name: str) -> bool:
-        classes = self.attrs.get("class", "").split()
-        return class_name.lower() in (c.lower() for c in classes)
+        cls_attr = self.attrs.get("class", "")
+        if not cls_attr:
+            return False
+        return class_name.lower() in cls_attr.lower().split()
 
     def get_text_content(self) -> str:
         if self.is_text:
             return self.text
         if _is_noise_node(self):
             return ""
-        return "".join(c.get_text_content() for c in self.children)
+        pieces: list[str] = []
+        stack: list[DOMNode] = [self]
+        while stack:
+            curr = stack.pop()
+            if curr.is_text:
+                if curr.text:
+                    pieces.append(curr.text)
+                continue
+            if curr is not self and _is_noise_node(curr):
+                continue
+            if curr.children:
+                stack.extend(reversed(curr.children))
+        return "".join(pieces)
 
 
 class DOMTreeBuilder(HTMLParser):
@@ -562,75 +656,128 @@ def _is_noise_node(node: DOMNode) -> bool:
 
 
 def _find_nodes(root: DOMNode, predicate: Callable[[DOMNode], bool]) -> list[DOMNode]:
-    """Depth-first search collecting nodes matching the given predicate."""
+    """Iterative depth-first search collecting nodes matching the given predicate."""
     results: list[DOMNode] = []
-
-    def _walk(node: DOMNode) -> None:
+    stack: list[DOMNode] = [root]
+    while stack:
+        node = stack.pop()
         if predicate(node):
             results.append(node)
-        for child in node.children:
-            _walk(child)
-
-    _walk(root)
+        if node.children:
+            stack.extend(reversed(node.children))
     return results
 
 
 def select_primary_container(root: DOMNode) -> DOMNode:
     """
     Selects the primary content container from a parsed DOM tree based on semantic hierarchy.
+    Single-pass iterative classification avoids 9 separate full-tree DFS walks and prevents
+    RecursionError on deeply nested HTML documents.
     """
-    selectors: list[Callable[[DOMNode], bool]] = [
-        lambda n: n.tag == "article",
-        lambda n: n.tag == "main",
-        lambda n: n.get_attr("role") == "main",
-        lambda n: n.get_attr("id") == "mw-content-text",
-        lambda n: n.has_class("mw-parser-output"),
-        lambda n: n.has_class("post-content"),
-        lambda n: n.has_class("article-body"),
-        lambda n: n.has_class("entry-content"),
-        lambda n: n.tag == "body",
-    ]
+    buckets: list[list[DOMNode]] = [[] for _ in range(9)]
+    stack: list[DOMNode] = [root]
 
-    for sel in selectors:
-        matches = _find_nodes(root, sel)
-        if matches:
-            if len(matches) == 1:
-                if len(matches[0].get_text_content().strip()) > 30:
-                    return matches[0]
-            else:
-                best = max(matches, key=lambda m: len(m.get_text_content().strip()))
-                if len(best.get_text_content().strip()) > 30:
-                    return best
+    while stack:
+        node = stack.pop()
+        if not node.is_text:
+            tag = node.tag
+            attrs = node.attrs
+            if tag == "article":
+                buckets[0].append(node)
+            elif tag == "main":
+                buckets[1].append(node)
+            elif tag == "body":
+                buckets[8].append(node)
+
+            if attrs:
+                if attrs.get("role") == "main":
+                    buckets[2].append(node)
+                if attrs.get("id") == "mw-content-text":
+                    buckets[3].append(node)
+                cls_val = attrs.get("class", "")
+                if cls_val:
+                    cls_tokens = set(cls_val.lower().split())
+                    if "mw-parser-output" in cls_tokens:
+                        buckets[4].append(node)
+                    if "post-content" in cls_tokens:
+                        buckets[5].append(node)
+                    if "article-body" in cls_tokens:
+                        buckets[6].append(node)
+                    if "entry-content" in cls_tokens:
+                        buckets[7].append(node)
+
+            if node.children:
+                stack.extend(reversed(node.children))
+
+    for matches in buckets:
+        if not matches:
+            continue
+        if len(matches) == 1:
+            if len(matches[0].get_text_content().strip()) > 30:
+                return matches[0]
+        else:
+            best = max(matches, key=lambda m: len(m.get_text_content().strip()))
+            if len(best.get_text_content().strip()) > 30:
+                return best
 
     return root
 
 
+def _format_serialized_attrs(attrs: dict[str, str]) -> str:
+    """Safely formats and HTML-escapes element attributes for re-serialization."""
+    parts: list[str] = []
+    for k, v in attrs.items():
+        safe_key = re.sub(r"[^a-zA-Z0-9_:\-\.]", "", k)
+        if not safe_key:
+            continue
+        parts.append(f' {safe_key}="{html.escape(v, quote=True)}"')
+    return "".join(parts)
+
+
 def serialize_node(node: DOMNode) -> str:
-    """Serializes a DOM node back to HTML while discarding noise subtrees."""
+    """
+    Iteratively serializes a DOM node back to HTML while discarding noise subtrees
+    and escaping text/attribute values so literal '<' or '\"' cannot corrupt HTML tags.
+    """
     if node.is_text:
-        return node.text
+        return node.text.replace("<", "&lt;").replace(">", "&gt;")
     if _is_noise_node(node):
         return ""
 
-    # PERFORMANCE OPTIMIZATION: Fast path for nodes without HTML attributes.
-    # Bypasses dictionary iterator, generator comprehension, and string interpolation overhead.
-    if not node.attrs:
-        if node.tag in VOID_TAGS:
-            return f"<{node.tag} />"
-        inner_html = "".join(serialize_node(c) for c in node.children)
-        if node.tag.startswith("["):
-            return inner_html
-        return f"<{node.tag}>{inner_html}</{node.tag}>"
+    pieces: list[str] = []
+    # Stack entries are either (0, DOMNode) for enter or (1, closing_tag_str) for exit
+    stack: list[tuple[int, Any]] = [(0, node)]
 
-    attr_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
-    if node.tag in VOID_TAGS:
-        return f"<{node.tag}{attr_str} />"
+    while stack:
+        op, payload = stack.pop()
+        if op == 1:
+            pieces.append(payload)
+            continue
 
-    inner_html = "".join(serialize_node(c) for c in node.children)
-    if node.tag.startswith("["):
-        return inner_html
+        curr: DOMNode = payload
+        if curr.is_text:
+            if curr.text:
+                pieces.append(curr.text.replace("<", "&lt;").replace(">", "&gt;"))
+            continue
 
-    return f"<{node.tag}{attr_str}>{inner_html}</{node.tag}>"
+        if _is_noise_node(curr):
+            continue
+
+        attr_str = _format_serialized_attrs(curr.attrs) if curr.attrs else ""
+        if curr.tag in VOID_TAGS:
+            pieces.append(f"<{curr.tag}{attr_str} />")
+            continue
+
+        is_synthetic_root = curr.tag.startswith("[")
+        if not is_synthetic_root:
+            pieces.append(f"<{curr.tag}{attr_str}>")
+            stack.append((1, f"</{curr.tag}>"))
+
+        if curr.children:
+            for child in reversed(curr.children):
+                stack.append((0, child))
+
+    return "".join(pieces)
 
 
 def sanitize_html_boilerplate(html_content: str) -> str:
@@ -657,7 +804,11 @@ def sanitize_html_boilerplate(html_content: str) -> str:
     container = select_primary_container(builder.root)
     sanitized_html = serialize_node(container)
 
-    cleaned_html = WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
+    cleaned_html = (
+        WIKIPEDIA_CITATION_PATTERN.sub("", sanitized_html)
+        if "[" in sanitized_html
+        else sanitized_html
+    )
     cleaned_html = _RE_ORPHAN_PUNCTUATION_SPACE.sub(r"\1", cleaned_html)
 
     return cleaned_html.strip()
@@ -688,27 +839,8 @@ class HTMLToMarkdownParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         self._tag_stack.append(tag)
-        attrs_dict = {k.lower(): (v or "") for k, v in attrs}
 
-        if tag in (
-            "aside",
-            "button",
-            "canvas",
-            "dialog",
-            "footer",
-            "form",
-            "head",
-            "header",
-            "iframe",
-            "nav",
-            "noscript",
-            "script",
-            "select",
-            "style",
-            "svg",
-            "template",
-            "textarea",
-        ):
+        if tag in NOISE_TAGS:
             self._ignore_depth += 1
             return
 
@@ -770,7 +902,11 @@ class HTMLToMarkdownParser(HTMLParser):
             elif tag in ("td", "th"):
                 self._pieces.append(" ")
         elif tag == "a":
-            href = attrs_dict.get("href", "").strip()
+            href = ""
+            for k, v in attrs:
+                if k.lower() == "href":
+                    href = (v or "").strip()
+                    break
             if (
                 href
                 and not href.startswith(("javascript:", "mailto:"))
@@ -894,16 +1030,17 @@ class HTMLToMarkdownParser(HTMLParser):
         while self._pieces and self._pieces[-1] == " ":
             self._pieces.pop()
 
-        # PERFORMANCE OPTIMIZATION: O(N) reverse trailing newline count replaces O(N^2)
-        # quadratic full-buffer string joins ("".join(self._pieces)) executed on tag boundaries (~7x speedup).
+        # PERFORMANCE OPTIMIZATION: Non-allocating reverse index scan over trailing pieces
+        # replaces per-piece rstrip() slice allocations and O(N^2) buffer joins.
         trailing_newlines = 0
         for p in reversed(self._pieces):
             if not p:
                 continue
-            stripped_len = len(p.rstrip("\n"))
-            newlines_in_p = len(p) - stripped_len
-            trailing_newlines += newlines_in_p
-            if stripped_len > 0:
+            idx = len(p) - 1
+            while idx >= 0 and p[idx] == "\n":
+                trailing_newlines += 1
+                idx -= 1
+            if idx >= 0 or trailing_newlines >= count:
                 break
 
         needed = count - trailing_newlines
@@ -1122,6 +1259,7 @@ def extract_text_from_url(
     max_size_bytes: int = DEFAULT_MAX_URL_SIZE_BYTES,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
     progress_callback: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """
     Extracts, cleans, and converts web page content from a URL into normalized Markdown.
@@ -1133,6 +1271,7 @@ def extract_text_from_url(
         max_size_bytes: Maximum downloaded content size in bytes (default: 5 MB).
         max_redirects: Maximum allowed redirect hops (default: 5).
         progress_callback: Optional progress message callback function.
+        cancel_event: Optional threading.Event for cooperative cancellation.
 
     Returns:
         Clean, structured Markdown text.
@@ -1141,10 +1280,14 @@ def extract_text_from_url(
         SecurityError: If URL or any redirect hop fails SSRF/protocol security checks.
         DocumentExtractionError: If network request fails, exceeds bounds, or content is empty.
     """
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("URL extraction cancelled by user.")
     if progress_callback:
         progress_callback(f"Validating target URL: {url}")
     validated_url = validate_url_target(url)
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("URL extraction cancelled by user.")
     if progress_callback:
         progress_callback(f"Fetching web page: {validated_url}")
     raw_html = fetch_url_content(
@@ -1153,12 +1296,17 @@ def extract_text_from_url(
         max_size_bytes=max_size_bytes,
         max_redirects=max_redirects,
         progress_callback=progress_callback,
+        cancel_event=cancel_event,
     )
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("URL extraction cancelled by user.")
     if progress_callback:
         progress_callback("Sanitizing HTML and removing noise elements...")
     sanitized_html = sanitize_html_boilerplate(raw_html)
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("URL extraction cancelled by user.")
     if progress_callback:
         progress_callback("Converting sanitized content to Markdown...")
     markdown_text = convert_html_to_markdown(sanitized_html)
@@ -1182,6 +1330,7 @@ def extract_text(
     max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
     max_pages: int = DEFAULT_MAX_PDF_PAGES,
     progress_callback: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """
     Unified extraction entry point supporting URLs, files (.txt, .md, .pdf), pasted text, and scratch topic prompts.
@@ -1206,6 +1355,9 @@ def extract_text(
         SecurityError: If URL safety validation fails.
         DocumentExtractionError: On empty or invalid input, oversized files, or missing file.
     """
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("Document extraction cancelled by user.")
+
     if source is None or not isinstance(source, (str, os.PathLike)):
         raise DocumentExtractionError("Input source must be a non-empty string or path.")
 
@@ -1240,6 +1392,7 @@ def extract_text(
             max_size_bytes=max_size_bytes,
             max_redirects=max_redirects,
             progress_callback=progress_callback,
+            cancel_event=cancel_event,
         )
 
     # 4. File Path Mode (Existing file on disk)

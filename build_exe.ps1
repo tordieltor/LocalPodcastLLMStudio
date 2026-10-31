@@ -162,12 +162,22 @@ $BuildPath = Join-Path $ScriptDir "build"
 $DistPath = Join-Path $ScriptDir "dist"
 $TargetExe = Join-Path $DistPath "LocalPodcastLLMStudio.exe"
 
-# Guard against running application instances
-$runningProcesses = Get-Process -Name "LocalPodcastLLMStudio" -ErrorAction SilentlyContinue
-if ($runningProcesses) {
-    Write-Host "[WARN] Found active LocalPodcastLLMStudio process (PID: $(($runningProcesses.Id) -join ', '))." -ForegroundColor Yellow
-    Write-Host "Terminating running process to release file lock on $TargetExe..." -ForegroundColor Yellow
-    Stop-Process -Name "LocalPodcastLLMStudio" -Force -ErrorAction SilentlyContinue
+# Guard against running application instances strictly bound to $TargetExe
+$TargetExeFull = [System.IO.Path]::GetFullPath($TargetExe)
+$runningProcesses = @(
+    Get-Process -Name "LocalPodcastLLMStudio" -ErrorAction SilentlyContinue |
+    Where-Object {
+        try {
+            $_.Path -and ([string]::Equals([System.IO.Path]::GetFullPath($_.Path), $TargetExeFull, [System.StringComparison]::OrdinalIgnoreCase))
+        } catch {
+            $false
+        }
+    }
+)
+if ($runningProcesses.Count -gt 0) {
+    Write-Host "[WARN] Found active LocalPodcastLLMStudio process at $TargetExeFull (PID: $(($runningProcesses.Id) -join ', '))." -ForegroundColor Yellow
+    Write-Host "Terminating target process to release file lock on $TargetExe..." -ForegroundColor Yellow
+    $runningProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 500
 }
 
@@ -214,9 +224,10 @@ if (Test-Path $SpecFile) {
         "--name", "LocalPodcastLLMStudio",
         "--clean",
         "--collect-all", "customtkinter",
-        "--collect-all", "edge_tts",
         "--collect-all", "pypdf",
         "--collect-all", "certifi",
+        "--collect-all", "requests",
+        "--collect-all", "rich",
         $AppFile
     )
     & $PyCmd $buildArgs

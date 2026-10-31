@@ -151,9 +151,12 @@ if (Test-Path $ReqFile) {
 if (Test-Path $ReqDevFile) {
     Write-Host "Installing development and build dependencies from requirements-dev.txt..." -ForegroundColor Gray
     & $VenvPython -m pip install -r $ReqDevFile --quiet
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "[OK] Development dependencies installed." -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to install development dependencies." -ForegroundColor Red
+        if (-not $NoPause) { Read-Host "Press Enter to exit" }
+        exit 1
     }
+    Write-Host "[OK] Development dependencies installed." -ForegroundColor Green
 }
 Write-Host ""
 

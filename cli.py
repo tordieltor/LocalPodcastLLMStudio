@@ -20,6 +20,7 @@ from core.exceptions import (
 )
 from core.extractor import extract_text
 from core.io_utils import atomic_write_file
+from core.logger import setup_logging
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import OllamaClient, _validate_url, generate_podcast_script
 from core.parser import DialogueParser, dialogue_to_json
@@ -216,65 +217,66 @@ def run_generate_script(args: argparse.Namespace, logger: CLILogger) -> int:
     source_content = ""
     is_topic = False
     is_url = False
-
-    if getattr(args, "url", None):
-        source_content = args.url
-        is_url = True
-    elif getattr(args, "topic", None):
-        source_content = args.topic
-        is_topic = True
-    elif getattr(args, "file", None):
-        source_content = args.file
-    elif getattr(args, "input", None):
-        source_content = _read_stdin_or_file(args.input)
-    elif getattr(args, "text", None):
-        source_content = sys.stdin.read() if args.text == "-" else args.text
-    else:
-        logger.error(
-            "No input content provided. Specify --url, --topic, -f/--file, -i/--input, or --text."
-        )
-        return 2
-
-    lang = normalize_language_code(args.language)
-    host_mode = normalize_host_mode(getattr(args, "host_mode", "dialogue"))
-    grounding = (
-        normalize_grounding_mode(args.grounding)
-        if args.grounding
-        else ("open_topic" if is_topic else "strict")
-    )
-    ollama_endpoint = getattr(args, "ollama_url", "http://localhost:11434")
-
-    if args.dry_run:
-        clean_url = _validate_url(ollama_endpoint)
-        client = OllamaClient(base_url=clean_url)
-        online = client.check_connection(timeout=3.0)
-        logger.info(f"[Dry Run] Script generation options valid. Ollama online: {online}")
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "status": "valid",
-                        "command": "generate-script",
-                        "ollama_online": online,
-                        "model": args.model,
-                        "host_mode": host_mode,
-                        "is_url": is_url,
-                        "dry_run": True,
-                    },
-                    indent=2,
-                )
-            )
-        return 0
+    is_file = False
 
     try:
+        if getattr(args, "url", None):
+            source_content = args.url
+            is_url = True
+        elif getattr(args, "topic", None):
+            source_content = args.topic
+            is_topic = True
+        elif getattr(args, "file", None):
+            source_content = args.file
+            is_file = True
+        elif getattr(args, "input", None):
+            source_content = _read_stdin_or_file(args.input)
+        elif getattr(args, "text", None):
+            source_content = sys.stdin.read() if args.text == "-" else args.text
+        else:
+            msg = "No input content provided. Specify --url, --topic, -f/--file, -i/--input, or --text."
+            logger.error(msg)
+            if args.json:
+                print(json.dumps({"success": False, "error": msg}, indent=2))
+            return 2
+
+        lang = normalize_language_code(args.language)
+        host_mode = normalize_host_mode(getattr(args, "host_mode", "dialogue"))
+        grounding = (
+            normalize_grounding_mode(args.grounding)
+            if args.grounding
+            else ("open_topic" if is_topic else "strict")
+        )
+        ollama_endpoint = getattr(args, "ollama_url", "http://localhost:11434")
+
+        if args.dry_run:
+            clean_url = _validate_url(ollama_endpoint)
+            client = OllamaClient(base_url=clean_url)
+            online = client.check_connection(timeout=3.0)
+            logger.info(f"[Dry Run] Script generation options valid. Ollama online: {online}")
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "status": "valid",
+                            "command": "generate-script",
+                            "ollama_online": online,
+                            "model": args.model,
+                            "host_mode": host_mode,
+                            "is_url": is_url,
+                            "dry_run": True,
+                        },
+                        indent=2,
+                    )
+                )
+            return 0
+
         logger.info(
             f"Extracting source content (is_topic={is_topic}, is_url={is_url}, host_mode={host_mode})..."
         )
         extracted_text = extract_text(
             source=source_content,
-            is_raw_text=not is_topic
-            and not is_url
-            and not (args.file and os.path.isfile(source_content)),
+            is_raw_text=not is_topic and not is_url and not is_file,
             is_topic=is_topic,
             is_url=is_url,
         )
@@ -292,6 +294,10 @@ def run_generate_script(args: argparse.Namespace, logger: CLILogger) -> int:
             grounding_mode=grounding,
             model=args.model,
             ollama_url=ollama_endpoint,
+            temperature=float(getattr(args, "temp", 0.70)),
+            custom_system_prompt=getattr(args, "system_prompt", "") or None,
+            host1_name=getattr(args, "host1_name", "") or None,
+            host2_name=getattr(args, "host2_name", "") or None,
             is_topic=is_topic,
             host_mode=host_mode,
             progress_callback=_prog,
@@ -333,37 +339,42 @@ def run_synthesize_audio(args: argparse.Namespace, logger: CLILogger) -> int:
     Subcommand 'synthesize-audio': Synthesizes dialogue turns from a JSON script into audio.
     """
     if not args.input:
-        logger.error("No input JSON script provided. Specify -i/--input <path> or '-' for stdin.")
+        msg = "No input JSON script provided. Specify -i/--input <path> or '-' for stdin."
+        logger.error(msg)
+        if args.json:
+            print(json.dumps({"success": False, "error": msg}, indent=2))
         return 2
 
-    raw_json = _read_stdin_or_file(args.input)
-    dialogue = DialogueParser.parse(raw_json, default_language=args.language)
-
-    if not dialogue:
-        logger.error("Parsed 0 dialogue turns from input JSON.")
-        return 1
-
-    lang = normalize_language_code(args.language)
-    solo_voice = getattr(args, "solo_voice", None) or None
-
-    if args.dry_run:
-        logger.info(f"[Dry Run] Synthesize audio options valid for {len(dialogue)} turns.")
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "status": "valid",
-                        "command": "synthesize-audio",
-                        "turns": len(dialogue),
-                        "solo_voice": solo_voice,
-                        "dry_run": True,
-                    },
-                    indent=2,
-                )
-            )
-        return 0
-
     try:
+        raw_json = _read_stdin_or_file(args.input)
+        dialogue = DialogueParser.parse(raw_json, default_language=args.language)
+
+        if not dialogue:
+            raise ValueError("Parsed 0 dialogue turns from input JSON.")
+
+        lang = normalize_language_code(args.language)
+        solo_voice = getattr(args, "solo_voice", None) or None
+        host1_voice = getattr(args, "host1_voice", None) or None
+        host2_voice = getattr(args, "host2_voice", None) or None
+        allow_cloud_tts = bool(getattr(args, "allow_cloud_tts", False))
+
+        if args.dry_run:
+            logger.info(f"[Dry Run] Synthesize audio options valid for {len(dialogue)} turns.")
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "status": "valid",
+                            "command": "synthesize-audio",
+                            "turns": len(dialogue),
+                            "solo_voice": solo_voice,
+                            "dry_run": True,
+                        },
+                        indent=2,
+                    )
+                )
+            return 0
+
         logger.info(f"Synthesizing {len(dialogue)} dialogue turns via Piper TTS...")
         out_dir = args.output_dir or "./output/temp_tts"
         os.makedirs(out_dir, exist_ok=True)
@@ -378,6 +389,9 @@ def run_synthesize_audio(args: argparse.Namespace, logger: CLILogger) -> int:
             output_dir=out_dir,
             progress_cb=_tts_cb,
             solo_voice=solo_voice,
+            host1_voice=host1_voice,
+            host2_voice=host2_voice,
+            allow_cloud_tts=allow_cloud_tts,
         )
 
         logger.info(f"Synthesized {len(audio_files)} audio segment files in {out_dir}")
@@ -407,38 +421,77 @@ def run_stitch(args: argparse.Namespace, logger: CLILogger) -> int:
     """
     Subcommand 'stitch': Combines MP3 audio segments into an atomic master MP3 with ID3v2 tags.
     """
-    input_files: list[str] = []
+    candidate_files: list[str] = []
 
-    if args.files:
-        for f in args.files:
-            if f.endswith(".json") and os.path.exists(f):
-                with open(f, encoding="utf-8") as jf:
+    try:
+        if args.files:
+            for f in args.files:
+                if f.endswith(".json") and os.path.exists(f):
+                    with open(f, encoding="utf-8") as jf:
+                        data = json.load(jf)
+                    items = (
+                        data
+                        if isinstance(data, list)
+                        else (data.get("audio_files", []) if isinstance(data, dict) else None)
+                    )
+                    if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
+                        raise ValueError(f"Invalid stitch JSON manifest structure in '{f}'.")
+                    candidate_files.extend(items)
+                else:
+                    candidate_files.append(f)
+        elif args.input == "-":
+            stdin_content = sys.stdin.read().strip()
+            if stdin_content:
+                try:
+                    parsed = json.loads(stdin_content)
+                    if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                        candidate_files.extend(parsed)
+                    elif isinstance(parsed, dict) and isinstance(parsed.get("audio_files"), list):
+                        raw_list = parsed["audio_files"]
+                        if not all(isinstance(x, str) for x in raw_list):
+                            raise ValueError("Manifest 'audio_files' entries must be strings.")
+                        candidate_files.extend(raw_list)
+                    else:
+                        raise ValueError("Invalid JSON stitch manifest from stdin.")
+                except json.JSONDecodeError:
+                    candidate_files.extend(stdin_content.splitlines())
+        elif args.input:
+            if args.input.endswith(".json") and os.path.exists(args.input):
+                with open(args.input, encoding="utf-8") as jf:
                     data = json.load(jf)
-                    if isinstance(data, list):
-                        input_files.extend(data)
-                    elif isinstance(data, dict) and "audio_files" in data:
-                        input_files.extend(data["audio_files"])
+                items = (
+                    data
+                    if isinstance(data, list)
+                    else (data.get("audio_files", []) if isinstance(data, dict) else None)
+                )
+                if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
+                    raise ValueError(f"Invalid stitch JSON manifest structure in '{args.input}'.")
+                candidate_files.extend(items)
             else:
-                input_files.append(f)
-    elif args.input == "-":
-        stdin_content = sys.stdin.read().strip()
-        try:
-            parsed = json.loads(stdin_content)
-            if isinstance(parsed, list):
-                input_files.extend(parsed)
-            elif isinstance(parsed, dict) and "audio_files" in parsed:
-                input_files.extend(parsed["audio_files"])
-        except json.JSONDecodeError:
-            input_files.extend(stdin_content.splitlines())
-    elif args.input:
-        input_files.append(args.input)
+                candidate_files.append(args.input)
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        logger.error(str(exc))
+        if args.json:
+            print(json.dumps({"success": False, "error": str(exc)}, indent=2))
+        return 1
 
-    input_files = [f.strip() for f in input_files if f.strip() and os.path.exists(f.strip())]
-
-    if not input_files:
-        logger.error("No valid audio files found to stitch.")
+    cleaned_candidates = [f.strip() for f in candidate_files if isinstance(f, str) and f.strip()]
+    if not cleaned_candidates:
+        msg = "No valid audio files found to stitch."
+        logger.error(msg)
+        if args.json:
+            print(json.dumps({"success": False, "error": msg}, indent=2))
         return 2
 
+    missing_files = [f for f in cleaned_candidates if not os.path.exists(f)]
+    if missing_files:
+        msg = f"Audio file(s) not found for stitch: {', '.join(missing_files)}"
+        logger.error(msg)
+        if args.json:
+            print(json.dumps({"success": False, "error": msg, "missing": missing_files}, indent=2))
+        return 2
+
+    input_files = cleaned_candidates
     out_mp3 = args.output or "./output/podcast.mp3"
 
     if args.dry_run:
@@ -512,7 +565,10 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
         content = sys.stdin.read() if args.text == "-" else args.text
         is_raw = True
     else:
-        logger.error("No input content provided. Specify --url, --topic, -f/--file, or --text.")
+        msg = "No input content provided. Specify --url, --topic, -f/--file, or --text."
+        logger.error(msg)
+        if args.json:
+            print(json.dumps({"success": False, "error": msg}, indent=2))
         return 2
 
     lang = normalize_language_code(args.language)
@@ -524,56 +580,63 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
     )
     ollama_endpoint = getattr(args, "ollama_url", "http://localhost:11434")
 
-    if args.dry_run:
-        clean_url = _validate_url(ollama_endpoint)
-        client = OllamaClient(base_url=clean_url)
-        online = client.check_connection(timeout=3.0)
-        logger.info(f"[Dry Run] Full pipeline validation passed. Ollama online: {online}")
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "status": "valid",
-                        "command": "pipeline",
-                        "ollama_online": online,
-                        "model": args.model,
-                        "language": lang,
-                        "format": args.length,
-                        "grounding": grounding,
-                        "host_mode": host_mode,
-                        "is_url": is_url,
-                        "dry_run": True,
-                    },
-                    indent=2,
-                )
-            )
-        return 0
-
-    options = GenerationOptions(
-        content=content,
-        language=lang,
-        model=args.model,
-        format_type=args.length,
-        tone_style=args.tone,
-        speed_rate=args.speed,
-        grounding_mode=grounding,
-        output_dir=args.output_dir,
-        is_topic=is_topic,
-        is_raw_text=is_raw,
-        is_url=is_url,
-        host_mode=host_mode,
-        solo_voice=getattr(args, "solo_voice", None) or None,
-    )
-
-    service = PodcastGeneratorService(ollama_url=ollama_endpoint)
-
-    def _progress(pct: float, msg: str) -> None:
-        logger.progress(pct, msg)
-
-    def _stage_cb(stage: PipelineStage, status: StageStatus, pct: float, msg: str) -> None:
-        logger.stage(stage, status, pct, msg)
-
     try:
+        if args.dry_run:
+            clean_url = _validate_url(ollama_endpoint)
+            client = OllamaClient(base_url=clean_url)
+            online = client.check_connection(timeout=3.0)
+            logger.info(f"[Dry Run] Full pipeline validation passed. Ollama online: {online}")
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "status": "valid",
+                            "command": "pipeline",
+                            "ollama_online": online,
+                            "model": args.model,
+                            "language": lang,
+                            "format": args.length,
+                            "grounding": grounding,
+                            "host_mode": host_mode,
+                            "is_url": is_url,
+                            "dry_run": True,
+                        },
+                        indent=2,
+                    )
+                )
+            return 0
+
+        options = GenerationOptions(
+            content=content,
+            language=lang,
+            model=args.model,
+            format_type=args.length,
+            tone_style=args.tone,
+            speed_rate=args.speed,
+            grounding_mode=grounding,
+            temperature=float(getattr(args, "temp", 0.70)),
+            custom_system_prompt=getattr(args, "system_prompt", "") or None,
+            host1_name=getattr(args, "host1_name", "") or None,
+            host2_name=getattr(args, "host2_name", "") or None,
+            host1_voice=getattr(args, "host1_voice", "") or None,
+            host2_voice=getattr(args, "host2_voice", "") or None,
+            output_dir=args.output_dir,
+            is_topic=is_topic,
+            is_raw_text=is_raw,
+            is_url=is_url,
+            host_mode=host_mode,
+            solo_voice=getattr(args, "solo_voice", None) or None,
+            allow_cloud_tts=bool(getattr(args, "allow_cloud_tts", False)),
+        )
+
+        service = PodcastGeneratorService(ollama_url=ollama_endpoint)
+
+        def _progress(pct: float, msg: str) -> None:
+            logger.progress(pct, msg)
+
+        def _stage_cb(stage: PipelineStage, status: StageStatus, pct: float, msg: str) -> None:
+            logger.stage(stage, status, pct, msg)
+
         logger.info(
             f"Starting end-to-end podcast generation ({lang}, host_mode={host_mode}, model={args.model}, format={args.length})..."
         )
@@ -625,28 +688,54 @@ def run_pipeline(args: argparse.Namespace, logger: CLILogger) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     """Builds the comprehensive top-level CLI argument parser with subcommands."""
-    common_parser = argparse.ArgumentParser(add_help=False)
-    common_parser.add_argument(
+    root_common_parser = argparse.ArgumentParser(add_help=False)
+    root_common_parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
+        default=False,
         help="Suppress informational logs and progress output",
     )
-    common_parser.add_argument(
+    root_common_parser.add_argument(
         "--json",
         action="store_true",
+        default=False,
         help="Output results and metadata formatted strictly as JSON to stdout",
     )
-    common_parser.add_argument(
+    root_common_parser.add_argument(
         "--dry-run",
         action="store_true",
+        default=False,
+        help="Validate parameters, paths, and server reachability without executing heavy operations",
+    )
+
+    # Subparser common flags use SUPPRESS default so flags passed BEFORE the subcommand
+    # (e.g. `cli.py --json extract ...`) are never overwritten by subparser defaults.
+    sub_common_parser = argparse.ArgumentParser(add_help=False)
+    sub_common_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Suppress informational logs and progress output",
+    )
+    sub_common_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Output results and metadata formatted strictly as JSON to stdout",
+    )
+    sub_common_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
         help="Validate parameters, paths, and server reachability without executing heavy operations",
     )
 
     parser = argparse.ArgumentParser(
         prog="cli.py",
         description="LocalPodcastLLMStudio - Autonomous AI Podcast Generation CLI Engine",
-        parents=[common_parser],
+        parents=[root_common_parser],
     )
 
     # Subcommands
@@ -661,17 +750,17 @@ def build_parser() -> argparse.ArgumentParser:
     # --------------------------------------------------------------------------
     pipe_parser = subparsers.add_parser(
         "pipeline",
-        parents=[common_parser],
+        parents=[sub_common_parser],
         help="Run full end-to-end podcast generation pipeline unattended",
     )
-    _add_pipeline_arguments(pipe_parser)
+    _add_pipeline_arguments(pipe_parser, is_subparser=True)
 
     # --------------------------------------------------------------------------
     # 2. Extract Subcommand
     # --------------------------------------------------------------------------
     ext_parser = subparsers.add_parser(
         "extract",
-        parents=[common_parser],
+        parents=[sub_common_parser],
         help="Extract & normalize text content from URL, PDF, TXT, MD, or topic string",
     )
     ext_parser.add_argument(
@@ -715,7 +804,7 @@ def build_parser() -> argparse.ArgumentParser:
     # --------------------------------------------------------------------------
     gen_parser = subparsers.add_parser(
         "generate-script",
-        parents=[common_parser],
+        parents=[sub_common_parser],
         help="Generate multi-act structured dialogue or monologue turns using Ollama LLM",
     )
     gen_parser.add_argument(
@@ -739,11 +828,17 @@ def build_parser() -> argparse.ArgumentParser:
     gen_parser.add_argument(
         "-i",
         "--input",
-        "--text",
         type=str,
         default="",
         dest="input",
-        help="Input text or file (or '-' for stdin)",
+        help="Input file path (or '-' for stdin)",
+    )
+    gen_parser.add_argument(
+        "--text",
+        type=str,
+        default="",
+        dest="text",
+        help="Raw text string (or '-' for stdin)",
     )
     gen_parser.add_argument(
         "-m", "--model", type=str, default="llama3.1:8b", help="Ollama LLM model name"
@@ -753,7 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--ollama-url",
         "--ollama-endpoint",
         type=str,
-        default="http://localhost:11434",
+        default=argparse.SUPPRESS,
         dest="ollama_url",
         help="Ollama host API endpoint URL (default: http://localhost:11434)",
     )
@@ -781,6 +876,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         dest="solo_voice",
         help="Custom TTS voice identifier for solo host in monologue mode",
+    )
+    gen_parser.add_argument(
+        "--host1-name", type=str, default="", help="Custom persona name for Host 1"
+    )
+    gen_parser.add_argument(
+        "--host2-name", type=str, default="", help="Custom persona name for Host 2"
     )
     gen_parser.add_argument(
         "--length",
@@ -823,7 +924,7 @@ def build_parser() -> argparse.ArgumentParser:
     # --------------------------------------------------------------------------
     tts_parser = subparsers.add_parser(
         "synthesize-audio",
-        parents=[common_parser],
+        parents=[sub_common_parser],
         help="Synthesize per-turn audio files from JSON dialogue using Piper TTS",
     )
     tts_parser.add_argument(
@@ -862,6 +963,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--host2-voice", type=str, default="", help="Custom TTS voice for Host 2"
     )
     tts_parser.add_argument(
+        "--allow-cloud-tts",
+        action="store_true",
+        default=False,
+        help="Opt-in fallback to Microsoft Edge cloud TTS if local Piper synthesis is unavailable",
+    )
+    tts_parser.add_argument(
         "-o",
         "--outdir",
         "--output-dir",
@@ -876,7 +983,7 @@ def build_parser() -> argparse.ArgumentParser:
     # --------------------------------------------------------------------------
     stitch_parser = subparsers.add_parser(
         "stitch",
-        parents=[common_parser],
+        parents=[sub_common_parser],
         help="Concatenate audio turn files into an atomic tagged MP3",
     )
     stitch_parser.add_argument(
@@ -903,22 +1010,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Also add default pipeline arguments to top-level parser so root invocation runs pipeline
-    _add_pipeline_arguments(parser)
+    _add_pipeline_arguments(parser, is_subparser=False)
 
     return parser
 
 
-def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_pipeline_arguments(parser: argparse.ArgumentParser, is_subparser: bool = False) -> None:
     """Adds common pipeline parameters to top-level or pipeline subparser."""
     parser.add_argument(
         "--url",
         type=str,
-        default="",
+        default=argparse.SUPPRESS if is_subparser else "",
         dest="url",
         help="Source website or article URL to ingest and convert",
     )
     parser.add_argument(
-        "-f", "--file", type=str, default="", help="Path to input document (PDF, TXT, MD)"
+        "-f",
+        "--file",
+        type=str,
+        default=argparse.SUPPRESS if is_subparser else "",
+        help="Path to input document (PDF, TXT, MD)",
     )
     parser.add_argument(
         "-t",
@@ -926,18 +1037,21 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         "-p",
         "--prompt",
         type=str,
-        default="",
+        default=argparse.SUPPRESS if is_subparser else "",
         dest="topic",
         help="Topic or theme prompt (Rapid Topic-Only mode)",
     )
     parser.add_argument(
-        "--text", type=str, default="", help="Raw text string input (or '-' for stdin)"
+        "--text",
+        type=str,
+        default=argparse.SUPPRESS if is_subparser else "",
+        help="Raw text string input (or '-' for stdin)",
     )
     parser.add_argument(
         "-m",
         "--model",
         type=str,
-        default="llama3.1:8b",
+        default=argparse.SUPPRESS if is_subparser else "llama3.1:8b",
         help="Ollama LLM model name (default: llama3.1:8b)",
     )
     parser.add_argument(
@@ -945,7 +1059,7 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         "--ollama-url",
         "--ollama-endpoint",
         type=str,
-        default="http://localhost:11434",
+        default=argparse.SUPPRESS if is_subparser else "http://localhost:11434",
         dest="ollama_url",
         help="Ollama host API endpoint URL (default: http://localhost:11434)",
     )
@@ -954,7 +1068,7 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         "--lang",
         "--language",
         type=str,
-        default="nb-NO",
+        default=argparse.SUPPRESS if is_subparser else "nb-NO",
         dest="language",
         help="Dialogue language (nb-NO or en-US)",
     )
@@ -962,7 +1076,7 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         "--host-mode",
         "--mode",
         type=str,
-        default="dialogue",
+        default=argparse.SUPPRESS if is_subparser else "dialogue",
         dest="host_mode",
         choices=["dialogue", "monologue"],
         help="Episode style: 'dialogue' (2 hosts) or 'monologue' (single host)",
@@ -970,7 +1084,7 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--solo-voice",
         type=str,
-        default="",
+        default=argparse.SUPPRESS if is_subparser else "",
         dest="solo_voice",
         help="Custom Piper TTS voice identifier for solo host in monologue mode",
     )
@@ -978,7 +1092,7 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         "--length",
         "--format",
         type=str,
-        default="standard",
+        default=argparse.SUPPRESS if is_subparser else "standard",
         dest="length",
         choices=["quick", "standard", "deep_dive", "extended"],
         help="Episode length preset",
@@ -986,44 +1100,73 @@ def _add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--tone",
         type=str,
-        default="casual",
+        default=argparse.SUPPRESS if is_subparser else "casual",
         choices=["casual", "analytical", "debate"],
         help="Conversation tone preset",
     )
     parser.add_argument(
         "--grounding",
         type=str,
-        default="",
+        default=argparse.SUPPRESS if is_subparser else "",
         choices=["", "strict", "creative", "open_topic"],
         help="Grounding fidelity mode",
     )
-    parser.add_argument("--host1-name", type=str, default="", help="Custom persona name for Host 1")
-    parser.add_argument("--host2-name", type=str, default="", help="Custom persona name for Host 2")
-    parser.add_argument("--host1-voice", type=str, default="", help="Custom TTS voice for Host 1")
-    parser.add_argument("--host2-voice", type=str, default="", help="Custom TTS voice for Host 2")
+    parser.add_argument(
+        "--host1-name",
+        type=str,
+        default=argparse.SUPPRESS if is_subparser else "",
+        help="Custom persona name for Host 1",
+    )
+    parser.add_argument(
+        "--host2-name",
+        type=str,
+        default=argparse.SUPPRESS if is_subparser else "",
+        help="Custom persona name for Host 2",
+    )
+    parser.add_argument(
+        "--host1-voice",
+        type=str,
+        default=argparse.SUPPRESS if is_subparser else "",
+        help="Custom TTS voice for Host 1",
+    )
+    parser.add_argument(
+        "--host2-voice",
+        type=str,
+        default=argparse.SUPPRESS if is_subparser else "",
+        help="Custom TTS voice for Host 2",
+    )
+    parser.add_argument(
+        "--allow-cloud-tts",
+        action="store_true",
+        default=argparse.SUPPRESS if is_subparser else False,
+        help="Opt-in fallback to Microsoft Edge cloud TTS if local Piper synthesis is unavailable",
+    )
     parser.add_argument(
         "--speed",
         type=str,
-        default="+0%",
+        default=argparse.SUPPRESS if is_subparser else "+0%",
         help="Piper TTS speaking rate adjustment (e.g. +0%%, +5%%)",
     )
     parser.add_argument(
         "--temp",
         "--temperature",
         type=float,
-        default=0.70,
+        default=argparse.SUPPRESS if is_subparser else 0.70,
         dest="temp",
         help="LLM sampling temperature (default: 0.70)",
     )
     parser.add_argument(
-        "--system-prompt", type=str, default="", help="Custom system prompt override"
+        "--system-prompt",
+        type=str,
+        default=argparse.SUPPRESS if is_subparser else "",
+        help="Custom system prompt override",
     )
     parser.add_argument(
         "-o",
         "--outdir",
         "--output-dir",
         type=str,
-        default="./output",
+        default=argparse.SUPPRESS if is_subparser else "./output",
         dest="output_dir",
         help="Output directory for podcast artifacts",
     )
@@ -1047,23 +1190,33 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
-    logger = CLILogger(quiet=args.quiet, json_mode=args.json)
+    quiet = bool(getattr(args, "quiet", False))
+    json_mode = bool(getattr(args, "json", False))
+    setup_logging(enable_console=not (quiet or json_mode))
+
+    logger = CLILogger(quiet=quiet, json_mode=json_mode)
 
     subcmd = getattr(args, "subcommand", None)
 
-    if subcmd == "extract":
-        return run_extract(args, logger)
-    elif subcmd == "generate-script":
-        return run_generate_script(args, logger)
-    elif subcmd == "synthesize-audio":
-        return run_synthesize_audio(args, logger)
-    elif subcmd == "stitch":
-        return run_stitch(args, logger)
-    elif subcmd == "pipeline" or subcmd is None:
-        return run_pipeline(args, logger)
-    else:
-        logger.error(f"Unknown subcommand: {subcmd}")
-        return 2
+    try:
+        if subcmd == "extract":
+            return run_extract(args, logger)
+        elif subcmd == "generate-script":
+            return run_generate_script(args, logger)
+        elif subcmd == "synthesize-audio":
+            return run_synthesize_audio(args, logger)
+        elif subcmd == "stitch":
+            return run_stitch(args, logger)
+        elif subcmd == "pipeline" or subcmd is None:
+            return run_pipeline(args, logger)
+        else:
+            logger.error(f"Unknown subcommand: {subcmd}")
+            return 2
+    except KeyboardInterrupt:
+        logger.error("Interrupted by user.")
+        if json_mode:
+            print(json.dumps({"success": False, "error": "Interrupted by user."}, indent=2))
+        return 130
 
 
 if __name__ == "__main__":

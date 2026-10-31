@@ -3,7 +3,14 @@ LocalPodcastLLMStudio - Core Subsystems Package
 Zero-cloud-cost, 100% local podcast generation and audio processing engines.
 """
 
-from core.exceptions import SecurityError
+from core.exceptions import (
+    AudioStitchingError,
+    AudioSynthesisError,
+    DocumentIngestionError,
+    LLMServiceError,
+    SecurityError,
+    StudioError,
+)
 from core.extractor import (
     DocumentExtractionError,
     convert_html_to_markdown,
@@ -17,6 +24,10 @@ from core.extractor import (
     strip_html_boilerplate,
     validate_url_target,
 )
+from core.io_utils import (
+    atomic_write_file,
+    validate_safe_output_path,
+)
 from core.logger import (
     get_log_file_path,
     get_logger,
@@ -25,8 +36,8 @@ from core.logger import (
 )
 from core.mp3_stitcher import (
     MP3Stitcher,
+    WAVStitcher,
     stitch_mp3_files,
-    validate_safe_output_path,
 )
 from core.ollama import (
     OllamaClient,
@@ -85,15 +96,24 @@ from core.prompts import (
     normalize_language_code,
 )
 from core.tts import (
+    VOICE_LABEL_MAP,
     VOICE_MAP,
     TTSEngine,
     format_rate_str,
     get_voice_for_speaker,
+    resolve_voice_identifier,
     synthesize_dialogue_audio,
     synthesize_turn,
 )
 
 __all__ = [
+    # Domain Exceptions & I/O
+    "StudioError",
+    "DocumentIngestionError",
+    "LLMServiceError",
+    "AudioSynthesisError",
+    "AudioStitchingError",
+    "atomic_write_file",
     # Parser & Models
     "DialogueTurn",
     "DialogueParser",
@@ -148,12 +168,15 @@ __all__ = [
     # TTS
     "TTSEngine",
     "get_voice_for_speaker",
+    "resolve_voice_identifier",
     "synthesize_turn",
     "synthesize_dialogue_audio",
     "format_rate_str",
     "VOICE_MAP",
-    # MP3 Stitcher
+    "VOICE_LABEL_MAP",
+    # MP3 / WAV Stitcher
     "MP3Stitcher",
+    "WAVStitcher",
     "stitch_mp3_files",
     "validate_safe_output_path",
     # Pipeline & Lifecycle

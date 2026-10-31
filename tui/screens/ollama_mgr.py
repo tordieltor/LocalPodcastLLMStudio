@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markup import escape as escape_markup
 from rich.table import Table
 from rich.text import Text
 
@@ -142,6 +143,7 @@ class OllamaManagerScreen:
         self.pull_thread: threading.Thread | None = None
         self.pull_cancel_event: threading.Event | None = None
         self.launcher_thread: threading.Thread | None = None
+        self._cached_binary_path: str | None = find_ollama_binary()
 
         self.status_message: str = "Ollama Manager Ready"
         self.status_level: str = "info"
@@ -227,6 +229,7 @@ class OllamaManagerScreen:
         Returns:
             List[str]: List of installed model tags.
         """
+        self._cached_binary_path = find_ollama_binary()
         try:
             raw_models = self.client.list_models(timeout=timeout)
             sorted_models = sort_models_by_preference(raw_models)
@@ -621,7 +624,7 @@ class OllamaManagerScreen:
         top_table.add_row(
             badge.render(),
             Text.from_markup(
-                f"[{COLOR_TEXT_SECONDARY}]Endpoint:[/] [bold {COLOR_ACCENT}]{self.state.ollama.server_url}[/]"
+                f"[{COLOR_TEXT_SECONDARY}]Endpoint:[/] [bold {COLOR_ACCENT}]{escape_markup(self.state.ollama.server_url)}[/]"
             ),
         )
         items.append(top_table)
@@ -639,10 +642,11 @@ class OllamaManagerScreen:
             )
         else:
             conn_table = KeyValueTable()
-            conn_table.add_row("Server URL", self.state.ollama.server_url)
-            conn_table.add_row("Service Status", status_enum.value.upper())
-            bin_path = find_ollama_binary()
-            conn_table.add_row("Binary Path", bin_path or "Not found on PATH")
+            conn_table.add_row("Server URL", escape_markup(self.state.ollama.server_url))
+            conn_table.add_row("Service Status", escape_markup(status_enum.value.upper()))
+            conn_table.add_row(
+                "Binary Path", escape_markup(self._cached_binary_path or "Not found on PATH")
+            )
             conn_items.append(conn_table.__rich__())
 
         btn_row = Table.grid(padding=(0, 2))
@@ -685,8 +689,8 @@ class OllamaManagerScreen:
             pull_items: list[RenderableType] = []
             pull_items.append(
                 Text.from_markup(
-                    f"Pulling model: [bold {COLOR_ACCENT}]{self.state.ollama.pull_model_name}[/]  "
-                    f"[{COLOR_TEXT_SECONDARY}]Status:[/] [bold {COLOR_INFO}]{prog.status}[/]"
+                    f"Pulling model: [bold {COLOR_ACCENT}]{escape_markup(str(self.state.ollama.pull_model_name))}[/]  "
+                    f"[{COLOR_TEXT_SECONDARY}]Status:[/] [bold {COLOR_INFO}]{escape_markup(str(prog.status))}[/]"
                 )
             )
 
@@ -760,7 +764,9 @@ class OllamaManagerScreen:
                     else ("7B Parameters" if "7b" in m.lower() else "LLM")
                 )
 
-                model_table.add_row(sel_glyph, f"[{tag_style}]{m}[/]", tier, rec_badge)
+                model_table.add_row(
+                    sel_glyph, f"[{tag_style}]{escape_markup(str(m))}[/]", tier, rec_badge
+                )
 
             models_group_items.append(model_table)
             models_group_items.append(

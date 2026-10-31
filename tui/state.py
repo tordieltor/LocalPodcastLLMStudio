@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from core.logger import get_logger
 from core.ollama import ModelPullProgress
 from core.parser import DialogueTurn
 
@@ -256,15 +257,23 @@ class PromptConfigState:
     tone_preset: str = "casual"
     grounding_mode: str = "strict"
     output_dir: str = "./output"
+    temperature: float = 0.70
+    custom_system_prompt: str | None = None
+    custom_host1_name: str | None = None
+    custom_host2_name: str | None = None
 
     @property
     def host1_name(self) -> str:
         """Returns localized display persona name for Host 1."""
+        if self.custom_host1_name:
+            return self.custom_host1_name
         return "Kari" if "nb" in self.language.lower() else "Jenny"
 
     @property
     def host2_name(self) -> str:
         """Returns localized display persona name for Host 2."""
+        if self.custom_host2_name:
+            return self.custom_host2_name
         return "Ola" if "nb" in self.language.lower() else "Guy"
 
 
@@ -363,6 +372,25 @@ class UIState:
     selected_turn_index: int = 0
     terminal_width: int = 120
     terminal_height: int = 35
+    _active_workers: dict[str, str] = field(default_factory=dict, repr=False)
+
+    def acquire_busy(self, worker_id: str, task: str = "") -> None:
+        """Registers an active background worker and updates busy state."""
+        self._active_workers[worker_id] = task
+        self.is_busy = True
+        if task:
+            self.busy_task = task
+
+    def release_busy(self, worker_id: str) -> None:
+        """Unregisters a completed background worker without clobbering concurrent workers."""
+        self._active_workers.pop(worker_id, None)
+        if self._active_workers:
+            self.is_busy = True
+            last_task = next(reversed(self._active_workers.values()))
+            self.busy_task = last_task
+        else:
+            self.is_busy = False
+            self.busy_task = ""
 
 
 # ==============================================================================
@@ -577,5 +605,5 @@ class TUIEventQueue:
         for h in handlers + all_handlers:
             try:
                 h(event)
-            except Exception:  # nosec B110
-                pass
+            except Exception as exc:
+                get_logger("tui.state").debug("Subscriber callback error on '%s': %s", key, exc)

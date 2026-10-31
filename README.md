@@ -33,8 +33,8 @@
 
 ## 🌟 Key Highlights
 
-- **100% Offline & Private (Zero Cloud Data Sharing)**: Runs entirely on your local workstation utilizing local Ollama LLMs and local Piper TTS ONNX neural speech synthesis. Zero data is shared with the cloud or Microsoft.
-- **Document-Agnostic Ingestion**: Ingests `.pdf`, `.md`, and `.txt` documents, clipboard text, or generates directly from a prompt with "Generate from Scratch".
+- **100% Offline & Private by Default (Zero Unapproved Cloud Sharing)**: Runs completely offline using local Ollama LLMs and local Piper TTS ONNX / Windows SAPI5 voice synthesis (`models/voices/`). Cloud neural synthesis (Edge-TTS) is disabled by default and only used when explicitly opted in via `--allow-cloud-tts`.
+- **Document & Safe Website Ingestion**: Ingests `.pdf`, `.md`, and `.txt` documents, clipboard text, safe public URLs (with DNS-pinned SSRF redirect defense), or generates directly from a prompt with "Generate from Scratch".
 - **Bilingual Two-Host Dialogue**:
   - 🇳🇴 **Norsk (Bokmål)**: **Kari** & **Ola** (`no_NO-torkil-medium` neural personas)
   - 🇬🇧 **English**: **Host 1** (`en_US-lessac-medium`) & **Host 2** (`en_US-ryan-medium`)
@@ -163,13 +163,14 @@ The setup script automatically:
 python app.py
 ```
 
-#### Option B: Interactive Terminal TUI (PowerShell / CMD)
+#### Option B: Interactive Terminal TUI (PowerShell / CMD / POSIX)
 ```powershell
-# Launch interactive Tokyo Night TUI dashboard
+# Launch interactive Tokyo Night TUI dashboard (module or script)
+python -m tui
 python tui.py
 
 # Pre-load document or rapid topic directly into TUI
-python tui.py --topic "The Future of AI"
+python -m tui --topic "The Future of AI"
 python tui.py --file "docs/paper.pdf" --model llama3.1:8b
 ```
 
@@ -178,8 +179,9 @@ python tui.py --file "docs/paper.pdf" --model llama3.1:8b
 # Rapid Topic-Only Generation (Zero documents required)
 python cli.py pipeline --topic "Quantum Computing in 2026" --length quick --outdir ./output
 
-# Fine-Grained Document Generation
+# Fine-Grained Document or Safe URL Generation (Two Hosts or Solo Monologue)
 python cli.py pipeline --file "docs/paper.pdf" --grounding strict --model qwen2.5:7b --outdir ./output
+python cli.py pipeline --url "https://example.com/article" --host-mode monologue --outdir ./output
 
 # Modular Pipeline Chaining
 python cli.py extract -f "document.pdf" > extracted.txt

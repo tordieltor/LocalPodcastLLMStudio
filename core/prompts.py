@@ -165,6 +165,12 @@ def normalize_grounding_mode(mode: str | GroundingMode | Any) -> str:
     PERFORMANCE OPTIMIZATION: Memoized with LRU cache (maxsize=128) to avoid redundant
     string operations, lowercasing, and dict lookups during generation loops (~10x speedup).
     """
+    if (
+        mode in ("strict", "creative", "open_topic")
+        and isinstance(mode, str)
+        and not isinstance(mode, GroundingMode)
+    ):
+        return mode
     if isinstance(mode, GroundingMode):
         return mode.value
     if mode is None:
@@ -267,6 +273,12 @@ def normalize_host_mode(mode: str | HostMode | Any) -> str:
     PERFORMANCE OPTIMIZATION: Memoized with LRU cache (maxsize=128) for high-throughput
     prompt construction, pipeline routing, and UI state normalization loops (~10x speedup).
     """
+    if (
+        (mode == "dialogue" or mode == "monologue")
+        and isinstance(mode, str)
+        and not isinstance(mode, HostMode)
+    ):
+        return mode
     if isinstance(mode, HostMode):
         return mode.value
     if mode is None:
@@ -443,6 +455,8 @@ def normalize_language_code(language: Any) -> str:
     PERFORMANCE OPTIMIZATION: Memoized with LRU cache (maxsize=128) for high-throughput
     prompt construction, TTS voice lookups, and transcript formatting loops (~10x speedup).
     """
+    if (language == "en-US" or language == "nb-NO") and isinstance(language, str):
+        return language
     if language is None:
         return "en-US"
     try:
@@ -602,12 +616,48 @@ Exact JSON schema example:
 """
 
 
+def _apply_prompt_overrides(
+    prompt: str,
+    lang: str,
+    norm_host: str,
+    host1_name: str | None = None,
+    host2_name: str | None = None,
+    custom_system_prompt: str | None = None,
+) -> str:
+    """Applies optional custom host persona names and custom editorial directives."""
+    default_h1 = "Kari" if lang == "nb-NO" else "Jenny"
+    default_h2 = "Ola" if lang == "nb-NO" else "Guy"
+
+    h1 = host1_name.strip() if isinstance(host1_name, str) and host1_name.strip() else ""
+    h2 = host2_name.strip() if isinstance(host2_name, str) and host2_name.strip() else ""
+
+    if h1 and h1 != default_h1:
+        prompt = prompt.replace(f"Host 1 ({default_h1})", f"Host 1 ({h1})")
+        prompt = prompt.replace(f"{default_h1} ", f"{h1} ")
+    if norm_host != HostMode.MONOLOGUE.value and h2 and h2 != default_h2:
+        prompt = prompt.replace(f"Host 2 ({default_h2})", f"Host 2 ({h2})")
+        prompt = prompt.replace(f"{default_h2} ", f"{h2} ")
+
+    if isinstance(custom_system_prompt, str) and custom_system_prompt.strip():
+        header = (
+            "EKSTRA REDAKSJONELLE INSTRUKSJONER:"
+            if lang == "nb-NO"
+            else "ADDITIONAL EDITORIAL DIRECTIVES:"
+        )
+        prompt = f"{prompt}\n\n{header}\n{custom_system_prompt.strip()}"
+
+    return prompt
+
+
 def build_system_prompt(
     language: str = "nb-NO",
     format_type: str = "standard",
     tone_style: str = "casual",
     grounding_mode: str = "strict",
     host_mode: str = "dialogue",
+    host1_name: str | None = None,
+    host2_name: str | None = None,
+    custom_system_prompt: str | None = None,
 ) -> str:
     """
     Builds the complete LLM system prompt configured for language, length preset, tone,
@@ -629,7 +679,7 @@ def build_system_prompt(
 
     main_turns = max(2, fmt["target_turns"] - 3)
 
-    return template.format(
+    rendered = template.format(
         format_name=fmt["name"],
         duration=fmt["duration"],
         target_turns=fmt["target_turns"],
@@ -639,6 +689,15 @@ def build_system_prompt(
         tone_description=tone_desc,
         grounding_directive=grounding_directive,
     ).strip()
+
+    return _apply_prompt_overrides(
+        rendered,
+        lang=lang,
+        norm_host=norm_host,
+        host1_name=host1_name,
+        host2_name=host2_name,
+        custom_system_prompt=custom_system_prompt,
+    )
 
 
 def build_user_prompt(
@@ -1279,6 +1338,9 @@ def build_act_system_prompt(
     grounding_mode: str = "strict",
     next_speaker: str = "Host 1",
     host_mode: str = "dialogue",
+    host1_name: str | None = None,
+    host2_name: str | None = None,
+    custom_system_prompt: str | None = None,
 ) -> str:
     """Builds a specialized prompt for an individual act in a multi-act episode (dialogue or monologue)."""
     lang = normalize_language_code(language)
@@ -1311,7 +1373,8 @@ def build_act_system_prompt(
                 else "2. VIKTIG: IKKE avslutt sendingen eller si 'hadet' eller 'takk for at du hørte på' ennå! Avslutt denne akten med et engasjerende poeng eller overgang til neste del."
             )
 
-            return f"""Du er en prisvinnende lydessyist og manusforfatter for et anerkjent radiodokumentarprogram.
+            return _apply_prompt_overrides(
+                f"""Du er en prisvinnende lydessyist og manusforfatter for et anerkjent radiodokumentarprogram.
 Skriv AKT {act_num} av {total_acts} ("{act_title}") som et sammenhengende, engasjerende lydessay på flytende norsk (bokmål) levert av Host 1 (Kari - engasjert programleder og formidler).
 
 TEMA OG FOKUS FOR DENNE AKTEN:
@@ -1335,7 +1398,13 @@ Svar KUN med et gyldig JSON-array. Ingen tekst utenom JSON. Alle replikker må h
   {{"speaker": "Host 1", "text": "..."}},
   {{"speaker": "Host 1", "text": "..."}}
 ]
-""".strip()
+""".strip(),
+                lang=lang,
+                norm_host=norm_host,
+                host1_name=host1_name,
+                host2_name=host2_name,
+                custom_system_prompt=custom_system_prompt,
+            )
         else:
             continuity_rule = (
                 "1. Dette er AKT 1 (INTRO). Start med at Host 1 ønsker velkommen og setter scenen med en fengende innfallsvinkel."
@@ -1348,7 +1417,8 @@ Svar KUN med et gyldig JSON-array. Ingen tekst utenom JSON. Alle replikker må h
                 else "2. VIKTIG: IKKE avslutt sendingen eller si 'hadet' eller 'takk for at du hørte på' ennå! Avslutt denne akten med et engasjerende poeng eller overgang til neste tema."
             )
 
-            return f"""Du er en prisvinnende podcast-manusforfatter for en anerkjent radiopodcast.
+            return _apply_prompt_overrides(
+                f"""Du er en prisvinnende podcast-manusforfatter for en anerkjent radiopodcast.
 Skriv AKT {act_num} av {total_acts} ("{act_title}") som en naturlig, engasjerende dialog på flytende norsk (bokmål) mellom Host 1 (Kari - nysgjerrig programleder) og Host 2 (Ola - fagekspert).
 
 TEMA OG FOKUS FOR DENNE AKTEN:
@@ -1372,7 +1442,13 @@ Svar KUN med et gyldig JSON-array. Ingen tekst utenom JSON.
   {{"speaker": "Host 1", "text": "..."}},
   {{"speaker": "Host 2", "text": "..."}}
 ]
-""".strip()
+""".strip(),
+                lang=lang,
+                norm_host=norm_host,
+                host1_name=host1_name,
+                host2_name=host2_name,
+                custom_system_prompt=custom_system_prompt,
+            )
     else:
         if is_mono:
             continuity_rule = (
@@ -1386,7 +1462,8 @@ Svar KUN med et gyldig JSON-array. Ingen tekst utenom JSON.
                 else "2. IMPORTANT: DO NOT conclude or say goodbye yet! End this act with an intriguing takeaway or natural transition to the next section."
             )
 
-            return f"""You are a world-class audio essayist, narrative documentarian, and solo podcast scriptwriter.
+            return _apply_prompt_overrides(
+                f"""You are a world-class audio essayist, narrative documentarian, and solo podcast scriptwriter.
 Write ACT {act_num} of {total_acts} ("{act_title}") as a captivating, broadcast-quality audio essay in fluent English delivered by Host 1 (Jenny - thoughtful solo narrator).
 
 TOPIC AND FOCUS FOR THIS ACT:
@@ -1410,7 +1487,13 @@ Respond ONLY with a valid JSON array. No surrounding text. All turns must have "
   {{"speaker": "Host 1", "text": "..."}},
   {{"speaker": "Host 1", "text": "..."}}
 ]
-""".strip()
+""".strip(),
+                lang=lang,
+                norm_host=norm_host,
+                host1_name=host1_name,
+                host2_name=host2_name,
+                custom_system_prompt=custom_system_prompt,
+            )
         else:
             continuity_rule = (
                 "1. This is ACT 1 (INTRO). Start with Host 1 giving a warm welcome and setting the hook."
@@ -1423,7 +1506,8 @@ Respond ONLY with a valid JSON array. No surrounding text. All turns must have "
                 else "2. IMPORTANT: DO NOT conclude or say goodbye yet! End this act with an intriguing takeaway or natural transition."
             )
 
-            return f"""You are a world-class podcast scriptwriter and audio dramatist.
+            return _apply_prompt_overrides(
+                f"""You are a world-class podcast scriptwriter and audio dramatist.
 Write ACT {act_num} of {total_acts} ("{act_title}") as a natural, broadcast-quality dialogue in fluent English between Host 1 (Jenny - interviewer) and Host 2 (Guy - domain expert).
 
 TOPIC AND FOCUS FOR THIS ACT:
@@ -1447,7 +1531,13 @@ Respond ONLY with a valid JSON array. No surrounding text.
   {{"speaker": "Host 1", "text": "..."}},
   {{"speaker": "Host 2", "text": "..."}}
 ]
-""".strip()
+""".strip(),
+                lang=lang,
+                norm_host=norm_host,
+                host1_name=host1_name,
+                host2_name=host2_name,
+                custom_system_prompt=custom_system_prompt,
+            )
 
 
 def build_act_user_prompt(

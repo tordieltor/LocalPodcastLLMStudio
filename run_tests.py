@@ -24,15 +24,20 @@ PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 # Core Tier 1-4 MVP Smoke Test Suite
 MVP_TEST_FILES = [
     "tests/test_check_env.py",
+    "tests/test_logger.py",
     "tests/test_extractor.py",
     "tests/test_prompts.py",
     "tests/test_parser.py",
     "tests/test_ollama.py",
     "tests/test_tts.py",
     "tests/test_mp3_stitcher.py",
+    "tests/test_pipeline.py",
     "tests/test_player.py",
+    "tests/test_cli.py",
+    "tests/test_tui_app.py",
     "tests/test_ui.py",
     "tests/test_e2e_pipeline.py",
+    "tests/test_stability_quality_remediation.py",
 ]
 
 

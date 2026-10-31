@@ -19,7 +19,6 @@ import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import customtkinter as ctk
 import pytest
 
 from core.exceptions import (
@@ -41,24 +40,7 @@ from ui.widgets import (
     StageProgressTracker,
 )
 
-
-@pytest.fixture(scope="session")
-def headless_tk_root():
-    """Provides a hidden session-wide Tk root for headless environments."""
-    root = None
-    try:
-        root = ctk.CTk()
-        root.withdraw()
-        yield root
-    except Exception:
-        with patch("customtkinter.CTk"):
-            yield None
-    finally:
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
+# Session headless_tk_root provided by tests/conftest.py
 
 
 @pytest.fixture

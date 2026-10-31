@@ -213,6 +213,7 @@ class TerminalManager:
 
     def restore(self) -> None:
         """Restores terminal to original buffer, shows cursor, and restores console modes."""
+        atexit.unregister(self.restore)
         if not self._is_active:
             return
 
@@ -302,13 +303,17 @@ class TerminalManager:
         self._prev_signal_handlers.clear()
 
     def _handle_signal(self, signum: int, frame: FrameType | None) -> None:
-        """Handles caught signal by cleanly restoring the terminal before exit."""
-        self.restore()
+        """Handles caught signal by cleanly restoring the terminal, chaining custom hooks, and exiting."""
         prev = self._prev_signal_handlers.get(signum)
-        if callable(prev) and prev not in (signal.SIG_DFL, signal.SIG_IGN):
+        self.restore()
+        default_handlers = (
+            signal.SIG_DFL,
+            signal.SIG_IGN,
+            getattr(signal, "default_int_handler", None),
+        )
+        if callable(prev) and prev not in default_handlers:
             prev(signum, frame)
-        else:
-            sys.exit(128 + signum)
+        sys.exit(128 + signum)
 
     def __enter__(self) -> TerminalManager:
         return self.start()

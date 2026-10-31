@@ -8,6 +8,7 @@ custom host persona names, custom system prompts, fine-grained temperature setti
 from __future__ import annotations
 
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markup import escape as escape_markup
 from rich.table import Table
 from rich.text import Text
 
@@ -245,6 +246,8 @@ class ConfigScreen:
         """
         clamped = max(0.0, min(1.0, temp))
         self.temperature = round(clamped, 2)
+        with self.state.lock:
+            self.state.config.temperature = self.temperature
         self.status_message = f"Temperature set to {self.temperature:.2f}"
         self.status_level = "info"
         return self.temperature
@@ -266,6 +269,7 @@ class ConfigScreen:
         clamped = max(-10.0, min(15.0, speed))
         with self.state.lock:
             self.state.audio.speaking_speed = clamped
+        self.speed_slider.set(clamped)
         speed_fmt = f"{int(clamped):+d}%" if clamped.is_integer() else f"{clamped:+.1f}%"
         self.status_message = f"Speaking speed set to {speed_fmt}"
         self.status_level = "info"
@@ -312,6 +316,9 @@ class ConfigScreen:
         """
         self.custom_host1_name = host1.strip() if host1 else None
         self.custom_host2_name = host2.strip() if host2 else None
+        with self.state.lock:
+            self.state.config.custom_host1_name = self.custom_host1_name
+            self.state.config.custom_host2_name = self.custom_host2_name
         self.status_message = (
             f"Host names set: Host 1 = {self.get_host1_name()}, Host 2 = {self.get_host2_name()}"
         )
@@ -328,6 +335,8 @@ class ConfigScreen:
     def set_custom_system_prompt(self, prompt: str | None) -> None:
         """Sets custom system prompt override or clears to use standard template."""
         self.custom_system_prompt = prompt.strip() if prompt else None
+        with self.state.lock:
+            self.state.config.custom_system_prompt = self.custom_system_prompt
         if self.custom_system_prompt:
             self.status_message = "Custom system prompt override applied."
         else:
@@ -371,6 +380,10 @@ class ConfigScreen:
             self.state.config.tone_preset = "casual"
             self.state.config.grounding_mode = "strict"
             self.state.config.output_dir = "./output"
+            self.state.config.temperature = 0.70
+            self.state.config.custom_system_prompt = None
+            self.state.config.custom_host1_name = None
+            self.state.config.custom_host2_name = None
             self.state.audio.speaking_speed = 0.0
             self.state.sync_voices_with_language()
 
@@ -542,10 +555,12 @@ class ConfigScreen:
 
         persona_table = KeyValueTable()
         persona_table.add_row(
-            "Host 1 (Curious Interviewer)", f"[{COLOR_HOST1} bold]{h1_name}[/] (Voice: {h1_voice})"
+            "Host 1 (Curious Interviewer)",
+            f"[{COLOR_HOST1} bold]{escape_markup(h1_name)}[/] (Voice: {escape_markup(h1_voice)})",
         )
         persona_table.add_row(
-            "Host 2 (Domain Expert)", f"[{COLOR_HOST2} bold]{h2_name}[/] (Voice: {h2_voice})"
+            "Host 2 (Domain Expert)",
+            f"[{COLOR_HOST2} bold]{escape_markup(h2_name)}[/] (Voice: {escape_markup(h2_voice)})",
         )
         lang_group_items.append(persona_table.__rich__())
 
@@ -650,10 +665,28 @@ class ConfigScreen:
                     style_cursor=f"reverse bold {COLOR_ACCENT}",
                 )
             )
+        elif self.is_editing_prompt:
+            adv_items.append(
+                self.prompt_prompt.render_text(
+                    prefix="System Prompt: ",
+                    style_text=COLOR_TEXT_PRIMARY,
+                    style_cursor=f"reverse bold {COLOR_ACCENT}",
+                )
+            )
         else:
             out_t = KeyValueTable()
             out_t.add_row(
-                "Output Directory", f"{self.state.config.output_dir}  [dim](Press 'O' to edit)[/]"
+                "Output Directory",
+                f"{escape_markup(self.state.config.output_dir)}  [dim](Press 'O' to edit)[/]",
+            )
+            prompt_status = (
+                f"Custom override ({len(self.custom_system_prompt)} chars)"
+                if self.custom_system_prompt
+                else "Default bilingual template"
+            )
+            out_t.add_row(
+                "System Prompt",
+                f"{escape_markup(prompt_status)}  [dim](Press 'P' to edit)[/]",
             )
             adv_items.append(out_t.__rich__())
 
@@ -670,6 +703,7 @@ class ConfigScreen:
                 ("+/-", "Temp"),
                 ("[/]", "TTS Speed"),
                 ("O", "Output Dir"),
+                ("P", "System Prompt"),
                 ("R", "Reset Defaults"),
                 ("Esc", "Back to Dashboard"),
             ]

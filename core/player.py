@@ -37,6 +37,7 @@ class WindowsAudioPlayer:
         self._length_ms = 0
         self._volume_percent = 80
         self._last_error = 0
+        self._atexit_registered = False
 
         # Lazy load winmm.dll
         self._winmm = None
@@ -45,9 +46,6 @@ class WindowsAudioPlayer:
                 self._winmm = ctypes.windll.winmm
             except (AttributeError, OSError):
                 self._winmm = None
-
-        # Register exit handler for process cleanup
-        atexit.register(self.close)
 
     @property
     def _is_open(self) -> bool:
@@ -99,7 +97,7 @@ class WindowsAudioPlayer:
             return False
 
         # SECURITY: Reject file paths containing double quotes or control characters to prevent MCI command injection
-        if any(c in file_path for c in ('"', "\n", "\r", "\x00")):
+        if any(c == '"' or ord(c) < 32 or ord(c) == 127 for c in file_path):
             return False
 
         if not os.path.exists(file_path):
@@ -111,7 +109,9 @@ class WindowsAudioPlayer:
 
         abs_path = os.path.abspath(file_path).replace("\\", "/")
 
-        # Inspect file binary magic bytes to determine exact MCI driver
+        # Inspect file binary magic bytes to determine MCI driver candidates.
+        # Note: Prefer 'mpegvideo' (DirectShow) even for WAV files first so MCI 'setaudio volume'
+        # works on PCM WAV episodes, falling back to 'waveaudio' and untyped open if needed.
         is_wav = False
         is_mp3 = False
         try:
@@ -129,21 +129,34 @@ class WindowsAudioPlayer:
             pass
 
         if is_wav or abs_path.lower().endswith(".wav"):
-            cmd = f'open "{abs_path}" type waveaudio alias {self.alias}'
+            open_candidates = [
+                f'open "{abs_path}" type mpegvideo alias {self.alias}',
+                f'open "{abs_path}" type waveaudio alias {self.alias}',
+                f'open "{abs_path}" alias {self.alias}',
+            ]
         elif is_mp3 or abs_path.lower().endswith(".mp3"):
-            cmd = f'open "{abs_path}" type mpegvideo alias {self.alias}'
+            open_candidates = [
+                f'open "{abs_path}" type mpegvideo alias {self.alias}',
+                f'open "{abs_path}" alias {self.alias}',
+            ]
         else:
-            cmd = f'open "{abs_path}" alias {self.alias}'
+            open_candidates = [f'open "{abs_path}" alias {self.alias}']
 
-        self._last_error = 0
-        self._send_command(cmd)
-        if self._last_error != 0:
-            # Fallback: attempt opening without explicit type parameter
-            fallback_cmd = f'open "{abs_path}" alias {self.alias}'
-            self._send_command(fallback_cmd)
-            if self._last_error != 0:
-                self._is_opened = False
-                return False
+        opened_ok = False
+        for candidate_cmd in open_candidates:
+            self._last_error = 0
+            self._send_command(candidate_cmd)
+            if self._last_error == 0:
+                opened_ok = True
+                break
+
+        if not opened_ok:
+            self._is_opened = False
+            return False
+
+        if not self._atexit_registered:
+            atexit.register(self.close)
+            self._atexit_registered = True
 
         # Configure time format to milliseconds
         self._send_command(f"set {self.alias} time format milliseconds")
@@ -176,35 +189,39 @@ class WindowsAudioPlayer:
         if not self._is_opened:
             return False
 
+        self._last_error = 0
         if from_ms is not None:
             clamped = max(0, min(self._length_ms, from_ms))
             self._send_command(f"play {self.alias} from {clamped}")
         else:
             self._send_command(f"play {self.alias}")
 
-        return True
+        return self._last_error == 0
 
     def pause(self) -> bool:
         """Pauses audio playback."""
         if not self._is_opened:
             return False
+        self._last_error = 0
         self._send_command(f"pause {self.alias}")
-        return True
+        return self._last_error == 0
 
     def resume(self) -> bool:
         """Resumes paused audio playback."""
         if not self._is_opened:
             return False
+        self._last_error = 0
         self._send_command(f"resume {self.alias}")
-        return True
+        return self._last_error == 0
 
     def stop(self) -> bool:
         """Stops audio playback and rewinds to beginning."""
         if not self._is_opened:
             return False
+        self._last_error = 0
         self._send_command(f"stop {self.alias}")
         self._send_command(f"seek {self.alias} to 0")
-        return True
+        return self._last_error == 0
 
     def seek(self, position_ms: int) -> bool:
         """
@@ -217,12 +234,15 @@ class WindowsAudioPlayer:
         clamped_pos = max(0, min(self._length_ms, position_ms))
         was_playing = self.is_playing()
 
+        self._last_error = 0
         self._send_command(f"seek {self.alias} to {clamped_pos}")
+        if self._last_error != 0:
+            return False
 
         if was_playing:
             self._send_command(f"play {self.alias} from {clamped_pos}")
 
-        return True
+        return self._last_error == 0
 
     def get_position(self) -> int:
         """
@@ -261,8 +281,9 @@ class WindowsAudioPlayer:
             return True
 
         mci_vol = int(clamped * 10)
+        self._last_error = 0
         self._send_command(f"setaudio {self.alias} volume to {mci_vol}")
-        return True
+        return self._last_error == 0
 
     def get_volume(self) -> int:
         """Returns current configured volume percentage (0 to 100)."""
@@ -288,7 +309,13 @@ class WindowsAudioPlayer:
         return self.get_mode() in ["stopped", "not ready"]
 
     def close(self) -> bool:
-        """Closes MCI player device and releases handle."""
+        """Closes MCI player device, unregisters atexit hook, and releases handle."""
+        if self._atexit_registered:
+            try:
+                atexit.unregister(self.close)
+            except Exception:
+                pass
+            self._atexit_registered = False
         if self._is_opened:
             self._send_command(f"close {self.alias}")
             self._is_opened = False
@@ -351,7 +378,7 @@ def parse_time_str(time_str: str) -> int:
 
 def export_audio_file(source_path: str, destination_path: str) -> str:
     """
-    Exports/copies generated podcast MP3 to a user-selected destination directory or path.
+    Exports/copies generated podcast MP3/WAV to a user-selected destination directory or path.
 
     Returns:
         Absolute path to the exported file.
@@ -360,8 +387,30 @@ def export_audio_file(source_path: str, destination_path: str) -> str:
         raise FileNotFoundError(f"Source audio file not found: {source_path}")
 
     safe_dest_path = validate_safe_output_path(destination_path, param_name="destination_path")
-    dest_dir = os.path.dirname(os.path.abspath(safe_dest_path))
+    if os.path.isdir(safe_dest_path):
+        target_path = os.path.abspath(os.path.join(safe_dest_path, os.path.basename(source_path)))
+    else:
+        target_path = os.path.abspath(safe_dest_path)
+
+    if os.path.exists(target_path):
+        try:
+            if os.path.samefile(source_path, target_path):
+                return target_path
+        except OSError:
+            pass
+
+    dest_dir = os.path.dirname(target_path)
     os.makedirs(dest_dir, exist_ok=True)
 
-    shutil.copy2(source_path, safe_dest_path)
-    return os.path.abspath(safe_dest_path)
+    temp_export = f"{target_path}.tmp.{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copy2(source_path, temp_export)
+        os.replace(temp_export, target_path)
+    finally:
+        if os.path.exists(temp_export):
+            try:
+                os.remove(temp_export)
+            except OSError:
+                pass
+
+    return target_path

@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markup import escape as escape_markup
 from rich.table import Table
 from rich.text import Text
 
@@ -105,6 +106,7 @@ class AudioPlayerScreen:
         self.is_editing_export: bool = False
         self.is_editing_load: bool = False
         self.active_modal: ActionableModal | None = None
+        self._opened_file: str | None = None
 
         self.status_message: str = "Audio Player Ready"
         self.status_level: str = "info"
@@ -136,6 +138,7 @@ class AudioPlayerScreen:
         try:
             success = self.player.open(file_path)
             if success:
+                self._opened_file = file_path
                 duration_ms = self.player.get_length()
                 with self.state.lock:
                     self.state.player.current_file = file_path
@@ -158,11 +161,13 @@ class AudioPlayerScreen:
                     )
                 return True
             else:
+                self._opened_file = None
                 err = self.player.get_last_error_message() or "MCI open failed"
                 self.status_message = f"Failed to load audio: {err}"
                 self.status_level = "error"
                 return False
         except Exception as exc:
+            self._opened_file = None
             self.status_message = f"Error opening audio: {exc}"
             self.status_level = "error"
             return False
@@ -177,16 +182,18 @@ class AudioPlayerScreen:
         Returns:
             bool: True if playback started.
         """
-        if not self.state.player.is_loaded:
-            # Try auto-loading master MP3 from state if present
-            if self.state.audio.master_mp3_path and os.path.exists(
-                self.state.audio.master_mp3_path
-            ):
-                if not self.load_file(self.state.audio.master_mp3_path):
+        needs_open = not self.state.player.is_loaded or (
+            self._opened_file != self.state.player.current_file
+            and getattr(self.player, "_is_open", True) is False
+        )
+        if needs_open:
+            candidate_file = self.state.player.current_file or self.state.audio.master_mp3_path
+            if candidate_file and os.path.exists(candidate_file):
+                if not self.load_file(candidate_file):
                     return False
             else:
                 self.status_message = (
-                    "No audio file loaded. Generate a podcast or press [L] to load an MP3."
+                    "No audio file loaded. Generate a podcast or press [F] to load an MP3."
                 )
                 self.status_level = "warning"
                 return False
@@ -500,14 +507,18 @@ class AudioPlayerScreen:
         if evt_str in (TUIEventType.TTS_COMPLETED.value, TUIEventType.GEN_COMPLETED.value):
             if isinstance(payload, dict):
                 mp3_path = payload.get("mp3_path")
-                if mp3_path and os.path.exists(mp3_path):
+                if mp3_path and os.path.exists(mp3_path) and self._opened_file != mp3_path:
                     self.load_file(mp3_path)
 
-        elif evt_str == TUIEventType.PLAYER_FILE_LOADED.value:
-            if isinstance(payload, dict):
-                path = payload.get("path")
-                if path and os.path.exists(path):
-                    self.load_file(path)
+        elif evt_str == TUIEventType.PLAYER_PLAY.value:
+            if self.state.player.mode == PlaybackMode.PAUSED:
+                self.resume()
+            elif self.state.player.mode != PlaybackMode.PLAYING:
+                self.play()
+
+        elif evt_str == TUIEventType.PLAYER_PAUSE.value:
+            if self.state.player.mode == PlaybackMode.PLAYING:
+                self.pause()
 
     # ==========================================================================
     # Key Event Handling
@@ -643,6 +654,14 @@ class AudioPlayerScreen:
                 )
             return True
 
+        if k in ("escape", "b", "q"):
+            if self.event_queue is not None:
+                self.event_queue.post_event(
+                    TUIEventType.NAVIGATE_SCREEN,
+                    payload={"screen": ScreenMode.DASHBOARD.value},
+                )
+            return True
+
         return False
 
     # ==========================================================================
@@ -711,11 +730,13 @@ class AudioPlayerScreen:
             file_size_str = f"{size_kb / 1024.0:.2f} MB" if size_kb > 1024 else f"{int(size_kb)} KB"
 
         table = KeyValueTable()
-        table.add_row("Master MP3 File", cur_file or "None (Not generated)")
+        table.add_row("Master MP3 File", escape_markup(cur_file or "None (Not generated)"))
         table.add_row("File Size", file_size_str)
         table.add_row(
             "Language / Voices",
-            f"{self.state.config.language} (Host 1: {self.state.audio.host1_voice}, Host 2: {self.state.audio.host2_voice})",
+            escape_markup(
+                f"{self.state.config.language} (Host 1: {self.state.audio.host1_voice}, Host 2: {self.state.audio.host2_voice})"
+            ),
         )
         table.add_row("Speaking Speed", f"{int(self.state.audio.speaking_speed):+d}%")
         table.add_row("Total Turns", f"{len(self.state.generation.turns)} dialogue turns")

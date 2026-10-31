@@ -22,6 +22,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Guard against unexpected lockfile churn
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          if echo "$CHANGED" | grep -qx "uv.lock"; then
+            if ! echo "$CHANGED" | grep -Eq "^(pyproject\.toml|requirements(-dev)?\.txt)$"; then
+              echo "::error::uv.lock was modified without any change to pyproject.toml or requirements*.txt."
+              exit 1
+            fi
+          fi
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
@@ -82,7 +95,7 @@ jobs:
           pip install bandit pip-audit
 
       - name: Run Bandit SAST Scan
-        run: bandit -r core ui app.py check_env.py cli.py tui -ll
+        run: bandit -r core ui app.py check_env.py cli.py tui tui.py -ll
 
       - name: Run Pip-Audit Dependency Scan
         run: pip-audit -r requirements.txt
@@ -96,7 +109,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - name: Checkout code

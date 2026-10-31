@@ -269,4 +269,21 @@ __all__ = [
     "SectionHeader",
     "KeyValueTable",
     "HotkeyBar",
+    # Application & Entry Point (lazy-loaded)
+    "TUIApplication",
+    "bootstrap_state",
+    "build_arg_parser",
+    "main",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name == "TUIApplication":
+        from tui.app import TUIApplication
+
+        return TUIApplication
+    if name in ("bootstrap_state", "build_arg_parser", "main"):
+        import tui.__main__ as _entry
+
+        return getattr(_entry, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

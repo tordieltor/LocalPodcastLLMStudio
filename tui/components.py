@@ -12,6 +12,7 @@ from typing import Any, Literal
 import rich.box as box
 from rich.align import Align
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markup import escape as escape_markup
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.style import StyleType
@@ -520,7 +521,7 @@ class ActionableModal:
         action_row: list[str] = []
 
         for i, act in enumerate(self.actions, start=1):
-            btn_text = act.get("text", f"Action {i}")
+            btn_text = escape_markup(str(act.get("text") or act.get("label") or f"Action {i}"))
             btn_style = str(act.get("style", "accent")).lower()
 
             if btn_style in ["primary", "accent"]:
@@ -536,15 +537,17 @@ class ActionableModal:
 
             action_row.append(btn)
 
+        safe_close = escape_markup(str(self.close_text))
         action_row.append(
-            f"[bold {COLOR_TEXT_PRIMARY} on {COLOR_BUTTON_CLOSE}] [Esc] {self.close_text} [/]"
+            f"[bold {COLOR_TEXT_PRIMARY} on {COLOR_BUTTON_CLOSE}] [Esc] {safe_close} [/]"
         )
         action_table.add_row(*action_row)
         render_items.append(action_table)
 
+        safe_title = escape_markup(str(self.title))
         modal_panel = Panel(
             Align.left(Group(*render_items)),
-            title=f"[{color} bold] {icon} {self.title} [/]",
+            title=f"[{color} bold] {icon} {safe_title} [/]",
             border_style=color,
             box=box_style,
             width=self.width,
@@ -570,7 +573,7 @@ class SectionHeader:
     def __rich__(self) -> RenderableType:
         heading_text = f"{self.icon} {self.title}" if self.icon else self.title
         rule = Rule(
-            title=f"[bold {COLOR_ACCENT}]{heading_text}[/]",
+            title=f"[bold {COLOR_ACCENT}]{escape_markup(heading_text)}[/]",
             align="left",
             style=COLOR_CARD_BORDER,
         )

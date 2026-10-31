@@ -15,6 +15,12 @@ _IS_INITIALIZED = False
 _DEFAULT_LOG_FILENAME = "app.log"
 _RESOLVED_LOG_PATH: str | None = None
 
+# Attach a silent NullHandler at import time so library imports never emit to stderr
+# or touch ./logs/app.log until an application entrypoint explicitly calls setup_logging().
+_ROOT_LOGGER = logging.getLogger("localpodcastllmstudio")
+if not _ROOT_LOGGER.handlers:
+    _ROOT_LOGGER.addHandler(logging.NullHandler())
+
 
 def resolve_log_directory() -> str:
     """
@@ -39,7 +45,9 @@ def resolve_log_directory() -> str:
         )
     )
 
+    probe_name = f".write_probe_{os.getpid()}_{threading.get_ident()}"
     for d in candidates:
+        test_probe = os.path.join(d, probe_name)
         try:
             # Enforce 0o700 directory permissions to prevent local log tampering / disclosure
             os.makedirs(d, mode=0o700, exist_ok=True)
@@ -48,14 +56,18 @@ def resolve_log_directory() -> str:
                     os.chmod(d, 0o700)
                 except OSError:
                     pass
-            # Verify write access with a dummy probe
-            test_probe = os.path.join(d, ".write_probe")
+            # Verify write access with a PID/thread-isolated dummy probe
             with open(test_probe, "w", encoding="utf-8") as f:
                 f.write("ok")
-            os.remove(test_probe)
             return d
         except OSError:
             continue
+        finally:
+            if os.path.exists(test_probe):
+                try:
+                    os.remove(test_probe)
+                except OSError:
+                    pass
 
     return os.path.abspath("logs")
 
@@ -63,11 +75,12 @@ def resolve_log_directory() -> str:
 def get_log_file_path() -> str:
     """Returns the resolved absolute path to the main application log file."""
     global _RESOLVED_LOG_PATH
-    if _RESOLVED_LOG_PATH is not None:
+    with _LOGGING_LOCK:
+        if _RESOLVED_LOG_PATH is not None:
+            return _RESOLVED_LOG_PATH
+        log_dir = resolve_log_directory()
+        _RESOLVED_LOG_PATH = os.path.join(log_dir, _DEFAULT_LOG_FILENAME)
         return _RESOLVED_LOG_PATH
-    log_dir = resolve_log_directory()
-    _RESOLVED_LOG_PATH = os.path.join(log_dir, _DEFAULT_LOG_FILENAME)
-    return _RESOLVED_LOG_PATH
 
 
 def setup_logging(
@@ -76,9 +89,10 @@ def setup_logging(
     max_bytes: int = 10 * 1024 * 1024,  # 10 MB
     backup_count: int = 5,
     force: bool = False,
+    enable_console: bool = True,
 ) -> logging.Logger:
     """
-    Initializes root application logging with rotating file handler and stderr handler.
+    Initializes root application logging with rotating file handler and optional stderr handler.
     Thread-safe and idempotent (or re-initialized if force=True).
     """
     global _IS_INITIALIZED, _RESOLVED_LOG_PATH
@@ -91,8 +105,8 @@ def setup_logging(
         root_logger.setLevel(log_level)
         root_logger.propagate = False
 
-        if force:
-            for h in list(root_logger.handlers):
+        for h in list(root_logger.handlers):
+            if force or isinstance(h, logging.NullHandler):
                 root_logger.removeHandler(h)
                 try:
                     h.close()
@@ -104,14 +118,20 @@ def setup_logging(
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
-        # 1. Console / Stderr handler
-        console_handler = logging.StreamHandler(sys.stderr)
-        console_handler.setLevel(log_level)
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
+        # 1. Console / Stderr handler (suppressed when enable_console=False or under --noconsole)
+        if enable_console and sys.stderr is not None:
+            console_handler = logging.StreamHandler(sys.stderr)
+            console_handler.setLevel(log_level)
+            console_handler.setFormatter(formatter)
+            root_logger.addHandler(console_handler)
 
         # 2. Rotating File handler
-        target_path = log_file or get_log_file_path()
+        if log_file:
+            target_path = log_file
+        elif _RESOLVED_LOG_PATH is not None:
+            target_path = _RESOLVED_LOG_PATH
+        else:
+            target_path = os.path.join(resolve_log_directory(), _DEFAULT_LOG_FILENAME)
         _RESOLVED_LOG_PATH = target_path
         try:
             log_dir = os.path.dirname(os.path.abspath(target_path))
@@ -136,7 +156,13 @@ def setup_logging(
                 except OSError:
                     pass
         except OSError as e:
-            sys.stderr.write(f"[WARNING] Could not initialize file logger at {target_path}: {e}\n")
+            if enable_console and sys.stderr is not None:
+                sys.stderr.write(
+                    f"[WARNING] Could not initialize file logger at {target_path}: {e}\n"
+                )
+
+        if not root_logger.handlers:
+            root_logger.addHandler(logging.NullHandler())
 
         _IS_INITIALIZED = True
         root_logger.info(
@@ -150,13 +176,14 @@ def setup_logging(
 def get_logger(name: str | None = None) -> logging.Logger:
     """
     Retrieves a child logger under the 'localpodcastllmstudio' hierarchy.
-    Automatically initializes logging with default configuration if not already setup.
+    Uses a silent NullHandler until setup_logging() is explicitly called by an entrypoint.
     """
-    if not _IS_INITIALIZED:
-        setup_logging()
+    root = logging.getLogger("localpodcastllmstudio")
+    if not root.handlers:
+        root.addHandler(logging.NullHandler())
 
     if not name or name == "localpodcastllmstudio":
-        return logging.getLogger("localpodcastllmstudio")
+        return root
 
     if name.startswith("localpodcastllmstudio."):
         return logging.getLogger(name)

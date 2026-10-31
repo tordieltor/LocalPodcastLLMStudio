@@ -83,6 +83,12 @@ def _validate_url(url: str) -> str:
         raise ValueError(f"Invalid Ollama URL '{url}': missing hostname or network location.")
     if "@" in parsed.netloc or parsed.username or parsed.password:
         raise ValueError("Invalid Ollama URL: user credentials in URL are not supported.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Invalid Ollama URL '{url}': malformed port number.") from exc
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError(f"Invalid Ollama URL '{url}': port {port} must be between 1 and 65535.")
     return clean
 
 
@@ -145,6 +151,7 @@ class PrerequisiteStatus:
     edge_tts_online: bool
     all_ready: bool
     remediation_hints: list[str]
+    piper_tts_ready: bool = False
 
 
 def format_speed_bps(bps: float) -> str:
@@ -599,14 +606,33 @@ def check_edge_tts_reachability(timeout: float = 3.0) -> tuple[bool, str]:
         return False, f"Reachability probe failed for {host}:{port}: {e}"
 
 
+def check_local_piper_readiness() -> tuple[bool, str]:
+    """
+    Inspects whether local Piper neural voice ONNX models exist on disk for 100% offline synthesis.
+    """
+    try:
+        from core.tts import get_voices_search_dirs
+
+        for voice_dir in get_voices_search_dirs():
+            onnx_files = list(voice_dir.glob("*.onnx"))
+            for onnx_file in onnx_files:
+                json_file = voice_dir / f"{onnx_file.name}.json"
+                if json_file.is_file():
+                    return True, f"Local Piper voice model found: {onnx_file}"
+    except Exception:
+        pass
+    return False, "No local Piper ONNX voice models detected in models/voices."
+
+
 def check_prerequisites(
     ollama_url: str = "http://localhost:11434",
     recommended_model: str = "llama3.1:8b",
     timeout: float = 3.0,
+    offline_only: bool = False,
 ) -> PrerequisiteStatus:
     """
     Performs unified preflight inspection of local Ollama installation,
-    daemon connectivity, installed models, and Edge-TTS synthesis endpoint.
+    daemon connectivity, installed models, local Piper voices, and optional Edge-TTS endpoint.
 
     Returns:
         PrerequisiteStatus dataclass with diagnostic results and remediation hints.
@@ -633,8 +659,14 @@ def check_prerequisites(
         for m in installed_models
     )
 
-    edge_online, _ = check_edge_tts_reachability(timeout=timeout)
-    all_ready = ollama_online and (len(installed_models) > 0) and edge_online
+    piper_ready, _ = check_local_piper_readiness()
+    if offline_only:
+        edge_online = False
+    else:
+        edge_online, _ = check_edge_tts_reachability(timeout=timeout)
+
+    tts_ready = piper_ready or edge_online
+    all_ready = ollama_online and (len(installed_models) > 0) and tts_ready
 
     remediations: list[str] = []
     if not binary_found:
@@ -659,10 +691,15 @@ def check_prerequisites(
             f"Recommended model '{recommended_model}' is not installed (installed: {', '.join(installed_models)})."
         )
 
-    if not edge_online:
-        remediations.append(
-            "Edge-TTS neural voice endpoint is unreachable. Please verify internet connection and DNS settings."
-        )
+    if not tts_ready:
+        if offline_only:
+            remediations.append(
+                "No local Piper ONNX voice models found in 'models/voices/'. Place Piper .onnx and .onnx.json models in 'models/voices/' for air-gapped synthesis."
+            )
+        else:
+            remediations.append(
+                "No local Piper voice models found in 'models/voices/' and Edge-TTS endpoint is unreachable. Place Piper .onnx models in 'models/voices/' or verify network connectivity."
+            )
 
     return PrerequisiteStatus(
         ollama_binary_found=binary_found,
@@ -674,6 +711,7 @@ def check_prerequisites(
         edge_tts_online=edge_online,
         all_ready=all_ready,
         remediation_hints=remediations,
+        piper_tts_ready=piper_ready,
     )
 
 
@@ -793,10 +831,18 @@ class OllamaClient:
         self,
         recommended_model: str = "llama3.1:8b",
         timeout: float = 3.0,
+        offline_only: bool = False,
     ) -> PrerequisiteStatus:
         """
         Checks prerequisites using this client's configured base_url.
         """
+        if offline_only:
+            return check_prerequisites(
+                ollama_url=self.base_url,
+                recommended_model=recommended_model,
+                timeout=timeout,
+                offline_only=True,
+            )
         return check_prerequisites(
             ollama_url=self.base_url,
             recommended_model=recommended_model,
@@ -825,16 +871,20 @@ class OllamaClient:
         if cancel_event and cancel_event.is_set():
             raise RuntimeError("Generation cancelled by user before request dispatch.")
 
+        estimated_ctx = ((len(system) + len(prompt)) // 3) + 4096
+        effective_num_ctx = max(int(num_ctx), min(32768, estimated_ctx))
+        is_streaming = bool(stream or (callback is not None))
+
         chat_payload = {
             "model": model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "stream": stream or (callback is not None),
+            "stream": is_streaming,
             "options": {
                 "temperature": temperature,
-                "num_ctx": num_ctx,
+                "num_ctx": effective_num_ctx,
                 "num_predict": 4096,
             },
         }
@@ -846,24 +896,41 @@ class OllamaClient:
                 f"Ollama generation timed out after {timeout} seconds: {to_err}"
             ) from to_err
         except urllib.error.HTTPError as http_err:
+            try:
+                raw_err = http_err.read()
+                err_body = (
+                    raw_err.decode("utf-8", errors="ignore")
+                    if isinstance(raw_err, (bytes, bytearray))
+                    else ""
+                )
+            except Exception:
+                err_body = ""
+
             if http_err.code == 404:
-                err_body = http_err.read().decode("utf-8", errors="ignore")
                 if "model" in err_body.lower() or "not found" in err_body.lower():
                     raise OllamaModelNotFoundError(
                         f"Model '{model}' is not installed in Ollama. "
                         f"Please run 'ollama pull {model}' in your terminal."
                     ) from http_err
-            # Fallback to /api/generate
-            return self._execute_generate(
-                model,
-                prompt,
-                system,
-                timeout,
-                temperature,
-                num_ctx,
-                cancel_event,
-                callback,
-            )
+
+            if http_err.code in (404, 405):
+                # Fallback to /api/generate only when /api/chat endpoint is unsupported (404/405)
+                return self._execute_generate(
+                    model,
+                    prompt,
+                    system,
+                    timeout,
+                    temperature,
+                    effective_num_ctx,
+                    cancel_event,
+                    callback,
+                    stream=is_streaming,
+                )
+
+            detail = err_body.strip() or str(http_err.reason)
+            raise OllamaConnectionError(
+                f"Ollama server returned HTTP {http_err.code} at {self.base_url}: {detail}"
+            ) from http_err
         except urllib.error.URLError as url_err:
             if isinstance(url_err.reason, socket.timeout):
                 raise TimeoutError(
@@ -978,12 +1045,13 @@ class OllamaClient:
         num_ctx: int,
         cancel_event: threading.Event | None,
         callback: Callable[[str], None] | None,
+        stream: bool = False,
     ) -> str:
         payload = {
             "model": model,
             "system": system,
             "prompt": prompt,
-            "stream": callback is not None,
+            "stream": bool(stream or (callback is not None)),
             "options": {
                 "temperature": temperature,
                 "num_ctx": num_ctx,
@@ -1015,6 +1083,10 @@ def generate_podcast_script(
     stream_callback: Callable[[str], None] | None = None,
     act_callback: Callable[[int, int, list[DialogueTurn]], None] | None = None,
     host_mode: str = "dialogue",
+    temperature: float = 0.7,
+    host1_name: str | None = None,
+    host2_name: str | None = None,
+    custom_system_prompt: str | None = None,
 ) -> list[DialogueTurn]:
     """
     High-level dialogue/monologue generation pipeline with Multi-Act Structured Generation:
@@ -1061,6 +1133,9 @@ def generate_podcast_script(
             tone_style=tone_style,
             grounding_mode=grounding_mode,
             host_mode=norm_host_mode,
+            host1_name=host1_name,
+            host2_name=host2_name,
+            custom_system_prompt=custom_system_prompt,
         )
         user_prompt = build_user_prompt(
             content=content,
@@ -1076,6 +1151,7 @@ def generate_podcast_script(
             system=system_prompt,
             stream=stream_callback is not None,
             timeout=timeout,
+            temperature=temperature,
             cancel_event=cancel_event,
             callback=stream_callback,
         )
@@ -1125,6 +1201,9 @@ def generate_podcast_script(
             grounding_mode=grounding_mode,
             next_speaker=next_speaker,
             host_mode=norm_host_mode,
+            host1_name=host1_name,
+            host2_name=host2_name,
+            custom_system_prompt=custom_system_prompt,
         )
         act_user_prompt = build_act_user_prompt(
             content=content,
@@ -1135,30 +1214,62 @@ def generate_podcast_script(
             host_mode=norm_host_mode,
         )
 
-        raw_act_response = client.generate(
-            model=model,
-            prompt=act_user_prompt,
-            system=act_system_prompt,
-            stream=stream_callback is not None,
-            timeout=timeout,
-            cancel_event=cancel_event,
-            callback=stream_callback,
-        )
+        act_turns: list[DialogueTurn] = []
+        for attempt in (1, 2):
+            if cancel_event and cancel_event.is_set():
+                raise RuntimeError("Generation cancelled by user.")
+            try:
+                raw_act_response = client.generate(
+                    model=model,
+                    prompt=act_user_prompt,
+                    system=act_system_prompt,
+                    stream=stream_callback is not None,
+                    timeout=timeout,
+                    temperature=temperature,
+                    cancel_event=cancel_event,
+                    callback=stream_callback,
+                )
+            except StopIteration:
+                break
 
-        if raw_act_response and raw_act_response.strip():
+            if not raw_act_response or not raw_act_response.strip():
+                logger.warning(
+                    "Act %d/%d (%s) returned empty output on attempt %d.",
+                    act_idx,
+                    total_acts,
+                    act_title,
+                    attempt,
+                )
+                continue
+
             try:
                 act_turns = DialogueParser.parse(raw_act_response, default_language=lang)
                 if act_turns:
-                    for t in act_turns:
-                        if norm_host_mode == "monologue":
-                            t.speaker = SpeakerRole.HOST_1.value
-                        full_script.append(t)
-                    if act_callback:
-                        act_callback(act_idx, total_acts, act_turns)
-            except ValueError:
-                if not full_script and act_idx == 1:
-                    # Fallback retry on Act 1 if parsing failed
-                    pass
+                    break
+            except ValueError as parse_err:
+                logger.warning(
+                    "Act %d/%d (%s) dialogue parse failed on attempt %d: %s",
+                    act_idx,
+                    total_acts,
+                    act_title,
+                    attempt,
+                    parse_err,
+                )
+
+        if act_turns:
+            for t in act_turns:
+                if norm_host_mode == "monologue":
+                    t.speaker = SpeakerRole.HOST_1.value
+                full_script.append(t)
+            if act_callback:
+                act_callback(act_idx, total_acts, act_turns)
+        else:
+            logger.warning(
+                "Act %d/%d (%s) produced zero parseable turns after retries; continuing remaining acts.",
+                act_idx,
+                total_acts,
+                act_title,
+            )
 
     if not full_script:
         raise ValueError("Failed to generate dialogue turns across all acts.")

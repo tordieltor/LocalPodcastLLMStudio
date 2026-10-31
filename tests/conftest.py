@@ -427,3 +427,78 @@ def mock_ollama_tags_data() -> dict[str, Any]:
 def mock_ollama_empty_tags() -> dict[str, Any]:
     """Mock data for Ollama running with 0 models."""
     return {"models": []}
+
+
+# ==============================================================================
+# Unified Headless Tk Root & Global State Isolation
+# ==============================================================================
+
+
+@pytest.fixture(scope="session", autouse=True)
+def headless_tk_root():
+    """Provides a single hidden session-wide CTk root to prevent multi-root Tcl/Tk deadlocks."""
+    from unittest.mock import patch
+
+    root = None
+    try:
+        import customtkinter as ctk
+
+        root = ctk.CTk()
+        root.withdraw()
+        yield root
+    except Exception:
+        with patch("customtkinter.CTk"):
+            yield None
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_global_runtime_state(headless_tk_root):
+    """Purges leaked MagicMock entries from CustomTkinter trackers, restores default Tk root, and clears caches."""
+    import sys
+    import tkinter as tk
+    from unittest.mock import NonCallableMock
+
+    if headless_tk_root is not None and tk._default_root is None:
+        tk._default_root = headless_tk_root
+
+    yield
+
+    if headless_tk_root is not None and tk._default_root is None:
+        tk._default_root = headless_tk_root
+
+    # Purge MagicMock objects registered inside CustomTkinter global trackers
+    ctk_mod = sys.modules.get("customtkinter")
+    if ctk_mod is not None:
+        try:
+            from customtkinter.windows.widgets.appearance_mode import AppearanceModeTracker
+            from customtkinter.windows.widgets.scaling import ScalingTracker
+
+            for mock_key in [
+                k
+                for k in list(ScalingTracker.window_widgets_dict.keys())
+                if isinstance(k, NonCallableMock)
+            ]:
+                ScalingTracker.window_widgets_dict.pop(mock_key, None)
+            for mock_key in [
+                k
+                for k in list(ScalingTracker.window_dpi_scaling_dict.keys())
+                if isinstance(k, NonCallableMock)
+            ]:
+                ScalingTracker.window_dpi_scaling_dict.pop(mock_key, None)
+            AppearanceModeTracker.app_list = [
+                app
+                for app in AppearanceModeTracker.app_list
+                if not isinstance(app, NonCallableMock)
+            ]
+        except Exception:
+            pass
+
+    tts_mod = sys.modules.get("core.tts")
+    if tts_mod is not None and hasattr(tts_mod, "clear_voice_model_cache"):
+        tts_mod.clear_voice_model_cache()

@@ -3,7 +3,7 @@
 -r requirements.txt
 
 # Executable Packaging & Freezing Pipeline (One-Click Standalone Windows .exe)
-pyinstaller>=6.3.0
+pyinstaller>=6.4.0
 
 # Unit, Integration, and Asynchronous Test Framework
 pytest>=7.4.0

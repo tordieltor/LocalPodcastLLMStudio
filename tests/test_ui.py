@@ -16,7 +16,6 @@ import threading
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
-import customtkinter as ctk
 import pytest
 
 import ui.theme as theme
@@ -56,27 +55,9 @@ from ui.widgets import (
     TimeSlider,
 )
 
-
 # ==============================================================================
-# Fixtures for Headless Testing
+# Fixtures for Headless Testing (session headless_tk_root in tests/conftest.py)
 # ==============================================================================
-@pytest.fixture(scope="session", autouse=True)
-def headless_tk_root():
-    """Provides a hidden session-wide Tk root for headless environments."""
-    root = None
-    try:
-        root = ctk.CTk()
-        root.withdraw()
-        yield root
-    except Exception:
-        with patch("customtkinter.CTk"):
-            yield None
-    finally:
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
 
 
 @pytest.fixture
@@ -1688,7 +1669,7 @@ class TestAppBootstrap:
             exc_type, exc_val, exc_tb = sys.exc_info()
             log_crash(exc_type, exc_val, exc_tb)
 
-        crash_log = tmp_path / "crash_dump.log"
+        crash_log = tmp_path / "logs" / "crash_dump.log"
         assert crash_log.exists()
         content = crash_log.read_text(encoding="utf-8")
         assert "Crash Report" in content

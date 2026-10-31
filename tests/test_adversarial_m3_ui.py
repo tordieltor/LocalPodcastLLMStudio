@@ -18,7 +18,6 @@ import time
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import customtkinter as ctk
 import pytest
 
 import ui.theme as theme
@@ -38,27 +37,9 @@ from ui.widgets import (
     TimeSlider,
 )
 
-
 # ==============================================================================
-# Headless Fixtures
+# Headless Fixtures (session headless_tk_root provided by tests/conftest.py)
 # ==============================================================================
-@pytest.fixture(scope="session", autouse=True)
-def headless_tk_root():
-    """Provides a hidden session-wide Tk root for headless execution."""
-    root = None
-    try:
-        root = ctk.CTk()
-        root.withdraw()
-        yield root
-    except Exception:
-        with patch("customtkinter.CTk"):
-            yield None
-    finally:
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
 
 
 @pytest.fixture
@@ -144,43 +125,36 @@ class TestAdversarialQueueBursts:
         total_events = num_threads * events_per_thread
 
         def _flooder(thread_id: int):
+            q = mock_main_window.msg_queue
             for i in range(events_per_thread):
                 mod = i % 10
                 if mod == 0:
-                    mock_main_window.msg_queue.put(("STATUS", f"Thread {thread_id} step {i}"))
+                    q.put(("STATUS", f"Thread {thread_id} step {i}"))
                 elif mod == 1:
-                    mock_main_window.msg_queue.put(("PROGRESS", (i % 100) / 100.0))
+                    q.put(("PROGRESS", (i % 100) / 100.0))
                 elif mod == 2:
-                    mock_main_window.msg_queue.put(
+                    q.put(
                         ("SCRIPT_READY", [DialogueTurn(speaker="Host 1", text=f"T{thread_id}:{i}")])
                     )
                 elif mod == 3:
-                    mock_main_window.msg_queue.put(
-                        ("SERVICE_LAUNCHING", {"status": f"Starting {i}"})
-                    )
+                    q.put(("SERVICE_LAUNCHING", {"status": f"Starting {i}"}))
                 elif mod == 4:
-                    mock_main_window.msg_queue.put(
-                        ("SERVICE_STARTED", {"status": "Ready", "models": ["llama3.1:8b"]})
-                    )
+                    q.put(("SERVICE_STARTED", {"status": "Ready", "models": ["llama3.1:8b"]}))
                 elif mod == 5:
-                    mock_main_window.msg_queue.put(
+                    q.put(
                         (
                             "PULL_PROGRESS",
                             ModelPullProgress(status="pulling", percentage=(i % 100) / 100.0),
                         )
                     )
                 elif mod == 6:
-                    mock_main_window.msg_queue.put(
-                        ("PULL_DONE", {"model": "llama3.1:8b", "message": f"Done {i}"})
-                    )
+                    q.put(("PULL_DONE", {"model": "llama3.1:8b", "message": f"Done {i}"}))
                 elif mod == 7:
-                    mock_main_window.msg_queue.put(("PULL_CANCELLED", {"model": "llama3.1:8b"}))
+                    q.put(("PULL_CANCELLED", {"model": "llama3.1:8b"}))
                 elif mod == 8:
-                    mock_main_window.msg_queue.put(
-                        ("GENERATION_DONE", {"mp3_path": f"/test_{thread_id}_{i}.mp3"})
-                    )
+                    q.put(("GENERATION_DONE", {"mp3_path": f"/test_{thread_id}_{i}.mp3"}))
                 else:
-                    mock_main_window.msg_queue.put(("CANCELLED", f"Cancel {i}"))
+                    q.put(("CANCELLED", f"Cancel {i}"))
 
         threads = [
             threading.Thread(target=_flooder, args=(tid,), daemon=True)

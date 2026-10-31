@@ -26,6 +26,7 @@ from core.extractor import (
     extract_text,
 )
 from core.io_utils import atomic_write_file
+from core.logger import get_logger
 from core.mp3_stitcher import stitch_mp3_files
 from core.ollama import (
     ModelPullProgress,
@@ -59,6 +60,10 @@ from tui.state import (
     TUIState,
 )
 
+logger = get_logger("tui.workers")
+MAX_STREAM_BUFFER_CHARS = 32768
+
+
 # ==============================================================================
 # Base Worker Thread
 # ==============================================================================
@@ -81,6 +86,7 @@ class BaseWorker(threading.Thread):
         self.state: TUIState | None = state
         self.event_queue: TUIEventQueue | None = event_queue
         self.cancel_event: threading.Event = cancel_event or threading.Event()
+        self._worker_id: str = f"{self.name}_{id(self)}"
 
     def cancel(self) -> None:
         """Signals cancellation to the running worker thread."""
@@ -104,11 +110,18 @@ class BaseWorker(threading.Thread):
         """Updates UI busy state and dispatches busy event."""
         if self.state is not None:
             with self.state.lock:
-                self.state.ui.is_busy = is_busy
-                self.state.ui.busy_task = task if is_busy else ""
+                if is_busy:
+                    self.state.ui.acquire_busy(self._worker_id, task)
+                else:
+                    self.state.ui.release_busy(self._worker_id)
+                effective_busy = self.state.ui.is_busy
+                effective_task = self.state.ui.busy_task
+        else:
+            effective_busy = is_busy
+            effective_task = task if is_busy else ""
         self.post_event(
             TUIEventType.SET_BUSY,
-            payload={"is_busy": is_busy, "task": task},
+            payload={"is_busy": effective_busy, "task": effective_task},
         )
 
 
@@ -652,9 +665,10 @@ class GenerationWorker(BaseWorker):
                     else:
                         extracted_text = str(source_content)
 
-                    if not extracted_text or len(extracted_text.strip()) < 10:
+                    min_chars = 3 if is_topic else 10
+                    if not extracted_text or len(extracted_text.strip()) < min_chars:
                         raise ValueError(
-                            "Input content is too short (minimum 10 characters required)."
+                            f"Input content is too short (minimum {min_chars} characters required)."
                         )
 
                 if self.is_cancelled():
@@ -770,6 +784,8 @@ class GenerationWorker(BaseWorker):
             def _cb(token: str) -> None:
                 nonlocal accumulated_tokens, token_count
                 accumulated_tokens += token
+                if len(accumulated_tokens) > MAX_STREAM_BUFFER_CHARS:
+                    accumulated_tokens = accumulated_tokens[-MAX_STREAM_BUFFER_CHARS:]
                 token_count += 1
                 elapsed = max(0.001, time.time() - start_time)
                 tps = token_count / elapsed
@@ -889,27 +905,44 @@ class GenerationWorker(BaseWorker):
                 is_topic=is_topic,
             )
 
-            raw_act_response = client.generate(
-                model=self.model,
-                prompt=act_usr,
-                system=act_sys,
-                stream=True,
-                temperature=self.temperature,
-                cancel_event=self.cancel_event,
-                callback=token_callback,
-            )
-
-            if raw_act_response and raw_act_response.strip():
-                try:
-                    act_turns = DialogueParser.parse(
-                        raw_act_response, default_language=self.language
+            act_turns: list[DialogueTurn] = []
+            for attempt in range(2):
+                if self.is_cancelled():
+                    raise RuntimeError("Generation cancelled by user.")
+                raw_act_response = client.generate(
+                    model=self.model,
+                    prompt=act_usr,
+                    system=act_sys,
+                    stream=True,
+                    temperature=self.temperature,
+                    cancel_event=self.cancel_event,
+                    callback=token_callback,
+                )
+                if raw_act_response and raw_act_response.strip():
+                    try:
+                        parsed = DialogueParser.parse(
+                            raw_act_response, default_language=self.language
+                        )
+                        if parsed:
+                            act_turns = parsed
+                            break
+                    except ValueError as parse_err:
+                        logger.warning(
+                            "Act %d/%d dialogue parse attempt %d failed: %s",
+                            act_idx,
+                            total_acts,
+                            attempt + 1,
+                            parse_err,
+                        )
+                else:
+                    logger.warning(
+                        "Act %d/%d returned empty response on attempt %d.",
+                        act_idx,
+                        total_acts,
+                        attempt + 1,
                     )
-                    if act_turns:
-                        for t in act_turns:
-                            full_script.append(t)
-                except ValueError:
-                    if not full_script and act_idx == 1:
-                        pass
+            if act_turns:
+                full_script.extend(act_turns)
 
         return full_script
 

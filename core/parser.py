@@ -98,18 +98,21 @@ class DialogueTurn:
 
 
 # Predefined persona sets for high-speed speaker normalization
+# Note: Bare digits "1" and "2" are kept ONLY in _EXACT_SPEAKER_MAP (not substring tuples)
+# so labels like "Ola (Act 1)" or "Unique_Guest_0001" are never misclassified as Host 1.
 _HOST_1_SPECIFIC = (
-    "1",
     "kari",
     "jenny",
     "host 1",
     "host1",
     "host_1",
+    "host-1",
     "host a",
     "host-a",
     "speaker 1",
     "speaker1",
     "speaker_1",
+    "speaker-1",
     "speaker a",
     "vert 1",
     "vert1",
@@ -130,17 +133,18 @@ _HOST_1_SPECIFIC = (
 )
 
 _HOST_2_SPECIFIC = (
-    "2",
     "ola",
     "guy",
     "host 2",
     "host2",
     "host_2",
+    "host-2",
     "host b",
     "host-b",
     "speaker 2",
     "speaker2",
     "speaker_2",
+    "speaker-2",
     "speaker b",
     "vert 2",
     "vert2",
@@ -158,25 +162,24 @@ _GENERIC_HOST_KEYWORDS = (
     "programleder",
 )
 
+_RE_HOST_1_NUMBERED = re.compile(
+    r"(?:^|\b)(?:host|speaker|vert|programleder|person|voice|deltaker)\s*[-_#:]?\s*1(?:\b|$)"
+)
+_RE_HOST_2_NUMBERED = re.compile(
+    r"(?:^|\b)(?:host|speaker|vert|programleder|person|voice|deltaker)\s*[-_#:]?\s*2(?:\b|$)"
+)
+
 # PERFORMANCE OPTIMIZATION: Pre-populated O(1) dictionary for exact speaker key lookups.
 # Bypasses linear sequence scans for common speaker strings (~8.5x throughput gain on uncached hits).
 # Host 1 keys are updated after Host 2 to strictly preserve original Host 1 evaluation precedence.
-_EXACT_SPEAKER_MAP: dict[str, str] = dict.fromkeys(_HOST_2_SPECIFIC, "Host 2")
+_EXACT_SPEAKER_MAP: dict[str, str] = {"2": "Host 2"}
+_EXACT_SPEAKER_MAP.update(dict.fromkeys(_HOST_2_SPECIFIC, "Host 2"))
+_EXACT_SPEAKER_MAP["1"] = "Host 1"
 _EXACT_SPEAKER_MAP.update(dict.fromkeys(_HOST_1_SPECIFIC, "Host 1"))
 
 
 @lru_cache(maxsize=128)
-def normalize_speaker(raw_speaker: str) -> str:
-    """
-    Normalizes speaker names across Norwegian and English personas for dialogue and monologue:
-    Host 1 / Kari / Jenny / Speaker 1 / Host / Narrator / Presenter / Solo -> 'Host 1'
-    Host 2 / Ola / Guy / Speaker 2 / Expert / Co-host -> 'Host 2'
-
-    Memoized with LRU cache (maxsize=128) for high-throughput string parsing loops.
-    """
-    if not raw_speaker or not isinstance(raw_speaker, str):
-        return "Host 1"
-
+def _cached_normalize_speaker(raw_speaker: str) -> str:
     s = raw_speaker.lower().strip()
 
     # Fast-path: O(1) exact match lookup before tuple scan
@@ -184,16 +187,41 @@ def normalize_speaker(raw_speaker: str) -> str:
     if exact is not None:
         return exact
 
-    # 1. Host 1 specific patterns (e.g. '1', 'kari', 'jenny', 'narrator', 'solo', etc.)
+    # 1. Host 1 specific persona patterns (e.g. 'kari', 'jenny', 'host 1', 'narrator', 'solo', etc.)
     if any(k in s for k in _HOST_1_SPECIFIC):
         return "Host 1"
 
-    # 2. Host 2 specific patterns (e.g. '2', 'ola', 'guy', 'host b', etc.)
+    # 2. Host 2 specific persona patterns (e.g. 'ola', 'guy', 'host 2', 'host b', etc.)
     if any(k in s for k in _HOST_2_SPECIFIC):
         return "Host 2"
 
-    # 3. Generic host keywords default to Host 1, otherwise preserve stripped raw string
+    # 3. Word-boundary numbered roles (e.g. 'Person 1', 'Voice #2')
+    if _RE_HOST_1_NUMBERED.search(s):
+        return "Host 1"
+    if _RE_HOST_2_NUMBERED.search(s):
+        return "Host 2"
+
+    # 4. Generic host keywords default to Host 1, otherwise preserve stripped raw string
     return "Host 1" if any(k in s for k in _GENERIC_HOST_KEYWORDS) else raw_speaker.strip()
+
+
+def normalize_speaker(raw_speaker: Any) -> str:
+    """
+    Normalizes speaker names across Norwegian and English personas for dialogue and monologue:
+    Host 1 / Kari / Jenny / Speaker 1 / Host / Narrator / Presenter / Solo -> 'Host 1'
+    Host 2 / Ola / Guy / Speaker 2 / Expert / Co-host -> 'Host 2'
+
+    Guards unhashable / non-string inputs before delegating to the 128-entry LRU cache.
+    """
+    if not raw_speaker or not isinstance(raw_speaker, str):
+        return "Host 1"
+    if raw_speaker == "Host 1" or raw_speaker == "Host 2":
+        return raw_speaker
+    return _cached_normalize_speaker(raw_speaker)
+
+
+normalize_speaker.cache_clear = _cached_normalize_speaker.cache_clear  # type: ignore[attr-defined]
+normalize_speaker.cache_info = _cached_normalize_speaker.cache_info  # type: ignore[attr-defined]
 
 
 # Precompiled regular expressions for parser performance
@@ -277,19 +305,20 @@ class DialogueParser:
         # ======================================================================
         # Tier 2: Markdown Code Fence Extraction (```json ... ``` or ``` ... ```)
         # ======================================================================
-        fence_matches = _REGEX_FENCE.findall(cleaned)
-        for fence_content in fence_matches:
-            fence_content = fence_content.strip()
-            try:
-                data = json.loads(fence_content)
-                turns = cls._validate_and_convert(data)
-                if turns:
-                    return turns
-            except (json.JSONDecodeError, TypeError, ValueError):
-                # Try bracket trimming on fence content
-                sub_turns = cls._try_bracket_parse(fence_content)
-                if sub_turns:
-                    return sub_turns
+        if "```" in cleaned:
+            fence_matches = _REGEX_FENCE.findall(cleaned)
+            for fence_content in fence_matches:
+                fence_content = fence_content.strip()
+                try:
+                    data = json.loads(fence_content)
+                    turns = cls._validate_and_convert(data)
+                    if turns:
+                        return turns
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    # Try bracket trimming on fence content
+                    sub_turns = cls._try_bracket_parse(fence_content)
+                    if sub_turns:
+                        return sub_turns
 
         # ======================================================================
         # Tier 3: Substring Outer Bracket Trimming
@@ -301,18 +330,19 @@ class DialogueParser:
         # ======================================================================
         # Tier 4: Syntax Normalization & Sanitization
         # ======================================================================
-        sanitized = cls._sanitize_json_string(cleaned)
-        turns = cls._try_bracket_parse(sanitized)
-        if turns:
-            return turns
-
-        try:
-            data = json.loads(sanitized)
-            turns = cls._validate_and_convert(data)
+        for aggressive in (False, True):
+            sanitized = cls._sanitize_json_string(cleaned, aggressive_single_quotes=aggressive)
+            turns = cls._try_bracket_parse(sanitized)
             if turns:
                 return turns
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
+
+            try:
+                data = json.loads(sanitized)
+                turns = cls._validate_and_convert(data)
+                if turns:
+                    return turns
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
 
         # ======================================================================
         # Tier 5: Object-by-Object Regex Extractor
@@ -343,17 +373,27 @@ class DialogueParser:
                 data = json.loads(bracket_slice)
                 return cls._validate_and_convert(data)
             except (json.JSONDecodeError, TypeError, ValueError):
-                # Try sanitizing bracket slice
-                sanitized = cls._sanitize_json_string(bracket_slice)
-                try:
-                    data = json.loads(sanitized)
-                    return cls._validate_and_convert(data)
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    pass
+                # First try non-destructive sanitization (curly quotes, trailing commas, control chars)
+                # before rewriting single-quoted values so valid double-quoted strings containing ": '...'" survive.
+                for aggressive in (False, True):
+                    sanitized = cls._sanitize_json_string(
+                        bracket_slice, aggressive_single_quotes=aggressive
+                    )
+                    try:
+                        data = json.loads(sanitized)
+                        converted = cls._validate_and_convert(data)
+                        if converted:
+                            return converted
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
         return None
 
     @classmethod
-    def _sanitize_json_string(cls, text: str) -> str:
+    def _sanitize_json_string(
+        cls,
+        text: str,
+        aggressive_single_quotes: bool = True,
+    ) -> str:
         """Fixes common LLM JSON syntax errors."""
         # PERFORMANCE OPTIMIZATION: Guard regex operations and string replacements with fast substring checks
         # to avoid expensive C-regex executions and string allocations on clean JSON input (~2.7x speedup).
@@ -368,7 +408,7 @@ class DialogueParser:
             s = _REGEX_TRAILING_COMMA.sub(r"\1", s)
 
         # Fix single-quoted keys and values e.g. {'speaker': 'Host 1', 'text': 'Hello'}
-        if "'" in s:
+        if aggressive_single_quotes and "'" in s:
             s = _REGEX_SINGLE_QUOTE_KEYS.sub(r'"\1":', s)
             s = _REGEX_SINGLE_QUOTE_VALS.sub(r': "\1"', s)
 
@@ -442,6 +482,8 @@ class DialogueParser:
     @classmethod
     def _regex_object_parser(cls, text: str) -> list[DialogueTurn] | None:
         """Extracts individual dialogue or monologue turn objects using regex."""
+        if "{" not in text:
+            return None
         matches = list(_REGEX_OBJECT_PATTERN_1.finditer(text))
         if not matches:
             matches = list(_REGEX_OBJECT_PATTERN_2.finditer(text))
@@ -495,7 +537,8 @@ class DialogueParser:
                 flush_current()
                 current_speaker = normalize_speaker(match.group(1))
                 line_content = match.group(2).strip()
-                line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
+                if "*" in line_content:
+                    line_content = _REGEX_LINE_STARS.sub("", line_content).strip()
                 if line_content:
                     current_lines.append(line_content)
             elif current_speaker is not None:

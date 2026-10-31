@@ -90,6 +90,7 @@ class TUIApplication:
         }
 
         self.state.ui.active_screen = initial_screen
+        self._probe_worker: OllamaProbeWorker | None = None
 
         # Register event handlers
         self._register_event_subscriptions()
@@ -248,13 +249,71 @@ class TUIApplication:
 
         return False
 
+    def _is_screen_capturing_input(self, screen: Any) -> bool:
+        """Returns True when the active screen has an open modal or active inline text editor."""
+        if getattr(screen, "active_modal", None) is not None:
+            return True
+        editor_flags = (
+            "is_editing",
+            "is_editing_url",
+            "is_editing_pull",
+            "is_editing_outdir",
+            "is_editing_host1",
+            "is_editing_host2",
+            "is_editing_prompt",
+            "is_editing_json",
+            "is_editing_export",
+            "is_editing_load",
+        )
+        return any(getattr(screen, flag, False) is True for flag in editor_flags)
+
+    def _handle_modal_key(self, key: str) -> bool:
+        """Processes keyboard shortcuts when an application-level modal overlay is open."""
+        k = key.lower().strip()
+        if k in ("escape", "enter", "q"):
+            self.close_modal()
+            return True
+
+        with self.state.lock:
+            actions = list(self.state.ui.modal_data.get("actions") or [])
+
+        if k.isdigit():
+            idx = int(k) - 1
+            if 0 <= idx < len(actions):
+                action = actions[idx]
+                cb = action.get("callback") if isinstance(action, dict) else None
+                dismiss = action.get("dismiss", True) if isinstance(action, dict) else True
+                if dismiss:
+                    self.close_modal()
+                if callable(cb):
+                    cb()
+                return True
+
+        # Consume remaining keys while modal is open so background screen stays frozen
+        return True
+
+    def _dispatch_screen_key(self, active_screen: Any, input_key: str) -> None:
+        """Forwards a key press to the active screen and handles navigation return directives."""
+        if not hasattr(active_screen, "handle_key"):
+            return
+        try:
+            result = active_screen.handle_key(input_key)
+            if isinstance(result, str) and result.startswith("navigate:"):
+                target_screen = result.split(":", 1)[1].strip()
+                if target_screen:
+                    self.navigate_to(target_screen)
+        except Exception as exc:
+            with self.state.lock:
+                self.state.ui.status_message = f"Error handling key: {exc}"
+                self.state.ui.status_level = "error"
+
     def step(self, key: str | None = None) -> bool:
         """
         Executes a single discrete tick of the application:
         1. Queries dimensions and updates terminal state.
         2. Polls and processes pending background events.
         3. Polls audio player status.
-        4. Routes key input to global handler or active screen.
+        4. Routes key input to modal, focused inline editor, global handler, or active screen.
 
         Args:
             key: Optional simulated key token for automated testing.
@@ -277,15 +336,20 @@ class TUIApplication:
         # 4. Handle Key Input
         input_key = key if key is not None else self.input_reader.get_key(timeout=0.01)
         if input_key is not None:
-            if not self.handle_global_key(input_key):
+            norm_key = input_key.lower().strip()
+            if norm_key in ("ctrl+c", "ctrl+q"):
+                self.request_quit()
+            elif self.state.ui.active_modal != ModalType.NONE:
+                self._handle_modal_key(input_key)
+            else:
                 active_screen = self.get_active_screen_instance()
-                if hasattr(active_screen, "handle_key"):
-                    try:
-                        active_screen.handle_key(input_key)
-                    except Exception as exc:
-                        with self.state.lock:
-                            self.state.ui.status_message = f"Error handling key: {exc}"
-                            self.state.ui.status_level = "error"
+                if self._is_screen_capturing_input(active_screen):
+                    self._dispatch_screen_key(active_screen, input_key)
+                elif not self.handle_global_key(input_key):
+                    self._dispatch_screen_key(active_screen, input_key)
+
+            # Drain any navigation/modal events synchronously posted by key handlers
+            self.process_events()
 
         return self._is_running
 
@@ -309,7 +373,9 @@ class TUIApplication:
                 title=modal_data.get("title", f"{modal.value.capitalize()} Dialog"),
                 message=modal_data.get("message", ""),
                 details=modal_data.get("details"),
+                actions=modal_data.get("actions"),
                 modal_type=modal_data.get("type", "info"),
+                close_text=modal_data.get("close_text", "Close"),
             ).__rich__()
 
         active_screen = self.get_active_screen_instance()
@@ -338,12 +404,12 @@ class TUIApplication:
 
         # Optional initial probe of Ollama server
         if self.auto_probe_ollama:
-            probe_worker = OllamaProbeWorker(
+            self._probe_worker = OllamaProbeWorker(
                 server_url=self.state.ollama.server_url,
                 state=self.state,
                 event_queue=self.event_queue,
             )
-            probe_worker.start()
+            self._probe_worker.start()
 
         try:
             with self.terminal_manager.start():
@@ -372,7 +438,38 @@ class TUIApplication:
         return self._exit_code
 
     def shutdown(self) -> None:
-        """Releases player handles and restores terminal."""
+        """Cooperatively stops active background workers, closes player, and restores terminal."""
+        # Signal cancellation to all active background threads
+        if self._probe_worker is not None and self._probe_worker.is_alive():
+            self._probe_worker.cancel()
+
+        gen_worker = getattr(self.generation_screen, "current_worker", None)
+        if gen_worker is not None and gen_worker.is_alive():
+            self.generation_screen.cancel_generation()
+
+        tts_worker = getattr(self.script_studio_screen, "current_tts_worker", None)
+        if tts_worker is not None and tts_worker.is_alive():
+            tts_cancel = getattr(self.script_studio_screen, "tts_cancel_event", None)
+            if tts_cancel is not None:
+                tts_cancel.set()
+
+        pull_thread = getattr(self.ollama_screen, "pull_thread", None)
+        if pull_thread is not None and pull_thread.is_alive():
+            self.ollama_screen.cancel_pull()
+
+        for worker in (
+            self._probe_worker,
+            gen_worker,
+            tts_worker,
+            pull_thread,
+            getattr(self.ollama_screen, "launcher_thread", None),
+        ):
+            if worker is not None and worker.is_alive():
+                try:
+                    worker.join(timeout=0.1)
+                except Exception:  # nosec B110
+                    pass
+
         try:
             self.player_screen.player.close()
         except Exception:  # nosec B110

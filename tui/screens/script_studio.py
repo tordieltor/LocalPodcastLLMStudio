@@ -541,6 +541,14 @@ class ScriptStudioScreen:
                 )
             return True
 
+        if k in ("escape", "b", "q"):
+            if self.event_queue is not None:
+                self.event_queue.post_event(
+                    TUIEventType.NAVIGATE_SCREEN,
+                    payload={"screen": ScreenMode.DASHBOARD.value},
+                )
+            return True
+
         return False
 
     # ==========================================================================
@@ -707,6 +715,7 @@ class ScriptStudioScreen:
             ("E", "Edit JSON"),
             ("G", "Generation"),
             ("P", "Player"),
+            ("Esc", "Back"),
         ]
         footer = HotkeyBar(shortcuts=hotkeys)
 

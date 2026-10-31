@@ -5,6 +5,7 @@ dialogue turn bubbles, and actionable error dialogs.
 """
 
 import threading
+import tkinter as tk
 from collections.abc import Callable
 from typing import Any
 
@@ -331,11 +332,23 @@ class TimeSlider(ctk.CTkFrame):
         self.slider.set(0)
         self.slider.pack(fill="x")
 
-        # Bind mouse release to finalize seek
+        # Bind mouse release to finalize seek and FocusOut to release stuck drag lock
         self.slider.bind("<ButtonRelease-1>", self._on_seek_release)
+        try:
+            self.slider.bind("<FocusOut>", self._on_focus_out)
+        except (tk.TclError, AttributeError, RuntimeError):
+            pass
+
+    def _on_focus_out(self, _event: Any = None):
+        self.is_user_dragging = False
 
     def _on_seek_drag(self, val: float):
         self.is_user_dragging = True
+        if self.total_duration_ms > 0:
+            preview_ms = int((max(0.0, min(100.0, float(val))) / 100.0) * self.total_duration_ms)
+            self.time_label.configure(
+                text=f"{self._format_ms(preview_ms)} / {self._format_ms(self.total_duration_ms)}"
+            )
 
     def _on_seek_release(self, event):
         self.is_user_dragging = False
@@ -409,16 +422,33 @@ class DialogueTurnCard(ctk.CTkFrame):
         turn_badge.pack(side="right")
 
         # Text Body
-        body_label = ctk.CTkLabel(
+        self._last_wraplength = 480
+        self.body_label = ctk.CTkLabel(
             self,
             text=text,
             font=get_font_body(),
             text_color=COLOR_TEXT_PRIMARY,
-            wraplength=480,
+            wraplength=self._last_wraplength,
             justify="left",
             anchor="w",
         )
-        body_label.pack(fill="x", padx=10, pady=(0, 10))
+        self.body_label.pack(fill="x", padx=10, pady=(0, 10))
+        try:
+            self.bind("<Configure>", self._on_configure_wrap)
+        except (tk.TclError, AttributeError, RuntimeError):
+            pass
+
+    def _on_configure_wrap(self, event: Any) -> None:
+        try:
+            width = int(getattr(event, "width", 0))
+            if width <= 60:
+                return
+            target_wrap = max(240, width - 36)
+            if abs(target_wrap - self._last_wraplength) >= 12:
+                self._last_wraplength = target_wrap
+                self.body_label.configure(wraplength=target_wrap)
+        except (tk.TclError, AttributeError, RuntimeError, ValueError, TypeError):
+            pass
 
 
 class LiveStreamingCard(ctk.CTkFrame):
@@ -556,7 +586,7 @@ class ActionableErrorDialog(ctk.CTkToplevel):
         try:
             self.transient(parent)
             self.grab_set()
-        except (RuntimeError, AttributeError, ValueError, TypeError):
+        except (tk.TclError, RuntimeError, AttributeError, ValueError, TypeError):
             pass
 
         # Center on parent window
@@ -723,10 +753,10 @@ class ActionableErrorDialog(ctk.CTkToplevel):
             x = max(50, px + (pw - width) // 2)
             y = max(50, py + (ph - height) // 2)
             self.geometry(f"{width}x{height}+{x}+{y}")
-        except (RuntimeError, AttributeError, ValueError, TypeError):
+        except (tk.TclError, RuntimeError, AttributeError, ValueError, TypeError):
             try:
                 self.geometry(f"{width}x{height}")
-            except (RuntimeError, AttributeError, ValueError, TypeError):
+            except (tk.TclError, RuntimeError, AttributeError, ValueError, TypeError):
                 pass
 
 
@@ -790,6 +820,7 @@ class StageProgressTracker(ctk.CTkFrame):
         )
 
         self.stages: list[PipelineStage] = list(PipelineStage)
+        self._state_lock = threading.Lock()
         self._stages_state: dict[PipelineStage, dict[str, Any]] = {}
         self._stage_widgets: dict[PipelineStage, dict[str, Any]] = {}
         self._stage_rows = self._stage_widgets  # Compatibility alias
@@ -923,11 +954,27 @@ class StageProgressTracker(ctk.CTkFrame):
         except (ValueError, TypeError):
             clamped_pct = 0.0
 
+        spec = STAGE_DISPLAY_SPECS.get(
+            stage_enum, {"title": f"Stage {stage_enum.value}", "default_details": ""}
+        )
+        display_details = (
+            details.strip() if details and details.strip() else spec["default_details"]
+        )
+        with self._state_lock:
+            self._stages_state[stage_enum] = {
+                "status": status_enum,
+                "pct": clamped_pct,
+                "details": display_details,
+            }
+
         if threading.current_thread() is not threading.main_thread():
-            self.after(
-                0,
-                lambda: self._apply_update_stage(stage_enum, status_enum, clamped_pct, details),
-            )
+            try:
+                self.after(
+                    0,
+                    lambda: self._apply_update_stage(stage_enum, status_enum, clamped_pct, details),
+                )
+            except (tk.TclError, RuntimeError):
+                pass
             return
 
         self._apply_update_stage(stage_enum, status_enum, clamped_pct, details)
@@ -949,51 +996,57 @@ class StageProgressTracker(ctk.CTkFrame):
             details.strip() if details and details.strip() else spec["default_details"]
         )
 
-        self._stages_state[stage] = {
-            "status": status,
-            "pct": pct,
-            "details": display_details,
-        }
+        with self._state_lock:
+            self._stages_state[stage] = {
+                "status": status,
+                "pct": pct,
+                "details": display_details,
+            }
         widgets["status"] = status
 
-        if status == StageStatus.COMPLETED:
-            widgets["glyph"].configure(text=GLYPH_COMPLETED, text_color=COLOR_SUCCESS)
-            widgets["title"].configure(text_color=COLOR_TEXT_PRIMARY)
-            widgets["details"].configure(text=display_details, text_color=COLOR_SUCCESS)
-            widgets["pct"].configure(text="100%", text_color=COLOR_SUCCESS)
-            widgets["pbar"].configure(progress_color=COLOR_SUCCESS)
-            widgets["pbar"].set(1.0)
-        elif status == StageStatus.IN_ACTION:
-            widgets["glyph"].configure(text=GLYPH_IN_ACTION, text_color=COLOR_ACCENT)
-            widgets["title"].configure(text_color=COLOR_ACCENT)
-            widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_PRIMARY)
-            pct_int = int(pct * 100)
-            widgets["pct"].configure(text=f"{pct_int}%", text_color=COLOR_ACCENT)
-            widgets["pbar"].configure(progress_color=COLOR_ACCENT)
-            widgets["pbar"].set(pct)
-        elif status == StageStatus.FAILED:
-            widgets["glyph"].configure(text=GLYPH_FAILED, text_color=COLOR_ERROR)
-            widgets["title"].configure(text_color=COLOR_ERROR)
-            widgets["details"].configure(text=display_details, text_color=COLOR_ERROR)
-            widgets["pct"].configure(text="ERR", text_color=COLOR_ERROR)
-            widgets["pbar"].configure(progress_color=COLOR_ERROR)
-            widgets["pbar"].set(pct)
-        elif status == StageStatus.CANCELLED:
-            widgets["glyph"].configure(text=GLYPH_CANCELLED, text_color=COLOR_TEXT_MUTED)
-            widgets["title"].configure(text_color=COLOR_TEXT_MUTED)
-            widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_MUTED)
-            widgets["pct"].configure(text="ABORT", text_color=COLOR_TEXT_MUTED)
-            widgets["pbar"].configure(progress_color=COLOR_TEXT_MUTED)
-            widgets["pbar"].set(pct)
-        else:  # PENDING
-            widgets["glyph"].configure(text=GLYPH_PENDING, text_color=COLOR_TEXT_MUTED)
-            widgets["title"].configure(text_color=COLOR_TEXT_SECONDARY)
-            widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_MUTED)
-            widgets["pct"].configure(text="")
-            widgets["pbar"].configure(progress_color=COLOR_ACCENT)
-            widgets["pbar"].set(0.0)
+        try:
+            if hasattr(self, "winfo_exists") and not self.winfo_exists():
+                return
+            if status == StageStatus.COMPLETED:
+                widgets["glyph"].configure(text=GLYPH_COMPLETED, text_color=COLOR_SUCCESS)
+                widgets["title"].configure(text_color=COLOR_TEXT_PRIMARY)
+                widgets["details"].configure(text=display_details, text_color=COLOR_SUCCESS)
+                widgets["pct"].configure(text="100%", text_color=COLOR_SUCCESS)
+                widgets["pbar"].configure(progress_color=COLOR_SUCCESS)
+                widgets["pbar"].set(1.0)
+            elif status == StageStatus.IN_ACTION:
+                widgets["glyph"].configure(text=GLYPH_IN_ACTION, text_color=COLOR_ACCENT)
+                widgets["title"].configure(text_color=COLOR_ACCENT)
+                widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_PRIMARY)
+                pct_int = int(pct * 100)
+                widgets["pct"].configure(text=f"{pct_int}%", text_color=COLOR_ACCENT)
+                widgets["pbar"].configure(progress_color=COLOR_ACCENT)
+                widgets["pbar"].set(pct)
+            elif status == StageStatus.FAILED:
+                widgets["glyph"].configure(text=GLYPH_FAILED, text_color=COLOR_ERROR)
+                widgets["title"].configure(text_color=COLOR_ERROR)
+                widgets["details"].configure(text=display_details, text_color=COLOR_ERROR)
+                widgets["pct"].configure(text="ERR", text_color=COLOR_ERROR)
+                widgets["pbar"].configure(progress_color=COLOR_ERROR)
+                widgets["pbar"].set(pct)
+            elif status == StageStatus.CANCELLED:
+                widgets["glyph"].configure(text=GLYPH_CANCELLED, text_color=COLOR_TEXT_MUTED)
+                widgets["title"].configure(text_color=COLOR_TEXT_MUTED)
+                widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_MUTED)
+                widgets["pct"].configure(text="ABORT", text_color=COLOR_TEXT_MUTED)
+                widgets["pbar"].configure(progress_color=COLOR_TEXT_MUTED)
+                widgets["pbar"].set(pct)
+            else:  # PENDING
+                widgets["glyph"].configure(text=GLYPH_PENDING, text_color=COLOR_TEXT_MUTED)
+                widgets["title"].configure(text_color=COLOR_TEXT_SECONDARY)
+                widgets["details"].configure(text=display_details, text_color=COLOR_TEXT_MUTED)
+                widgets["pct"].configure(text="")
+                widgets["pbar"].configure(progress_color=COLOR_ACCENT)
+                widgets["pbar"].set(0.0)
 
-        self._update_header_summary()
+            self._update_header_summary()
+        except tk.TclError:
+            return
 
     def reset(self) -> None:
         """Resets all 5 stages to PENDING state with 0.0% progress and default descriptions."""
@@ -1001,7 +1054,10 @@ class StageProgressTracker(ctk.CTkFrame):
             spec = STAGE_DISPLAY_SPECS[stage]
             self._apply_update_stage(stage, StageStatus.PENDING, 0.0, spec["default_details"])
         if hasattr(self, "header_summary"):
-            self.header_summary.configure(text="Ready", text_color=COLOR_TEXT_SECONDARY)
+            try:
+                self.header_summary.configure(text="Ready", text_color=COLOR_TEXT_SECONDARY)
+            except tk.TclError:
+                pass
 
     def set_all_pending(self) -> None:
         """Alias for reset(), restoring all stages to pending state."""
@@ -1011,7 +1067,8 @@ class StageProgressTracker(ctk.CTkFrame):
         """Returns snapshot dictionary of the current state of the requested stage."""
         try:
             stage_enum = self._normalize_stage(stage)
-            return dict(self._stages_state.get(stage_enum, {}))
+            with self._state_lock:
+                return dict(self._stages_state.get(stage_enum, {}))
         except ValueError:
             return {}
 
@@ -1019,15 +1076,17 @@ class StageProgressTracker(ctk.CTkFrame):
         """Returns the StageStatus of the requested stage."""
         try:
             stage_enum = self._normalize_stage(stage)
-            return self._stages_state.get(stage_enum, {}).get("status")
+            with self._state_lock:
+                return self._stages_state.get(stage_enum, {}).get("status")
         except ValueError:
             return None
 
     def get_current_active_stage(self) -> PipelineStage | None:
         """Returns the PipelineStage currently in IN_ACTION status, or None."""
-        for stage, state in self._stages_state.items():
-            if state.get("status") == StageStatus.IN_ACTION:
-                return stage
+        with self._state_lock:
+            for stage, state in self._stages_state.items():
+                if state.get("status") == StageStatus.IN_ACTION:
+                    return stage
         return None
 
     def _update_header_summary(self) -> None:

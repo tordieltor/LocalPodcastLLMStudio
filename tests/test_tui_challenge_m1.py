@@ -446,9 +446,8 @@ def test_terminal_manager_signal_trap_behavior() -> None:
 
 def test_terminal_manager_prior_signal_handler_cleared_anomaly() -> None:
     """
-    Empirically documents and verifies the finding that _restore_signals()
-    clears _prev_signal_handlers before _handle_signal can retrieve 'prev'.
-    As a result, custom prior handlers are bypassed and sys.exit is called.
+    Verifies that _handle_signal captures the prior custom signal handler before
+    restore() clears _prev_signal_handlers, invoking the prior handler cleanly.
     """
     custom_handler = MagicMock()
     tm = TerminalManager(install_signal_handlers=True)
@@ -462,8 +461,7 @@ def test_terminal_manager_prior_signal_handler_cleared_anomaly() -> None:
 
         with patch("sys.exit") as mock_exit:
             tm._handle_signal(signal.SIGINT, None)
-            # Demonstrates that custom_handler was not called because restore() cleared the dict
-            assert custom_handler.called is False
+            custom_handler.assert_called_once_with(signal.SIGINT, None)
             mock_exit.assert_called_once_with(128 + signal.SIGINT)
 
 

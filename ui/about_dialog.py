@@ -4,6 +4,7 @@ Modern Fluent Dark modal dialog providing comprehensive information on the
 technology stack, how the pipeline works, and system limitations/prerequisites.
 """
 
+import tkinter as tk
 from typing import Any
 
 import customtkinter as ctk
@@ -45,8 +46,11 @@ class AboutDialog(ctk.CTkToplevel):
         self.configure(fg_color=COLOR_BG)
 
         # Modal focus configuration
-        self.transient(parent)
-        self.grab_set()
+        try:
+            self.transient(parent)
+            self.grab_set()
+        except (tk.TclError, RuntimeError, AttributeError, ValueError, TypeError):
+            pass
 
         # Center on parent window if available
         self._center_on_parent(parent)
@@ -70,7 +74,7 @@ class AboutDialog(ctk.CTkToplevel):
             x = max(50, px + (pw - w) // 2)
             y = max(50, py + (ph - h) // 2)
             self.geometry(f"{w}x{h}+{x}+{y}")
-        except (RuntimeError, AttributeError, ValueError, TypeError):
+        except (tk.TclError, RuntimeError, AttributeError, ValueError, TypeError):
             pass
 
     # ==========================================================================

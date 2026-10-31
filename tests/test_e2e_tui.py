@@ -701,9 +701,10 @@ class TestTUITier5AdversarialResiliency:
         ]
 
         for width, height in extreme_dimensions:
-            with patch(
-                "tui.terminal.get_terminal_dimensions",
-                return_value=(max(10, width), max(5, height)),
+            clamped = (max(10, width), max(5, height))
+            with (
+                patch("tui.terminal.get_terminal_dimensions", return_value=clamped),
+                patch("tui.app.get_terminal_dimensions", return_value=clamped),
             ):
                 app.step()
                 rendered = app.render()
