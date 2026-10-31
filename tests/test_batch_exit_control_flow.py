@@ -45,8 +45,14 @@ def _create_batch_sandbox(tmp_path: Path) -> Path:
         "import sys\nprint('[OK] Sandbox preflight check passed.')\nsys.exit(0)\n",
         encoding="utf-8",
     )
+    # Spec file ensures mock artifact generation if PyInstaller evaluates the spec file directly
     (sandbox / "LocalPodcastLLMStudio.spec").write_text(
-        "# Valid sandbox PyInstaller spec\nAPP_NAME = 'LocalPodcastLLMStudio'\n" + ("# pad\n" * 20),
+        "# Valid sandbox PyInstaller spec\n"
+        "import pathlib\n"
+        "dist_dir = pathlib.Path('dist')\n"
+        "dist_dir.mkdir(exist_ok=True)\n"
+        "(dist_dir / 'LocalPodcastLLMStudio.exe').write_bytes(b'MZ' + (b'\\x00' * 1_500_000))\n"
+        "APP_NAME = 'LocalPodcastLLMStudio'\n",
         encoding="utf-8",
     )
 
@@ -55,7 +61,7 @@ def _create_batch_sandbox(tmp_path: Path) -> Path:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(sys.executable, scripts_dir / "python.exe")
 
-    # Copy pyvenv.cfg if present (so CPython / uv launcher locates stdlib cleanly)
+    # Always generate or copy pyvenv.cfg so CPython recognizes the sandbox as a virtual environment
     src_venv_cfg = Path(sys.executable).resolve().parent.parent / "pyvenv.cfg"
     if not src_venv_cfg.exists():
         src_venv_cfg = REPO_ROOT / ".venv" / "pyvenv.cfg"
@@ -64,7 +70,14 @@ def _create_batch_sandbox(tmp_path: Path) -> Path:
         for line in src_venv_cfg.read_text(encoding="utf-8", errors="replace").splitlines():
             if not line.strip().lower().startswith("include-system-site-packages"):
                 cfg_lines.append(line)
+        cfg_lines.append("include-system-site-packages = false")
         (sandbox / ".venv" / "pyvenv.cfg").write_text("\n".join(cfg_lines) + "\n", encoding="utf-8")
+    else:
+        base_home = Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent
+        (sandbox / ".venv" / "pyvenv.cfg").write_text(
+            f"home = {base_home}\ninclude-system-site-packages = false\nversion = {sys.version.split()[0]}\n",
+            encoding="utf-8",
+        )
 
     # Stub pip and PyInstaller inside sandbox site-packages so `-m pip` and `-m PyInstaller`
     # execute deterministically offline in milliseconds.
