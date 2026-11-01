@@ -167,6 +167,24 @@ class TestValidateSafeOutputPath:
         assert validate_safe_output_path("  podcast.mp3  ") == "podcast.mp3"
         assert validate_safe_output_path("output/test.mp3") == "output/test.mp3"
 
+    @pytest.mark.parametrize(
+        "reserved_path",
+        [
+            "CON",
+            "con.mp3",
+            "NUL",
+            "output/CON/test.mp3",
+            "output\\NUL\\sub\\test.mp3",
+            "output/aux.dir/podcast.mp3",
+            "COM1/out.wav",
+            "folder/lpt3/episode.mp3",
+            "PRN/nested/deep/file.txt",
+        ],
+    )
+    def test_validate_safe_output_path_rejects_reserved_device_names(self, reserved_path):
+        with pytest.raises(ValueError, match="reserved Windows device name"):
+            validate_safe_output_path(reserved_path)
+
     @pytest.mark.parametrize("bad_out", ["", "   ", None, 12345, "bad\x00path.mp3"])
     def test_stitch_mp3_files_rejects_invalid_output_path(self, bad_out, synthetic_mp3_factory):
         b1 = synthetic_mp3_factory(num_frames=2)
