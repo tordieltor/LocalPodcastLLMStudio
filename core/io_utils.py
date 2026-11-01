@@ -65,14 +65,15 @@ def validate_safe_output_path(
     if not clean_path:
         raise ValueError(f"{param_name} cannot be empty or whitespace-only.")
 
-    # Reject Windows reserved device names on the final path component stem (e.g., CON, NUL.mp3)
+    # Reject Windows reserved device names across all path components (e.g., CON, NUL.mp3, output/CON/file.mp3)
     normalized_sep = clean_path.replace("\\", "/").rstrip("/")
-    basename = normalized_sep.rsplit("/", 1)[-1] if normalized_sep else clean_path
-    stem = basename.split(".", 1)[0].strip().upper()
-    if stem in _WINDOWS_RESERVED_DEVICE_NAMES:
-        raise ValueError(
-            f"{param_name} uses reserved Windows device name '{stem}', which is not a valid file path."
-        )
+    parts = [p for p in normalized_sep.split("/") if p]
+    for part in parts:
+        stem = part.split(".", 1)[0].strip().upper()
+        if stem in _WINDOWS_RESERVED_DEVICE_NAMES:
+            raise ValueError(
+                f"{param_name} uses reserved Windows device name '{stem}', which is not a valid file path."
+            )
 
     if base_dir is not None:
         resolved_base = Path(base_dir).resolve()
