@@ -154,6 +154,13 @@ class TestValidateSafeOutputPath:
             "out.mp3\x00",
             "folder\x00/test.mp3",
             "\x00test.mp3",
+            "con",
+            "CON.mp3",
+            "sub/CON/file.mp3",
+            "aux\\nested\\track.mp3",
+            "dir/nul.txt/file.mp3",
+            "com1/audio.wav",
+            "lpt9/output.mp3",
         ],
     )
     def test_validate_safe_output_path_rejections(self, invalid_path):
@@ -166,6 +173,9 @@ class TestValidateSafeOutputPath:
     def test_validate_safe_output_path_valid_stripping(self):
         assert validate_safe_output_path("  podcast.mp3  ") == "podcast.mp3"
         assert validate_safe_output_path("output/test.mp3") == "output/test.mp3"
+        assert validate_safe_output_path("constant/file.mp3") == "constant/file.mp3"
+        assert validate_safe_output_path("auxiliary/test.mp3") == "auxiliary/test.mp3"
+        assert validate_safe_output_path("com10/out.wav") == "com10/out.wav"
 
     @pytest.mark.parametrize("bad_out", ["", "   ", None, 12345, "bad\x00path.mp3"])
     def test_stitch_mp3_files_rejects_invalid_output_path(self, bad_out, synthetic_mp3_factory):
