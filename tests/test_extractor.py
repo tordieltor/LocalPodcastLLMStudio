@@ -32,7 +32,10 @@ from core.exceptions import (
     StudioError,
 )
 from core.extractor import (
+    DOMNode,
+    DOMTreeBuilder,
     HTMLToMarkdownParser,
+    _has_min_text_length,
     convert_html_to_markdown,
     extract_text,
     extract_text_from_pdf,
@@ -41,6 +44,7 @@ from core.extractor import (
     is_ip_address_blocked,
     parse_ip_literal,
     sanitize_html_boilerplate,
+    select_primary_container,
     strip_html_boilerplate,
     validate_url_target,
 )
@@ -826,3 +830,67 @@ class TestUnifiedExtractionRouter:
 
     def test_strip_html_boilerplate_alias(self) -> None:
         assert strip_html_boilerplate is sanitize_html_boilerplate
+
+
+class TestPrimaryContainerOptimization:
+    """Verifies correctness of short-circuiting text length evaluation and container extraction."""
+
+    def test_has_min_text_length_edge_cases(self) -> None:
+        # Empty node
+        empty_node = DOMNode(tag="div")
+        assert not _has_min_text_length(empty_node, 30)
+        assert not (len(empty_node.get_text_content().strip()) > 30)
+
+        # Short text under limit
+        short_node = DOMNode(tag="p")
+        short_node.append_child(DOMNode(is_text=True, text="   short text   "))
+        assert not _has_min_text_length(short_node, 30)
+        assert not (len(short_node.get_text_content().strip()) > 30)
+
+        # Exactly 30 characters stripped (should be False because condition is strictly > 30)
+        exact_30_node = DOMNode(tag="div")
+        exact_30_node.append_child(DOMNode(is_text=True, text="123456789012345678901234567890"))
+        assert not _has_min_text_length(exact_30_node, 30)
+        assert not (len(exact_30_node.get_text_content().strip()) > 30)
+
+        # Exactly 31 characters stripped (should be True)
+        exact_31_node = DOMNode(tag="div")
+        exact_31_node.append_child(DOMNode(is_text=True, text="1234567890123456789012345678901"))
+        assert _has_min_text_length(exact_31_node, 30)
+        assert len(exact_31_node.get_text_content().strip()) > 30
+
+        # Subtree with multiple small text fragments summing to > 30 characters
+        multi_node = DOMNode(tag="section")
+        for i in range(6):
+            multi_node.append_child(DOMNode(is_text=True, text=f"segment_{i} "))
+        assert _has_min_text_length(multi_node, 30)
+        assert (len(multi_node.get_text_content().strip()) > 30) == _has_min_text_length(
+            multi_node, 30
+        )
+
+    def test_select_primary_container_semantic_priority(self) -> None:
+        html = (
+            "<html><body>"
+            "<nav>Navigation links</nav>"
+            "<div class='post-content'><p>This is the blog post content with sufficient length to qualify as primary text.</p></div>"
+            "<footer>Footer content</footer>"
+            "</body></html>"
+        )
+        builder = DOMTreeBuilder()
+        builder.feed(html)
+        container = select_primary_container(builder.root)
+        assert container.tag == "div"
+        assert "post-content" in container.attrs.get("class", "")
+
+    def test_select_primary_container_multi_candidate_selection(self) -> None:
+        html = (
+            "<html><body>"
+            "<article class='snippet'><p>Short article excerpt with just enough characters to pass.</p></article>"
+            "<article class='full'><p>This is a much longer comprehensive article that has substantial and informative paragraphs.</p></article>"
+            "</body></html>"
+        )
+        builder = DOMTreeBuilder()
+        builder.feed(html)
+        container = select_primary_container(builder.root)
+        assert container.tag == "article"
+        assert container.attrs.get("class") == "full"
