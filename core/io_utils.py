@@ -14,6 +14,8 @@ _WINDOWS_RESERVED_DEVICE_NAMES: frozenset[str] = frozenset(
         "PRN",
         "AUX",
         "NUL",
+        "CONIN$",
+        "CONOUT$",
         *(f"COM{i}" for i in range(1, 10)),
         *(f"LPT{i}" for i in range(1, 10)),
     }
@@ -65,14 +67,24 @@ def validate_safe_output_path(
     if not clean_path:
         raise ValueError(f"{param_name} cannot be empty or whitespace-only.")
 
-    # Reject Windows reserved device names on the final path component stem (e.g., CON, NUL.mp3)
+    # SECURITY: Reject Windows reserved DOS device names across ALL path components
+    # (e.g., CON, NUL.mp3, dir/AUX/out.wav) to prevent character device collisions,
+    # unexpected I/O driver side-effects, or process hangs on Windows filesystem APIs.
     normalized_sep = clean_path.replace("\\", "/").rstrip("/")
-    basename = normalized_sep.rsplit("/", 1)[-1] if normalized_sep else clean_path
-    stem = basename.split(".", 1)[0].strip().upper()
-    if stem in _WINDOWS_RESERVED_DEVICE_NAMES:
-        raise ValueError(
-            f"{param_name} uses reserved Windows device name '{stem}', which is not a valid file path."
-        )
+    for part in normalized_sep.split("/"):
+        part_clean = part.strip()
+        if not part_clean:
+            continue
+        # Strip drive letters on root components (e.g., "C:" -> "") or drive-relative paths (e.g., "C:CON")
+        if len(part_clean) >= 2 and part_clean[1] == ":" and part_clean[0].isalpha():
+            part_clean = part_clean[2:].strip()
+            if not part_clean:
+                continue
+        stem = part_clean.split(".", 1)[0].strip().upper()
+        if stem in _WINDOWS_RESERVED_DEVICE_NAMES:
+            raise ValueError(
+                f"{param_name} uses reserved Windows device name '{stem}', which is not a valid file path."
+            )
 
     if base_dir is not None:
         resolved_base = Path(base_dir).resolve()
