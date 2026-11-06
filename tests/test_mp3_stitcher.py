@@ -154,6 +154,15 @@ class TestValidateSafeOutputPath:
             "out.mp3\x00",
             "folder\x00/test.mp3",
             "\x00test.mp3",
+            "con",
+            "CON.mp3",
+            "con/sub/file.mp3",
+            "nested/aux/output.wav",
+            "subfolder\\nul\\test.mp3",
+            "conin$/audio.mp3",
+            "conout$",
+            "lpt1/podcast.mp3",
+            "com9.bin",
         ],
     )
     def test_validate_safe_output_path_rejections(self, invalid_path):
