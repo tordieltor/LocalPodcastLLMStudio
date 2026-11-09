@@ -1635,7 +1635,14 @@ class TestMainWindowHighwayNavigation:
         monkeypatch.setattr(MainWindow, "_start_queue_poller", lambda self: None)
         monkeypatch.setattr(MainWindow, "_start_player_poller", lambda self: None)
 
-        app = MainWindow()
+        try:
+            app = MainWindow()
+        except Exception as exc:
+            # Handle headless or broken Tk/Tcl environments (e.g. CI environments with missing/unreadable init.tcl)
+            if "tcl" in type(exc).__name__.lower() or "tcl" in str(exc).lower():
+                pytest.skip(f"Tk/Tcl display not available or broken in environment: {exc}")
+            raise
+
         try:
             assert hasattr(app, "view_studio")
             assert hasattr(app, "view_script_studio")
